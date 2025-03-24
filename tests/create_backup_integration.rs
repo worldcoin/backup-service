@@ -1,33 +1,10 @@
-use aws_sdk_s3::Client as S3Client;
+mod common;
+
+use crate::common::get_test_router;
 use axum::http::{Request, StatusCode};
-use axum::Extension;
-use backup_service::types::Environment;
-use dotenvy::dotenv;
 use http_body_util::BodyExt;
 use serde_json::json;
 use tower::util::ServiceExt;
-
-// TODO/FIXME: Move to a testlib library
-
-async fn get_test_s3_client() -> S3Client {
-    let environment = Environment::Development;
-    S3Client::from_conf(environment.s3_client_config().await)
-}
-
-async fn get_test_router() -> axum::Router {
-    dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
-    let environment = Environment::Development;
-    let s3_client = get_test_s3_client().await;
-
-    backup_service::handler()
-        .finish_api(&mut Default::default())
-        .layer(Extension(environment))
-        .layer(Extension(s3_client))
-}
 
 #[tokio::test]
 async fn test_create_backup() {
