@@ -10,7 +10,7 @@ env:
 
 jobs:
   lint:
-    name: Format, Clippy & Build
+    name: Format & Clippy
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +25,20 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --all-features -- -D warnings
+
+      - name: Build the project
+        run: cargo build --release
+
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: rustup update
 
       - name: Build the project
         run: cargo build --release
