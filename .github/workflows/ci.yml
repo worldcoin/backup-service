@@ -37,8 +37,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust
+        run: rustup update
 
       - name: Start LocalStack
         run: |
