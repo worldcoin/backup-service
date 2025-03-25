@@ -22,11 +22,15 @@ impl Environment {
     }
 
     /// S3 bucket where backups are stored
-    pub fn s3_bucket_name(&self) -> &str {
+    pub fn s3_bucket_arn(&self) -> &str {
         match self {
             Self::Production | Self::Staging => {
                 todo!("Implement bucket name for production and staging")
             }
+            // We can't specify the bucket ARN for localstack,
+            // so we use the bucket name instead.
+            // Path-style addressing (which is used only on development
+            // for local stack support) cannot be used with ARN buckets.
             Self::Development => "backup-service-bucket",
         }
     }

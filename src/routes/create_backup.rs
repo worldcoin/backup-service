@@ -18,7 +18,7 @@ pub async fn handler(
     let body = ByteStream::from(vec![0u8; 1024]);
     s3_client
         .put_object()
-        .bucket(environment.s3_bucket_name())
+        .bucket(environment.s3_bucket_arn())
         .key(key)
         .body(body)
         .send()
