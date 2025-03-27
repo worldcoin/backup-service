@@ -1,12 +1,16 @@
+use crate::challenge_manager::ChallengeManager;
+use crate::routes;
+use crate::types::Environment;
 use aide::openapi::{Info, OpenApi};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
 use tokio::net::TcpListener;
 
-use crate::routes;
-use crate::types::Environment;
-
-pub async fn start(environment: Environment, s3_client: S3Client) -> anyhow::Result<()> {
+pub async fn start(
+    environment: Environment,
+    s3_client: S3Client,
+    challenge_manager: ChallengeManager,
+) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
             title: "Backup Service".to_string(),
@@ -20,6 +24,7 @@ pub async fn start(environment: Environment, s3_client: S3Client) -> anyhow::Res
         .layer(Extension(environment))
         .layer(Extension(s3_client))
         .layer(Extension(openapi))
+        .layer(Extension(challenge_manager))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::timeout::TimeoutLayer::new(
