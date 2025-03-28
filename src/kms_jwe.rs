@@ -4,21 +4,25 @@ use josekit::jwe::enc::aesgcm::AesgcmJweEncryption;
 use josekit::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use josekit::JoseError;
 use std::borrow::Cow;
+use std::sync::Arc;
 use tokio::runtime::Handle;
 
 /// Encrypts and decrypts JWE tokens using AWS KMS.
 #[derive(Clone)]
 pub struct KmsJwe {
-    pub encrypter: Aes256GcmKwJweEncrypter,
-    pub decrypter: Aes256GcmKwJweDecrypter,
+    pub encrypter: Arc<Aes256GcmKwJweEncrypter>,
+    pub decrypter: Arc<Aes256GcmKwJweDecrypter>,
 }
 
 impl KmsJwe {
     #[must_use]
     pub fn new(kms_key: KmsKey, kms_client: aws_sdk_kms::Client) -> Self {
         Self {
-            encrypter: Aes256GcmKwJweEncrypter::new(kms_key.clone(), kms_client.clone()),
-            decrypter: Aes256GcmKwJweDecrypter::new(kms_key, kms_client),
+            encrypter: Arc::new(Aes256GcmKwJweEncrypter::new(
+                kms_key.clone(),
+                kms_client.clone(),
+            )),
+            decrypter: Arc::new(Aes256GcmKwJweDecrypter::new(kms_key, kms_client)),
         }
     }
 }
@@ -308,14 +312,14 @@ mod tests {
 
         let encrypter = kms_jwe.encrypter.clone();
         let jwe = tokio::task::spawn_blocking(move || {
-            encode_with_encrypter(&jwt_payload, &jwt_header, &encrypter).unwrap()
+            encode_with_encrypter(&jwt_payload, &jwt_header, &*encrypter).unwrap()
         })
         .await
         .unwrap();
 
         let decrypter = kms_jwe.decrypter.clone();
         let (decrypted_payload, decrypted_header) =
-            tokio::task::spawn_blocking(move || decode_with_decrypter(jwe, &decrypter).unwrap())
+            tokio::task::spawn_blocking(move || decode_with_decrypter(jwe, &*decrypter).unwrap())
                 .await
                 .unwrap();
 
@@ -354,14 +358,14 @@ mod tests {
 
         let encrypter = kms_jwe.encrypter.clone();
         let jwe = tokio::task::spawn_blocking(move || {
-            encode_with_encrypter(&jwt_payload, &jwt_header, &encrypter).unwrap()
+            encode_with_encrypter(&jwt_payload, &jwt_header, &*encrypter).unwrap()
         })
         .await
         .unwrap();
 
         let decrypter = wrong_kms_jwe.decrypter.clone();
         assert_eq!(
-            tokio::task::spawn_blocking(move || { decode_with_decrypter(jwe, &decrypter) })
+            tokio::task::spawn_blocking(move || { decode_with_decrypter(jwe, &*decrypter) })
                 .await
                 .unwrap()
                 .unwrap_err()

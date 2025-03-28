@@ -64,7 +64,7 @@ impl ChallengeManager {
         let encrypter = self.kms_jwe.encrypter.clone();
 
         let jwe = tokio::task::spawn_blocking(move || {
-            encode_with_encrypter(&jwt_payload, &jwt_header, &encrypter)
+            encode_with_encrypter(&jwt_payload, &jwt_header, &*encrypter)
                 .map_err(ChallengeManagerError::EncryptToken)
         })
         .await
@@ -80,7 +80,7 @@ impl ChallengeManager {
     ) -> Result<TokenPayload, ChallengeManagerError> {
         let decrypter = self.kms_jwe.decrypter.clone();
         let (jwt_payload, _header) = tokio::task::spawn_blocking(move || {
-            decode_with_decrypter(challenge_token, &decrypter)
+            decode_with_decrypter(challenge_token, &*decrypter)
                 .map_err(ChallengeManagerError::FailedToDecryptToken)
         })
         .await
