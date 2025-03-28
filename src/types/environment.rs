@@ -1,3 +1,4 @@
+use crate::kms_jwe::KmsKey;
 use std::env;
 
 #[derive(Debug, Clone, Copy)]
@@ -73,5 +74,20 @@ impl Environment {
             Self::Production => false,
             Self::Staging | Self::Development => true,
         }
+    }
+
+    /// KMS keys used to encrypt challenge tokens
+    pub fn challenge_token_kms_key(&self) -> KmsKey {
+        KmsKey::from_arn(
+            env::var("CHALLENGE_TOKEN_KMS_KEY_ARN")
+                .expect("CHALLENGE_TOKEN_KMS_KEY_ARN environment variable is not set")
+                .as_str(),
+        )
+    }
+
+    /// What's the TTL for the challenge tokens
+    pub fn challenge_token_ttl(&self) -> std::time::Duration {
+        // 15 minutes
+        std::time::Duration::from_secs(15 * 60)
     }
 }

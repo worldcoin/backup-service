@@ -1,4 +1,6 @@
 use aws_sdk_s3::Client as S3Client;
+use backup_service::challenge_manager::ChallengeManager;
+use backup_service::kms_jwe::KmsJwe;
 use backup_service::server;
 use backup_service::types::Environment;
 use dotenvy::dotenv;
@@ -13,5 +15,10 @@ async fn main() -> anyhow::Result<()> {
     let environment = Environment::from_env();
     let s3_client = S3Client::from_conf(environment.s3_client_config().await);
 
-    server::start(environment, s3_client).await
+    // Initialize challenge manager
+    let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
+    let kms_jwe = KmsJwe::new(environment.challenge_token_kms_key(), kms_client);
+    let challenge_manager = ChallengeManager::new(environment.challenge_token_ttl(), kms_jwe);
+
+    server::start(environment, s3_client, challenge_manager).await
 }
