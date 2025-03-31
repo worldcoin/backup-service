@@ -1,5 +1,7 @@
 use crate::kms_jwe::KmsKey;
 use std::env;
+use webauthn_rs::prelude::Url;
+use webauthn_rs::{Webauthn, WebauthnBuilder};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Environment {
@@ -89,5 +91,17 @@ impl Environment {
     pub fn challenge_token_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)
+    }
+
+    /// Configuration to generate passkeys
+    pub fn webauthn_config(&self) -> Webauthn {
+        WebauthnBuilder::new(
+            "keys.world.org",
+            &Url::parse("https://keys.world.org").expect("Invalid URL"),
+        )
+        .expect("Failed to create WebauthnBuilder")
+        .rp_name("World App")
+        .build()
+        .expect("Failed to build Webauthn")
     }
 }
