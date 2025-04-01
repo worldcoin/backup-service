@@ -41,9 +41,9 @@ impl ChallengeManager {
     pub async fn create_challenge_token(
         &self,
         challenge_type: ChallengeType,
-        payload: TokenPayload,
+        payload: &[u8],
     ) -> Result<ChallengeToken, ChallengeManagerError> {
-        let encoded_payload = STANDARD.encode(&payload);
+        let encoded_payload = STANDARD.encode(payload);
 
         // Do not put any sensitive information in the header, as it's not encrypted
         let mut jwt_header = JweHeader::new();
@@ -181,7 +181,7 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, vec![1, 2, 3])
+            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
             .await
             .unwrap();
         let payload = challenge_manager
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(payload, vec![1, 2, 3]);
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Keypair, vec![4, 5, 6])
+            .create_challenge_token(ChallengeType::Keypair, &[4, 5, 6])
             .await
             .unwrap();
         let payload = challenge_manager
@@ -207,7 +207,7 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, vec![1, 2, 3])
+            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
             .await
             .unwrap();
         let result = challenge_manager
@@ -225,7 +225,7 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let mut challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, vec![1, 2, 3])
+            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
             .await
             .unwrap();
         challenge_token.push_str("i");
@@ -243,7 +243,7 @@ mod tests {
         let kms_jwe = get_kms_jwe().await;
         let challenge_manager = ChallengeManager::new(Duration::from_secs(0), kms_jwe);
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, vec![1, 2, 3])
+            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
             .await
             .unwrap();
         let result = challenge_manager

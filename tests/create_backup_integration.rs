@@ -12,7 +12,7 @@ async fn test_create_backup() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/create-backup")
+                .uri("/create")
                 .method("POST")
                 .body(json!({}).to_string())
                 .unwrap(),
