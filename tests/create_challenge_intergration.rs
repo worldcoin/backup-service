@@ -1,31 +1,20 @@
 mod common;
 
-use crate::common::get_test_router;
-use axum::http::{Request, StatusCode};
+use crate::common::send_post_request;
+use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use serde_json::json;
-use tower::util::ServiceExt;
 
 #[tokio::test]
 async fn test_create_challenge() {
-    let app = get_test_router().await;
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/create/challenge/passkey")
-                .method("POST")
-                .header("Content-Type", "application/json")
-                .body(
-                    json!({
-                        "name": "MOCK USERNAME",
-                        "displayName": "MOCK DISPLAY NAME",
-                    })
-                    .to_string(),
-                )
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = send_post_request(
+        "/create/challenge/passkey",
+        json!({
+            "name": "MOCK USERNAME",
+            "displayName": "MOCK DISPLAY NAME",
+        }),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 

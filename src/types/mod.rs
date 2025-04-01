@@ -1,3 +1,4 @@
+pub mod backup_metadata;
 mod environment;
 mod error;
 

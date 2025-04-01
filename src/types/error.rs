@@ -20,6 +20,13 @@ impl ErrorResponse {
             status: StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+
+    pub fn bad_request(message: &str) -> Self {
+        Self {
+            error: message.to_string(),
+            status: StatusCode::BAD_REQUEST,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -53,10 +60,7 @@ impl From<WebauthnError> for ErrorResponse {
             }
             _ => {
                 tracing::info!(message = "Passkey webauthn error", error = ?err);
-                ErrorResponse {
-                    error: "webauthn_error".to_string(),
-                    status: StatusCode::BAD_REQUEST,
-                }
+                ErrorResponse::bad_request("webauthn_error")
             }
         }
     }
@@ -83,10 +87,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             | ChallengeManagerError::NoValidChallengeTypeClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
                 tracing::info!(message = "Challenge manager error", error = ?err);
-                ErrorResponse {
-                    error: "jwt_error".to_string(),
-                    status: StatusCode::BAD_REQUEST,
-                }
+                ErrorResponse::bad_request("jwt_error")
             }
         }
     }

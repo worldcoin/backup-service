@@ -13,6 +13,7 @@ pub struct CreateChallengePasskeyRequest {
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateChallengePasskeyResponse {
     // Challenge should be opaque to us and implemented by the protocol
     challenge: serde_json::Value,
