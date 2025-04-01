@@ -48,7 +48,7 @@ impl From<WebauthnError> for ErrorResponse {
     fn from(err: WebauthnError) -> Self {
         match err {
             WebauthnError::Configuration => {
-                tracing::warn!(message = "Webauthn configuration error", error = ?err);
+                tracing::error!(message = "Webauthn configuration error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
             _ => {
