@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod passkey_client;
 
 use aws_sdk_s3::Client as S3Client;
@@ -60,7 +62,6 @@ pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Respo
 }
 
 // Get a passkey challenge response from the server
-#[allow(dead_code)]
 pub async fn get_passkey_challenge() -> serde_json::Value {
     let challenge_response = send_post_request(
         "/create/challenge/passkey",
@@ -80,7 +81,6 @@ pub async fn get_passkey_challenge() -> serde_json::Value {
 }
 
 /// Create a new passkey credential by solving a challenge. Returns the credential as a JSON value.
-#[allow(dead_code)]
 pub async fn make_credential_from_passkey_challenge(
     passkey_client: &mut MockPasskeyClient,
     challenge_response: &serde_json::Value,

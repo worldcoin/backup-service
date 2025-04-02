@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use passkey::authenticator::Authenticator;
 use passkey::authenticator::{UserCheck, UserValidationMethod};
 use passkey::client::Client;
@@ -35,7 +37,6 @@ impl UserValidationMethod for MockUserValidationMethod {
 }
 
 /// Initialize an authenticator with a mock user validation method
-#[allow(dead_code)]
 pub fn get_mock_passkey_client() -> MockPasskeyClient {
     let store: Option<Passkey> = None;
     let user_validation_method = MockUserValidationMethod {};
