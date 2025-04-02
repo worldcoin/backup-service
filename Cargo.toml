@@ -41,3 +41,7 @@ webauthn-rs = { version = "0.5.1", features = ["danger-allow-state-serialisation
 [dev-dependencies]
 http-body-util = "0.1.3"
 tower = "0.5.2"
+passkey = { version = "0.4.0" }
+url = "2.5.4"
+public-suffix = "0.1.2"
+async-trait = "0.1.88"
