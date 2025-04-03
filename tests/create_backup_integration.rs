@@ -1,8 +1,10 @@
 mod common;
 
 use crate::common::{
-    get_passkey_challenge, make_credential_from_passkey_challenge, send_post_request,
+    get_passkey_challenge, get_test_s3_client, make_credential_from_passkey_challenge,
+    send_post_request_with_multipart,
 };
+use axum::body::Bytes;
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use serde_json::json;
@@ -19,7 +21,7 @@ async fn test_create_backup() {
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
     // Send the credential to the server to create a backup
-    let response = send_post_request(
+    let response = send_post_request_with_multipart(
         "/create",
         json!({
             "solvedChallenge": {
@@ -28,17 +30,31 @@ async fn test_create_backup() {
             },
             "challengeToken": challenge_response["token"],
         }),
+        Bytes::from(b"TEST FILE".as_slice()),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
+    dbg!(&body);
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(response, json!({}));
 
-    // TODO/FIXME: Check that backup was successfully created on S3
+    // Check that backup was successfully created on S3
+    let s3_client = get_test_s3_client().await;
+    let bucket_name = "backup-service-bucket";
+    let object_key = format!("backup/{}", credential["id"].as_str().unwrap());
+    let object = s3_client
+        .get_object()
+        .bucket(bucket_name)
+        .key(&object_key)
+        .send()
+        .await
+        .unwrap();
+    let object_data = object.body.collect().await.unwrap().to_vec();
+    assert_eq!(object_data, b"TEST FILE".as_slice());
 }
 
 #[tokio::test]
@@ -53,7 +69,7 @@ async fn test_create_backup_with_incorrect_token() {
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
     // Send the credential to the server to create a backup
-    let response = send_post_request(
+    let response = send_post_request_with_multipart(
         "/create",
         json!({
             "solvedChallenge": {
@@ -62,6 +78,7 @@ async fn test_create_backup_with_incorrect_token() {
             },
             "challengeToken": "INCORRECT TOKEN",
         }),
+        Bytes::from(b"TEST FILE".as_slice()),
     )
     .await;
 
@@ -94,7 +111,7 @@ async fn test_create_backup_with_incorrectly_solved_challenge() {
     );
 
     // Send the credential to the server to create a backup
-    let response = send_post_request(
+    let response = send_post_request_with_multipart(
         "/create",
         json!({
             "solvedChallenge": {
@@ -103,6 +120,7 @@ async fn test_create_backup_with_incorrectly_solved_challenge() {
             },
             "challengeToken": challenge_response["token"],
         }),
+        Bytes::from(b"TEST FILE".as_slice()),
     )
     .await;
 
@@ -112,4 +130,70 @@ async fn test_create_backup_with_incorrectly_solved_challenge() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(response, json!({"error": "webauthn_error"}));
+}
+
+#[tokio::test]
+async fn test_create_backup_with_empty_file() {
+    let mut passkey_client = common::get_mock_passkey_client();
+
+    // Get a challenge from the server
+    let challenge_response = get_passkey_challenge().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
+
+    // Send the credential to the server to create a backup
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "solvedChallenge": {
+                "kind": "PASSKEY",
+                "credential": credential,
+            },
+            "challengeToken": challenge_response["token"],
+        }),
+        Bytes::from(b"".as_slice()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response, json!({"error": "empty_backup_file"}));
+}
+
+#[tokio::test]
+async fn test_create_backup_with_large_file() {
+    let mut passkey_client = common::get_mock_passkey_client();
+
+    // Get a challenge from the server
+    let challenge_response = get_passkey_challenge().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
+
+    // Send the credential to the server to create a backup
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "solvedChallenge": {
+                "kind": "PASSKEY",
+                "credential": credential,
+            },
+            "challengeToken": challenge_response["token"],
+        }),
+        Bytes::from(vec![0; 5 * 1024 * 1024 + 1]), // 5 MB file + 1 byte
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response, json!({"error": "backup_file_too_large"}));
 }

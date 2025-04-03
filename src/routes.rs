@@ -2,6 +2,7 @@ use aide::axum::{
     routing::{get, post},
     ApiRouter,
 };
+use axum::extract::DefaultBodyLimit;
 
 mod create_backup;
 mod create_challenge_passkey;
@@ -16,5 +17,9 @@ pub fn handler() -> ApiRouter {
             "/create/challenge/passkey",
             post(create_challenge_passkey::handler),
         )
-        .api_route("/create", post(create_backup::handler))
+        .api_route(
+            "/create",
+            // Use 10MB limit for payload in order to support backup uploads
+            post(create_backup::handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
 }

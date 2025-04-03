@@ -1,5 +1,6 @@
 use crate::challenge_manager::ChallengeManagerError;
 use aide::OperationOutput;
+use axum::extract::multipart::MultipartError;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -70,6 +71,13 @@ impl From<serde_json::Error> for ErrorResponse {
     fn from(err: serde_json::Error) -> Self {
         tracing::warn!(message = "Serde JSON error", error = ?err);
         ErrorResponse::internal_server_error()
+    }
+}
+
+impl From<MultipartError> for ErrorResponse {
+    fn from(err: MultipartError) -> Self {
+        tracing::info!(message = "Error when reading Multipart form data", error = ?err);
+        ErrorResponse::bad_request("multipart_error")
     }
 }
 

@@ -1,4 +1,4 @@
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::Passkey;
@@ -36,7 +36,7 @@ pub enum PrimaryFactorKind {
 impl PrimaryFactor {
     pub fn new_passkey(webauthn_credential: Passkey) -> Self {
         Self {
-            id: STANDARD.encode(webauthn_credential.cred_id()),
+            id: URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
             kind: PrimaryFactorKind::Passkey {
                 webauthn_credential,
             },
