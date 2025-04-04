@@ -41,7 +41,7 @@ pub async fn get_test_router() -> axum::Router {
     let s3_client = get_test_s3_client().await;
     let challenge_manager = get_challenge_manager().await;
 
-    backup_service::handler()
+    backup_service::handler(environment)
         .finish_api(&mut Default::default())
         .layer(Extension(environment))
         .layer(Extension(s3_client))
@@ -122,7 +122,7 @@ pub async fn send_post_request_with_multipart(
         .body(Body::from(body_bytes))
         .unwrap();
 
-    let app = get_test_router().await; // your existing function
+    let app = get_test_router().await;
     app.oneshot(req).await.unwrap()
 }
 

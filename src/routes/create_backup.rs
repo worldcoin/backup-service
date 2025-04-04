@@ -46,7 +46,10 @@ pub async fn handler(
         tracing::info!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request("missing_payload_field")
     })?;
-    let request: CreateBackupRequest = serde_json::from_slice(request)?;
+    let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
+        tracing::info!(message = "Failed to deserialize payload", error = ?err);
+        ErrorResponse::bad_request("invalid_payload")
+    })?;
     let backup = multipart_fields.get("backup").ok_or_else(|| {
         tracing::info!(message = "Missing backup field in multipart data");
         ErrorResponse::bad_request("missing_backup_field")

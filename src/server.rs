@@ -19,7 +19,7 @@ pub async fn start(
         ..Default::default()
     };
 
-    let router = routes::handler()
+    let router = routes::handler(environment)
         .finish_api(&mut openapi)
         .layer(Extension(environment))
         .layer(Extension(s3_client))

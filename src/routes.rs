@@ -1,3 +1,4 @@
+use crate::types::Environment;
 use aide::axum::{
     routing::{get, post},
     ApiRouter,
@@ -9,7 +10,7 @@ mod create_challenge_passkey;
 mod docs;
 mod health;
 
-pub fn handler() -> ApiRouter {
+pub fn handler(environment: Environment) -> ApiRouter {
     ApiRouter::new()
         .merge(docs::handler())
         .api_route("/health", get(health::handler))
@@ -19,7 +20,10 @@ pub fn handler() -> ApiRouter {
         )
         .api_route(
             "/create",
-            // Use 10MB limit for payload in order to support backup uploads
-            post(create_backup::handler).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+            // Use 2x backup limit for payload size in order to support backup uploads with some
+            // extra buffer for JSON data.
+            post(create_backup::handler).layer(DefaultBodyLimit::max(
+                2 * environment.max_backup_file_size(),
+            )),
         )
 }

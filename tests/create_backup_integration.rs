@@ -37,7 +37,6 @@ async fn test_create_backup() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    dbg!(&body);
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(response, json!({}));
