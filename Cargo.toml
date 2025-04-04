@@ -10,9 +10,10 @@ aide = { version = "0.14.2", features = [
     "swagger",
     "scalar",
     "axum-json",
+    "axum-multipart",
     "macros",
 ] }
-axum = { version = "0.8.1", features = ["macros"] }
+axum = { version = "0.8.1", features = ["macros", "multipart"] }
 tower-http = { version = "0.6.2", features = ["compression-br", "limit", "trace", "timeout"] }
 schemars = "0.8.21"
 

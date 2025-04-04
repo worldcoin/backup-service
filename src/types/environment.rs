@@ -104,4 +104,9 @@ impl Environment {
         .build()
         .expect("Failed to build Webauthn")
     }
+
+    /// Max size of the backup file
+    pub fn max_backup_file_size(&self) -> usize {
+        5 * 1024 * 1024 // 5 MB
+    }
 }

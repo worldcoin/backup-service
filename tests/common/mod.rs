@@ -3,7 +3,7 @@
 mod passkey_client;
 
 use aws_sdk_s3::Client as S3Client;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
@@ -16,6 +16,7 @@ pub use passkey_client::*;
 use serde_json::json;
 use tower::ServiceExt;
 use url::Url;
+use uuid::Uuid;
 
 pub async fn get_test_s3_client() -> S3Client {
     let environment = Environment::Development;
@@ -40,7 +41,7 @@ pub async fn get_test_router() -> axum::Router {
     let s3_client = get_test_s3_client().await;
     let challenge_manager = get_challenge_manager().await;
 
-    backup_service::handler()
+    backup_service::handler(environment)
         .finish_api(&mut Default::default())
         .layer(Extension(environment))
         .layer(Extension(s3_client))
@@ -59,6 +60,70 @@ pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Respo
     )
     .await
     .unwrap()
+}
+
+/// Send a POST request with multipart form data
+pub async fn send_post_request_with_multipart(
+    route: &str,
+    payload: serde_json::Value,
+    file: Bytes,
+) -> Response {
+    // Multipart form data is structured as:
+    // --boundary
+    // Content-Disposition: form-data; name="payload"
+    // Content-Type: application/json
+    //
+    // <JSON payload>
+    //
+    // --boundary
+    // Content-Disposition: form-data; name="backup"; filename="backup.bin"
+    // Content-Type: application/octet-stream
+    //
+    // <file bytes>
+    //
+    // --boundary--
+    let boundary = format!("Boundary-{}", Uuid::new_v4());
+    let mut body_bytes = Vec::new();
+
+    // Start boundary
+    body_bytes.extend_from_slice(b"--");
+    body_bytes.extend_from_slice(boundary.as_bytes());
+    body_bytes.extend_from_slice(b"\r\n");
+
+    // JSON part
+    body_bytes.extend_from_slice(b"Content-Disposition: form-data; name=\"payload\"\r\n");
+    body_bytes.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body_bytes.extend_from_slice(payload.to_string().as_bytes());
+    body_bytes.extend_from_slice(b"\r\n");
+
+    // File part
+    body_bytes.extend_from_slice(b"--");
+    body_bytes.extend_from_slice(boundary.as_bytes());
+    body_bytes.extend_from_slice(b"\r\n");
+    body_bytes.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"backup\"; filename=\"backup.bin\"\r\n",
+    );
+    body_bytes.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body_bytes.extend_from_slice(&file);
+    body_bytes.extend_from_slice(b"\r\n");
+
+    // End boundary
+    body_bytes.extend_from_slice(b"--");
+    body_bytes.extend_from_slice(boundary.as_bytes());
+    body_bytes.extend_from_slice(b"--\r\n");
+
+    let req = Request::builder()
+        .uri(route)
+        .method("POST")
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
+        .body(Body::from(body_bytes))
+        .unwrap();
+
+    let app = get_test_router().await;
+    app.oneshot(req).await.unwrap()
 }
 
 // Get a passkey challenge response from the server

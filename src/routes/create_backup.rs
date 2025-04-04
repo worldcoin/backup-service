@@ -1,12 +1,13 @@
+use crate::axum_utils::extract_fields_from_multipart;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor};
 use crate::types::{Environment, ErrorResponse};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::time::Instant;
 use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -31,9 +32,40 @@ pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(s3_client): Extension<S3Client>,
     Extension(challenge_manager): Extension<ChallengeManager>,
-    request: Json<CreateBackupRequest>,
+    mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
-    // Step 1: Decrypt passkey state from the token
+    // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
+    // and the attached backup file.
+    let multipart_fields = extract_fields_from_multipart(&mut multipart)
+        .await
+        .map_err(|err| {
+            tracing::info!(message = "Failed to parse multipart data", error = ?err);
+            ErrorResponse::bad_request("invalid_multipart_data")
+        })?;
+    let request = multipart_fields.get("payload").ok_or_else(|| {
+        tracing::info!(message = "Missing payload field in multipart data");
+        ErrorResponse::bad_request("missing_payload_field")
+    })?;
+    let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
+        tracing::info!(message = "Failed to deserialize payload", error = ?err);
+        ErrorResponse::bad_request("invalid_payload")
+    })?;
+    let backup = multipart_fields.get("backup").ok_or_else(|| {
+        tracing::info!(message = "Missing backup field in multipart data");
+        ErrorResponse::bad_request("missing_backup_field")
+    })?;
+
+    // Step 1.1: Validate the backup file size
+    if backup.is_empty() {
+        tracing::info!(message = "Empty backup file");
+        return Err(ErrorResponse::bad_request("empty_backup_file"));
+    }
+    if backup.len() > environment.max_backup_file_size() {
+        tracing::info!(message = "Backup file too large");
+        return Err(ErrorResponse::bad_request("backup_file_too_large"));
+    }
+
+    // Step 2: Decrypt passkey state from the token
     let challenge_token_payload = challenge_manager
         .extract_token_payload(ChallengeType::Passkey, request.challenge_token.to_string())
         .await?;
@@ -44,7 +76,7 @@ pub async fn handler(
             ErrorResponse::internal_server_error()
         })?;
 
-    // Step 2: Verify the solved challenge
+    // Step 3: Verify the solved challenge
     let verified_primary_factor = match &request.solved_challenge {
         SolvedChallenge::Passkey { credential } => {
             // Step 2A: Verify the passkey credential using the WebAuthn implementation
@@ -65,8 +97,8 @@ pub async fn handler(
         }
     };
 
-    // Step 3: Initialize backup metadata
-    let _backup_metadata = BackupMetadata {
+    // Step 4: Initialize backup metadata
+    let backup_metadata = BackupMetadata {
         primary_factor: verified_primary_factor,
         turnkey_account_id: None,
     };
@@ -74,8 +106,8 @@ pub async fn handler(
     // TODO/FIXME: More checks and metadata initialization
 
     // TODO/FIXME: Replace this stub with a proper storage service
-    let key = format!("backup-{}", Instant::now().elapsed().as_millis());
-    let body = ByteStream::from(vec![0u8; 1024]);
+    let key = format!("backup/{}", backup_metadata.primary_factor.id);
+    let body = ByteStream::from(backup.to_vec());
     s3_client
         .put_object()
         .bucket(environment.s3_bucket_arn())
