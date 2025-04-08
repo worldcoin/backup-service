@@ -2,6 +2,7 @@ use crate::oidc_nonce_verifier::OidcNonceVerifier;
 use crate::types::{Environment, ErrorResponse};
 use aws_sdk_s3::Client as S3Client;
 use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
 use openidconnect::reqwest;
 use schemars::JsonSchema;
@@ -50,7 +51,8 @@ pub async fn handler(
                 environment.google_client_id(),
                 environment.google_issuer_url(),
                 signature_keys,
-            );
+            )
+            .set_issue_time_verifier_fn(issue_time_verifier);
 
             // Step 1A.3: Verify the token
             let oidc_token = CoreIdToken::from_str(token).map_err(|_| {
@@ -72,4 +74,17 @@ pub async fn handler(
     // Step 4: TODO/FIXME: Save the mapping between OIDC account and backup ID in DynamoDB
 
     Ok(Json(AddOidcAccountResponse {}))
+}
+
+/// If issued at is in the future or too far in the past, the token is invalid
+fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
+    let now = Utc::now();
+    // Token should not be issued more than 1 hour in the past
+    let min = now - chrono::Duration::hours(1);
+    // Token should not be issued more than 30 seconds in the future (clock skew)
+    let max = now + chrono::Duration::seconds(30);
+    if iat < min || iat > max {
+        return Err("Invalid issue time".to_string());
+    }
+    Ok(())
 }

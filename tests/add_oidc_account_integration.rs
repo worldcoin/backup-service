@@ -58,47 +58,56 @@ async fn test_add_oidc_account_integration() {
 
     assert_eq!(response, json!({}));
 
-    // Test expired token
-    let response = send_post_request(
-        "/add-oidc-account",
+    let incorrect_token_payloads: Vec<serde_json::Value> = vec![
+        // Expired token
         json!({
             "oidcToken": {
                 "kind": "GOOGLE",
                 "token": oidc_server.generate_expired_token(environment),
             },
         }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let response = response.into_body().collect().await.unwrap().to_bytes();
-    let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(
-        response,
-        json!({
-            "error": "invalid_oidc_token"
-        })
-    );
-
-    // Test incorrectly signed token
-    let response = send_post_request(
-        "/add-oidc-account",
+        // Incorrectly signed token
         json!({
             "oidcToken": {
                 "kind": "GOOGLE",
                 "token": oidc_server.generate_incorrectly_signed_token(environment),
             },
         }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let response = response.into_body().collect().await.unwrap().to_bytes();
-    let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(
-        response,
+        // Invalid issuer
         json!({
-            "error": "invalid_oidc_token"
-        })
-    );
+            "oidcToken": {
+                "kind": "GOOGLE",
+                "token": oidc_server.generate_token_with_incorrect_issuer(environment),
+            },
+        }),
+        // Invalid audience
+        json!({
+            "oidcToken": {
+                "kind": "GOOGLE",
+                "token": oidc_server.generate_token_with_incorrect_audience(environment),
+            },
+        }),
+        // Invalid issued at
+        json!({
+            "oidcToken": {
+                "kind": "GOOGLE",
+                "token": oidc_server.generate_token_with_incorrect_issued_at(environment),
+            },
+        }),
+    ];
+
+    for payload in incorrect_token_payloads {
+        let response = send_post_request("/add-oidc-account", payload).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = response.into_body().collect().await.unwrap().to_bytes();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(
+            response,
+            json!({
+                "error": "invalid_oidc_token"
+            })
+        );
+    }
 }
 
 // TODO/FIXME: Primary factor authentication; update checks (e.g. no previous OIDC account, existing OIDC account, etc.)

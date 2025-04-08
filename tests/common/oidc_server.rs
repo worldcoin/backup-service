@@ -8,7 +8,7 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, JsonWebKeyId, PrivateSigningKey, StandardClaims,
+    Audience, EmptyAdditionalClaims, IssuerUrl, JsonWebKeyId, PrivateSigningKey, StandardClaims,
     SubjectIdentifier,
 };
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
@@ -132,6 +132,77 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &incorrect_signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
+    pub fn generate_token_with_incorrect_issuer(&self, environment: Environment) -> String {
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
+            vec![Audience::new(environment.google_client_id().to_string())],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now(),                                                 // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        );
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
+    pub fn generate_token_with_incorrect_audience(&self, environment: Environment) -> String {
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            environment.google_issuer_url(),
+            vec![Audience::new("incorrect-audience".to_string())],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now(),                                                 // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        );
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
+    pub fn generate_token_with_incorrect_issued_at(&self, environment: Environment) -> String {
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            environment.google_issuer_url(),
+            vec![Audience::new(environment.google_client_id().to_string())],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now()
+                .checked_add_signed(Duration::minutes(30))
+                .unwrap(), // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        );
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
             CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
             None,
             None,

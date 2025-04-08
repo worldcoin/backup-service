@@ -39,6 +39,7 @@ http = "0.2.12"
 # TODO/FIXME: Investigate how dangerous this is considering we're going to be tracking used challenges
 webauthn-rs = { version = "0.5.1", features = ["danger-allow-state-serialisation"] }
 openidconnect = "4.0.0"
+chrono = { version = "0.4.40", features = ["serde"] }
 
 [dev-dependencies]
 http-body-util = "0.1.3"
