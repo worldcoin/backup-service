@@ -101,6 +101,7 @@ pub async fn handler(
     let backup_metadata = BackupMetadata {
         primary_factor: verified_primary_factor,
         turnkey_account_id: None,
+        oidc_accounts: vec![],
     };
 
     // TODO/FIXME: More checks and metadata initialization

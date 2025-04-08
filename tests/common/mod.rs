@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod oidc_server;
 mod passkey_client;
 
 use aws_sdk_s3::Client as S3Client;
@@ -11,6 +12,8 @@ use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::types::Environment;
 use http_body_util::BodyExt;
+#[allow(unused_imports)]
+pub use oidc_server::*;
 #[allow(unused_imports)]
 pub use passkey_client::*;
 use serde_json::json;

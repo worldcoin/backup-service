@@ -13,7 +13,9 @@ pub struct BackupMetadata {
     /// The ID of the turnkey account that stores the decryption key. Only present if Turnkey account
     /// is initialized. If backup only uses passkeys for decryption, this field is not present.
     pub turnkey_account_id: Option<String>,
-    // TODO/FIXME: More fields, e.g. keys, oidc accounts
+    /// OIDC accounts that are used to access the backup in addition to the primary factor.
+    pub oidc_accounts: Vec<OidcAccount>,
+    // TODO/FIXME: More fields, e.g. keys
 }
 
 /// The primary factor is the main factor of authentication that relies on a trusted type of credential.
@@ -42,4 +44,20 @@ impl PrimaryFactor {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcAccount {
+    /// The ID of the OIDC account connection, generated randomly
+    pub id: String,
+    /// The kind of OIDC account and the associated metadata
+    pub kind: OidcAccountKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+pub enum OidcAccountKind {
+    #[serde(rename_all = "camelCase")]
+    Google { sub: String, email: String },
 }

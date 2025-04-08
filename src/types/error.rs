@@ -4,8 +4,10 @@ use axum::extract::multipart::MultipartError;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use openidconnect::DiscoveryError;
 use schemars::JsonSchema;
 use serde::Serialize;
+use std::error::Error;
 use webauthn_rs::prelude::WebauthnError;
 
 #[derive(Debug, Clone)]
@@ -98,5 +100,12 @@ impl From<ChallengeManagerError> for ErrorResponse {
                 ErrorResponse::bad_request("jwt_error")
             }
         }
+    }
+}
+
+impl<T: Error> From<DiscoveryError<T>> for ErrorResponse {
+    fn from(err: DiscoveryError<T>) -> Self {
+        tracing::error!(message = "OIDC discovery error", error = ?err);
+        ErrorResponse::internal_server_error()
     }
 }
