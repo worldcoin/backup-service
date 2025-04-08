@@ -5,6 +5,7 @@ use aide::axum::{
 };
 use axum::extract::DefaultBodyLimit;
 
+mod add_oidc_account;
 mod create_backup;
 mod create_challenge_passkey;
 mod docs;
@@ -26,4 +27,5 @@ pub fn handler(environment: Environment) -> ApiRouter {
                 2 * environment.max_backup_file_size(),
             )),
         )
+        .api_route("/add-oidc-account", post(add_oidc_account::handler))
 }

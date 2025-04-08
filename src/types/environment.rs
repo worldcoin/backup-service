@@ -1,4 +1,5 @@
 use crate::kms_jwe::KmsKey;
+use openidconnect::{ClientId, IssuerUrl, JsonWebKeySetUrl};
 use std::env;
 use webauthn_rs::prelude::Url;
 use webauthn_rs::{Webauthn, WebauthnBuilder};
@@ -108,5 +109,39 @@ impl Environment {
     /// Max size of the backup file
     pub fn max_backup_file_size(&self) -> usize {
         5 * 1024 * 1024 // 5 MB
+    }
+
+    /// JWK Set URL for the Google OIDC provider
+    pub fn google_jwk_set_url(&self) -> JsonWebKeySetUrl {
+        match self {
+            Self::Production | Self::Staging => {
+                JsonWebKeySetUrl::new("https://www.googleapis.com/oauth2/v3/certs".to_string())
+                    .expect("Invalid JWK set URL")
+            }
+            Self::Development => {
+                JsonWebKeySetUrl::new("http://localhost:8001/oauth2/v3/certs".to_string())
+                    .expect("Invalid JWK set URL")
+            }
+        }
+    }
+
+    /// The client ID for the Google OIDC provider
+    pub fn google_client_id(&self) -> ClientId {
+        match self {
+            Self::Production | Self::Staging => todo!(),
+            Self::Development => ClientId::new(
+                "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Issuer URL for the Google OIDC provider
+    pub fn google_issuer_url(&self) -> IssuerUrl {
+        match self {
+            Self::Production | Self::Staging => todo!(),
+            Self::Development => IssuerUrl::new("https://accounts.google.com".to_string())
+                .expect("Invalid issuer URL"),
+        }
     }
 }
