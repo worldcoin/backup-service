@@ -14,14 +14,8 @@ async fn test_retrieve_challenge() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    dbg!(&response);
-
     assert_eq!(
-        response["challenge"]["publicKey"]["rp"]["name"].as_str(),
-        Some("World App")
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["rp"]["id"].as_str(),
+        response["challenge"]["publicKey"]["rpId"].as_str(),
         Some("keys.world.org")
     );
     assert_eq!(
@@ -32,45 +26,16 @@ async fn test_retrieve_challenge() {
         43
     );
     assert_eq!(
-        response["challenge"]["publicKey"]["pubKeyCredParams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["timeout"].as_u64(),
-        Some(300000)
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["authenticatorSelection"]["residentKey"].as_str(),
-        Some("discouraged")
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["authenticatorSelection"]["requireResidentKey"]
-            .as_bool(),
-        Some(false)
-    );
-    assert_eq!(
         response["challenge"]["publicKey"]["authenticatorSelection"]["userVerification"].as_str(),
         Some("required")
     );
     assert_eq!(
-        response["challenge"]["publicKey"]["attestation"].as_str(),
-        Some("none")
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["extensions"]["credentialProtectionPolicy"].as_str(),
-        Some("userVerificationRequired")
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["extensions"]["enforceCredentialProtectionPolicy"]
-            .as_bool(),
-        Some(false)
-    );
-    assert_eq!(
         response["challenge"]["publicKey"]["extensions"]["uvm"].as_bool(),
         Some(true)
+    );
+    assert_eq!(
+        response["challenge"]["mediation"].as_str(),
+        Some("conditional")
     );
 
     assert!(response["token"].as_str().is_some());
