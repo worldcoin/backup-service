@@ -26,7 +26,7 @@ async fn test_retrieve_challenge() {
         43
     );
     assert_eq!(
-        response["challenge"]["publicKey"]["authenticatorSelection"]["userVerification"].as_str(),
+        response["challenge"]["publicKey"]["userVerification"].as_str(),
         Some("required")
     );
     assert_eq!(
