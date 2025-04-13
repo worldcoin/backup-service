@@ -8,6 +8,7 @@ use axum::body::{Body, Bytes};
 use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
+use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::types::Environment;
@@ -17,6 +18,7 @@ pub use oidc_server::*;
 #[allow(unused_imports)]
 pub use passkey_client::*;
 use serde_json::json;
+use std::sync::Arc;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -41,14 +43,16 @@ pub async fn get_test_router() -> axum::Router {
         .ok();
 
     let environment = Environment::Development;
-    let s3_client = get_test_s3_client().await;
+    let s3_client = Arc::new(get_test_s3_client().await);
     let challenge_manager = get_challenge_manager().await;
+    let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
         .layer(Extension(environment))
         .layer(Extension(s3_client))
         .layer(Extension(challenge_manager))
+        .layer(Extension(backup_storage))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {

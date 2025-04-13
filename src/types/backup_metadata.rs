@@ -6,7 +6,7 @@ use webauthn_rs::prelude::Passkey;
 /// Backup metadata is stored alongside every backup in the backup bucket. It's used to
 /// store information about entities and keys that are allowed to access the backup.
 /// It also stores encrypted version of the backup decryption key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupMetadata {
     pub primary_factor: PrimaryFactor,
@@ -18,8 +18,18 @@ pub struct BackupMetadata {
     // TODO/FIXME: More fields, e.g. keys
 }
 
+impl BackupMetadata {
+    /// Creates an exported version of the backup metadata that contains only the fields that are
+    /// exported to the client.
+    pub fn exported(&self) -> ExportedBackupMetadata {
+        ExportedBackupMetadata {
+            turnkey_account_id: self.turnkey_account_id.clone(),
+        }
+    }
+}
+
 /// The primary factor is the main factor of authentication that relies on a trusted type of credential.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PrimaryFactor {
     /// Used as a primary key for the whole backup
@@ -28,7 +38,7 @@ pub struct PrimaryFactor {
     pub kind: PrimaryFactorKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum PrimaryFactorKind {
     #[serde(rename_all = "camelCase")]
@@ -46,7 +56,7 @@ impl PrimaryFactor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OidcAccount {
     /// The ID of the OIDC account connection, generated randomly
@@ -55,9 +65,17 @@ pub struct OidcAccount {
     pub kind: OidcAccountKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum OidcAccountKind {
     #[serde(rename_all = "camelCase")]
     Google { sub: String, email: String },
+}
+
+/// The part of metadata of the backup that's exported to the client when performing the recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedBackupMetadata {
+    pub turnkey_account_id: Option<String>,
+    // TODO/FIXME: Add encryption keys
 }
