@@ -10,6 +10,7 @@ mod create_backup;
 mod create_challenge_passkey;
 mod docs;
 mod health;
+mod retrieve_challenge_passkey;
 
 pub fn handler(environment: Environment) -> ApiRouter {
     ApiRouter::new()
@@ -28,4 +29,8 @@ pub fn handler(environment: Environment) -> ApiRouter {
             )),
         )
         .api_route("/add-oidc-account", post(add_oidc_account::handler))
+        .api_route(
+            "/retrieve/challenge/passkey",
+            post(retrieve_challenge_passkey::handler),
+        )
 }
