@@ -44,7 +44,7 @@ async fn test_create_backup() {
     // Check that backup was successfully created on S3
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let backup_key = format!("backup/{}", credential["id"].as_str().unwrap());
+    let backup_key = format!("{}/backup", credential["id"].as_str().unwrap());
     let backup = s3_client
         .get_object()
         .bucket(bucket_name)
@@ -56,7 +56,7 @@ async fn test_create_backup() {
     assert_eq!(backup, b"TEST FILE".as_slice());
 
     // Check that metadata was successfully created on S3
-    let metadata_key = format!("metadata/{}", credential["id"].as_str().unwrap());
+    let metadata_key = format!("{}/metadata", credential["id"].as_str().unwrap());
     let metadata = s3_client
         .get_object()
         .bucket(bucket_name)

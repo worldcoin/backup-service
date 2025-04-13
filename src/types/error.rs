@@ -111,7 +111,7 @@ impl From<BackupManagerError> for ErrorResponse {
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
             | BackupManagerError::ByteStreamError(_) => {
-                tracing::error!(message = "S3 put object error", error = ?err);
+                tracing::error!(message = "Backup Manager Error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
         }

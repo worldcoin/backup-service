@@ -27,6 +27,7 @@ impl BackupStorage {
     /// * If the backup or metadata cannot be serialized to JSON, BackupManagerError::SerdeJsonError is returned.
     /// * If the backup or metadata cannot be uploaded to S3 (e.g. due to internal error or because
     ///   this primary factor ID is already used), BackupManagerError::PutObjectError is returned.
+    ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
         &self,
         backup: Vec<u8>,
@@ -109,11 +110,11 @@ pub struct FoundBackup {
 }
 
 fn get_backup_key(primary_factor_id: &str) -> String {
-    format!("backup/{}", primary_factor_id)
+    format!("{}/backup", primary_factor_id)
 }
 
 fn get_metadata_key(primary_factor_id: &str) -> String {
-    format!("metadata/{}", primary_factor_id)
+    format!("{}/metadata", primary_factor_id)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -143,7 +144,7 @@ mod tests {
     async fn test_create_and_get_backup() {
         let environment = Environment::Development;
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client);
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
 
         let test_primary_factor_id = Uuid::new_v4().to_string();
         let test_backup_data = vec![1, 2, 3, 4, 5];
@@ -203,7 +204,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, test_backup_data);
-        assert_eq!(found_backup.metadata, backup_metadata,);
+        assert_eq!(found_backup.metadata, backup_metadata);
 
         // Try to get a non-existing backup - should return None
         let found_backup = backup_storage
@@ -213,6 +214,26 @@ mod tests {
         assert!(found_backup.is_none());
 
         // Try to create a backup with the same ID - should return an error
+        let result = backup_storage
+            .create(test_backup_data.clone(), &backup_metadata)
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::PutObjectError(SdkError::ServiceError(err))) => {
+                assert_eq!(err.err().code(), Some("PreconditionFailed"));
+            }
+            _ => panic!("Expected PutObjectError"),
+        }
+
+        // Try to create a backup with the same ID, when only one of the files exists -
+        // should still return an error
+        s3_client
+            .delete_object()
+            .bucket(environment.s3_bucket_arn())
+            .key(get_metadata_key(&test_primary_factor_id))
+            .send()
+            .await
+            .unwrap();
         let result = backup_storage
             .create(test_backup_data.clone(), &backup_metadata)
             .await;
