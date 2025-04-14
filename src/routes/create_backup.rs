@@ -1,21 +1,13 @@
 use crate::axum_utils::extract_fields_from_multipart;
+use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor};
-use crate::types::{Environment, ErrorResponse};
-use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client as S3Client;
+use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
-pub enum SolvedChallenge {
-    #[serde(rename_all = "camelCase")]
-    Passkey { credential: serde_json::Value },
-}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -30,8 +22,8 @@ pub struct CreateBackupResponse {}
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(s3_client): Extension<S3Client>,
     Extension(challenge_manager): Extension<ChallengeManager>,
+    Extension(backup_storage): Extension<BackupStorage>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -106,20 +98,10 @@ pub async fn handler(
 
     // TODO/FIXME: More checks and metadata initialization
 
-    // TODO/FIXME: Replace this stub with a proper storage service
-    let key = format!("backup/{}", backup_metadata.primary_factor.id);
-    let body = ByteStream::from(backup.to_vec());
-    s3_client
-        .put_object()
-        .bucket(environment.s3_bucket_arn())
-        .key(key)
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| {
-            tracing::error!(message = "Failed to upload backup to S3", error = ?err);
-            ErrorResponse::internal_server_error()
-        })?;
+    // Step 5: Save the backup to S3
+    backup_storage
+        .create(backup.to_vec(), &backup_metadata)
+        .await?;
 
     Ok(Json(CreateBackupResponse {}))
 }

@@ -1,3 +1,4 @@
+use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use aide::OperationOutput;
 use axum::extract::multipart::MultipartError;
@@ -98,6 +99,20 @@ impl From<ChallengeManagerError> for ErrorResponse {
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
                 tracing::info!(message = "Challenge manager error", error = ?err);
                 ErrorResponse::bad_request("jwt_error")
+            }
+        }
+    }
+}
+
+impl From<BackupManagerError> for ErrorResponse {
+    fn from(err: BackupManagerError) -> Self {
+        match &err {
+            BackupManagerError::PutObjectError(_)
+            | BackupManagerError::SerdeJsonError(_)
+            | BackupManagerError::GetObjectError(_)
+            | BackupManagerError::ByteStreamError(_) => {
+                tracing::error!(message = "Backup Manager Error", error = ?err);
+                ErrorResponse::internal_server_error()
             }
         }
     }

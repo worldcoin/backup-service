@@ -8,6 +8,7 @@ use openidconnect::reqwest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
@@ -30,7 +31,7 @@ pub struct AddOidcAccountResponse {}
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(_s3_client): Extension<S3Client>,
+    Extension(_s3_client): Extension<Arc<S3Client>>,
     request: Json<AddOidcAccountRequest>,
 ) -> Result<Json<AddOidcAccountResponse>, ErrorResponse> {
     let reqwest_client = reqwest::Client::new();

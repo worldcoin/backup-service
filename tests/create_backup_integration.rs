@@ -44,16 +44,35 @@ async fn test_create_backup() {
     // Check that backup was successfully created on S3
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let object_key = format!("backup/{}", credential["id"].as_str().unwrap());
-    let object = s3_client
+    let backup_key = format!("{}/backup", credential["id"].as_str().unwrap());
+    let backup = s3_client
         .get_object()
         .bucket(bucket_name)
-        .key(&object_key)
+        .key(&backup_key)
         .send()
         .await
         .unwrap();
-    let object_data = object.body.collect().await.unwrap().to_vec();
-    assert_eq!(object_data, b"TEST FILE".as_slice());
+    let backup = backup.body.collect().await.unwrap().to_vec();
+    assert_eq!(backup, b"TEST FILE".as_slice());
+
+    // Check that metadata was successfully created on S3
+    let metadata_key = format!("{}/metadata", credential["id"].as_str().unwrap());
+    let metadata = s3_client
+        .get_object()
+        .bucket(bucket_name)
+        .key(&metadata_key)
+        .send()
+        .await
+        .unwrap();
+    let metadata = metadata.body.collect().await.unwrap().to_vec();
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+    assert_eq!(metadata["primaryFactor"]["kind"]["kind"], "PASSKEY");
+    assert_eq!(
+        metadata["primaryFactor"]["kind"]["webauthnCredential"]["cred"]["cred_id"],
+        credential["id"]
+    );
+    assert_eq!(metadata["turnkeyAccountID"], json!(null));
+    assert_eq!(metadata["oidcAccounts"], json!([]));
 }
 
 #[tokio::test]
