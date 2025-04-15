@@ -29,6 +29,10 @@ async fn test_create_backup() {
                 "credential": credential,
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(b"TEST FILE".as_slice()),
     )
@@ -71,7 +75,6 @@ async fn test_create_backup() {
         metadata["primaryFactor"]["kind"]["webauthnCredential"]["cred"]["cred_id"],
         credential["id"]
     );
-    assert_eq!(metadata["turnkeyAccountID"], json!(null));
     assert_eq!(metadata["oidcAccounts"], json!([]));
 }
 
@@ -95,6 +98,10 @@ async fn test_create_backup_with_incorrect_token() {
                 "credential": credential,
             },
             "challengeToken": "INCORRECT TOKEN",
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(b"TEST FILE".as_slice()),
     )
@@ -137,6 +144,10 @@ async fn test_create_backup_with_incorrectly_solved_challenge() {
                 "credential": credential,
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(b"TEST FILE".as_slice()),
     )
@@ -170,6 +181,10 @@ async fn test_create_backup_with_empty_file() {
                 "credential": credential,
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(b"".as_slice()),
     )
@@ -203,6 +218,10 @@ async fn test_create_backup_with_large_file() {
                 "credential": credential,
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(vec![0; 5 * 1024 * 1024 + 1]), // 5 MB file + 1 byte
     )

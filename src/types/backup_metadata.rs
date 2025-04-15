@@ -1,3 +1,4 @@
+use crate::types::encryption_key::BackupEncryptionKey;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use schemars::JsonSchema;
@@ -11,12 +12,10 @@ use webauthn_rs::prelude::Passkey;
 #[serde(rename_all = "camelCase")]
 pub struct BackupMetadata {
     pub primary_factor: PrimaryFactor,
-    /// The ID of the turnkey account that stores the decryption key. Only present if Turnkey account
-    /// is initialized. If backup only uses passkeys for decryption, this field is not present.
-    pub turnkey_account_id: Option<String>,
     /// OIDC accounts that are used to access the backup in addition to the primary factor.
     pub oidc_accounts: Vec<OidcAccount>,
-    // TODO/FIXME: More fields, e.g. keys
+    /// Stores versions of backup encryption key that were encrypted with different methods.
+    pub keys: Vec<BackupEncryptionKey>,
 }
 
 impl BackupMetadata {
@@ -24,7 +23,7 @@ impl BackupMetadata {
     /// exported to the client.
     pub fn exported(&self) -> ExportedBackupMetadata {
         ExportedBackupMetadata {
-            turnkey_account_id: self.turnkey_account_id.clone(),
+            keys: self.keys.clone(),
         }
     }
 }
@@ -77,6 +76,7 @@ pub enum OidcAccountKind {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedBackupMetadata {
-    pub turnkey_account_id: Option<String>,
-    // TODO/FIXME: Add encryption keys
+    /// Allows user to decrypt the backup if they are able to decrypt one of keys (e.g. using PRF,
+    /// Turnkey, etc.)
+    keys: Vec<BackupEncryptionKey>,
 }

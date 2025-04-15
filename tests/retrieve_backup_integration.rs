@@ -59,7 +59,7 @@ async fn test_retrieve_backup() {
 
     // Verify the metadata contains expected fields
     let metadata = &response["metadata"];
-    assert_eq!(metadata["turnkeyAccountId"], json!(null));
+    assert_eq!(metadata["keys"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

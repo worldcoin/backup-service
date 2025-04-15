@@ -33,6 +33,10 @@ async fn test_add_oidc_account_integration() {
                 "credential": credential,
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(b"TEST FILE".as_slice()),
     )
