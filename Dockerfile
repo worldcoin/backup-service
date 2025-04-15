@@ -38,5 +38,6 @@ RUN apt-get update && \
 COPY --from=builder /app/target/release/backup-service /app/backup-service
 
 # Set the entrypoint
-USER non-root
+USER 100
+EXPOSE 8000
 ENTRYPOINT ["/app/backup-service"]
