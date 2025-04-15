@@ -1,0 +1,6 @@
+.env.example
+.github
+target/
+tests/
+deny.toml
+docker-compose.yml # used for tests
