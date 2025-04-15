@@ -2,6 +2,7 @@ use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor};
+use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
@@ -14,6 +15,7 @@ use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
 pub struct CreateBackupRequest {
     solved_challenge: SolvedChallenge,
     challenge_token: String,
+    initial_encryption_key: BackupEncryptionKey,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -92,8 +94,8 @@ pub async fn handler(
     // Step 4: Initialize backup metadata
     let backup_metadata = BackupMetadata {
         primary_factor: verified_primary_factor,
-        turnkey_account_id: None,
         oidc_accounts: vec![],
+        keys: vec![request.initial_encryption_key.clone()],
     };
 
     // TODO/FIXME: More checks and metadata initialization

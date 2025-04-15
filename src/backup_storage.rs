@@ -174,6 +174,7 @@ pub enum BackupManagerError {
 mod tests {
     use super::*;
     use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor, PrimaryFactorKind};
+    use crate::types::encryption_key::BackupEncryptionKey;
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
@@ -228,7 +229,9 @@ mod tests {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                 },
             },
-            turnkey_account_id: None,
+            keys: vec![BackupEncryptionKey::Prf {
+                encrypted_key: "ENCRYPTED_KEY".to_string(),
+            }],
             oidc_accounts: vec![],
         };
 

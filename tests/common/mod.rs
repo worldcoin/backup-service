@@ -221,6 +221,10 @@ pub async fn create_test_backup(
                 "credential": credential.clone(),
             },
             "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
         }),
         Bytes::from(backup_data.to_vec()),
     )

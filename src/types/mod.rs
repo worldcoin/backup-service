@@ -1,4 +1,5 @@
 pub mod backup_metadata;
+pub mod encryption_key;
 mod environment;
 mod error;
 mod solved_challenge;
