@@ -69,14 +69,33 @@ impl BackupStorage {
     ) -> Result<Option<FoundBackup>, BackupManagerError> {
         // Get encrypted backup from S3
         let backup = self
-            .s3_client
-            .get_object()
-            .bucket(self.environment.s3_bucket_arn())
-            .key(get_backup_key(primary_factor_id))
-            .send()
-            .await;
+            .get_backup_by_primary_factor_id(primary_factor_id)
+            .await?;
 
         // Get metadata from S3
+        let metadata = self
+            .get_metadata_by_primary_factor_id(primary_factor_id)
+            .await?;
+
+        match (backup, metadata) {
+            // If both the backup and metadata exist, return them
+            (Some(backup), Some(metadata)) => Ok(Some(FoundBackup { backup, metadata })),
+            // If either the backup or metadata does not exist, return None
+            _ => Ok(None),
+        }
+    }
+
+    /// Retrieves metadata from S3 by primary factor ID, which is specified in metadata during
+    /// creation. If the metadata does not exist, None is returned.
+    ///
+    /// # Errors
+    /// * If the metadata cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
+    /// * If the metadata cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
+    /// * If the metadata cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    pub async fn get_metadata_by_primary_factor_id(
+        &self,
+        primary_factor_id: &str,
+    ) -> Result<Option<BackupMetadata>, BackupManagerError> {
         let metadata = self
             .s3_client
             .get_object()
@@ -85,21 +104,43 @@ impl BackupStorage {
             .send()
             .await;
 
-        // If both files exist, return them. If one of them doesn't exist, return None. Otherwise,
-        // return an error.
-        match (backup, metadata) {
-            (Ok(backup), Ok(metadata)) => {
-                let backup = backup.body.collect().await?.into_bytes().to_vec();
+        match metadata {
+            Ok(metadata) => {
                 let metadata = metadata.body.collect().await?.into_bytes().to_vec();
                 let metadata: BackupMetadata = serde_json::from_slice(&metadata)?;
-                Ok(Some(FoundBackup { backup, metadata }))
+                Ok(Some(metadata))
             }
-            // Handle the case where one of the files does not exist as Ok(None)
-            (Err(SdkError::ServiceError(err)), _) if err.err().is_no_such_key() => Ok(None),
-            (_, Err(SdkError::ServiceError(err))) if err.err().is_no_such_key() => Ok(None),
-            // Handle other errors and propagate them
-            (Err(err), _) => Err(BackupManagerError::GetObjectError(err)),
-            (_, Err(err)) => Err(BackupManagerError::GetObjectError(err)),
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
+            Err(err) => Err(BackupManagerError::GetObjectError(err)),
+        }
+    }
+
+    /// Retrieves a backup from S3 by primary factor ID, which is specified in metadata during
+    /// creation. If the backup does not exist, None is returned.
+    ///
+    /// # Errors
+    /// * If the backup cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
+    /// * If the backup cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
+    /// * If the backup cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    pub async fn get_backup_by_primary_factor_id(
+        &self,
+        primary_factor_id: &str,
+    ) -> Result<Option<Vec<u8>>, BackupManagerError> {
+        let backup = self
+            .s3_client
+            .get_object()
+            .bucket(self.environment.s3_bucket_arn())
+            .key(get_backup_key(primary_factor_id))
+            .send()
+            .await;
+
+        match backup {
+            Ok(backup) => {
+                let backup = backup.body.collect().await?.into_bytes().to_vec();
+                Ok(Some(backup))
+            }
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
+            Err(err) => Err(BackupManagerError::GetObjectError(err)),
         }
     }
 }

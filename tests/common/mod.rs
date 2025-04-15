@@ -169,3 +169,62 @@ pub async fn make_credential_from_passkey_challenge(
         .unwrap();
     serde_json::to_value(credential).unwrap()
 }
+
+/// Get a passkey retrieval challenge response from the server.
+pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
+    let challenge_response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let challenge_response: Bytes = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    serde_json::from_slice(&challenge_response).unwrap()
+}
+
+/// Authenticate using a passkey client with a retrieval challenge. Returns the credential as a JSON value.
+pub async fn authenticate_with_passkey_challenge(
+    passkey_client: &mut MockPasskeyClient,
+    challenge_response: &serde_json::Value,
+) -> serde_json::Value {
+    let credential_request_options: passkey::types::webauthn::CredentialRequestOptions =
+        serde_json::from_value(challenge_response["challenge"].clone()).unwrap();
+    let credential = passkey_client
+        .authenticate(
+            &Url::parse("https://keys.world.org").unwrap(),
+            credential_request_options,
+            passkey::client::DefaultClientData,
+        )
+        .await
+        .unwrap();
+    serde_json::to_value(credential).unwrap()
+}
+
+/// Create a test backup with a passkey credential. Returns both the credential JSON and the create response.
+pub async fn create_test_backup(
+    passkey_client: &mut MockPasskeyClient,
+    backup_data: &[u8],
+) -> (serde_json::Value, Response) {
+    // Get a challenge from the server
+    let challenge_response = get_passkey_challenge().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(passkey_client, &challenge_response).await;
+
+    // Send the credential to the server to create a backup
+    let create_response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "solvedChallenge": {
+                "kind": "PASSKEY",
+                "credential": credential.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+        }),
+        Bytes::from(backup_data.to_vec()),
+    )
+    .await;
+
+    (credential, create_response)
+}

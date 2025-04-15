@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::Passkey;
 
@@ -73,7 +74,7 @@ pub enum OidcAccountKind {
 }
 
 /// The part of metadata of the backup that's exported to the client when performing the recovery.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedBackupMetadata {
     pub turnkey_account_id: Option<String>,
