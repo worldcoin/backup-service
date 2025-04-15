@@ -45,7 +45,7 @@ pub async fn handler(
         })?;
 
     // Step 2: Verify the solved challenge and get the backup from S3
-    let found_backup = match &request.solved_challenge {
+    let (backup, metadata) = match &request.solved_challenge {
         SolvedChallenge::Passkey { credential } => {
             // Step 2A.1: Deserialize the credential
             let user_provided_credential: PublicKeyCredential = serde_json::from_value(
@@ -64,17 +64,19 @@ pub async fn handler(
 
             // Step 2A.3: Fetch the backup from the storage to get the reference
             // credential object
-            let found_backup = backup_storage
-                .get_by_primary_factor_id(&URL_SAFE_NO_PAD.encode(not_verified_credential_id))
+            let backup_metadata = backup_storage
+                .get_metadata_by_primary_factor_id(
+                    &URL_SAFE_NO_PAD.encode(not_verified_credential_id),
+                )
                 .await?;
-            let found_backup = match found_backup {
-                Some(found_backup) => found_backup,
+            let backup_metadata = match backup_metadata {
+                Some(backup_metadata) => backup_metadata,
                 None => {
                     tracing::info!(message = "No backup metadata found for the given credential");
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 }
             };
-            let reference_credential = match &found_backup.metadata.primary_factor.kind {
+            let reference_credential = match &backup_metadata.primary_factor.kind {
                 PrimaryFactorKind::Passkey {
                     webauthn_credential,
                 } => webauthn_credential,
@@ -97,14 +99,26 @@ pub async fn handler(
             // TODO/FIXME: Track used challenges to prevent replay attacks
             // TODO/FIXME: Track authentication counter
 
-            // Step 2A.5: Now that the credential is verified, we can return the backup
-            found_backup
+            // Step 2A.5: Now that the credential is verified, we can fetch the backup
+            // from the storage
+            let backup = backup_storage
+                .get_backup_by_primary_factor_id(
+                    &URL_SAFE_NO_PAD.encode(not_verified_credential_id),
+                )
+                .await?;
+            match backup {
+                Some(backup) => (backup, backup_metadata),
+                None => {
+                    tracing::info!(message = "No backup found for the given credential");
+                    return Err(ErrorResponse::bad_request("webauthn_error"));
+                }
+            }
         }
     };
 
     // Step 3: Return the backup and metadata
     Ok(Json(RetrieveBackupFromChallengeResponse {
-        backup: STANDARD.encode(found_backup.backup),
-        metadata: found_backup.metadata.exported(),
+        backup: STANDARD.encode(backup),
+        metadata: metadata.exported(),
     }))
 }
