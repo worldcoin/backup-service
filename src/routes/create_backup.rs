@@ -1,11 +1,14 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
@@ -20,12 +23,15 @@ pub struct CreateBackupRequest {
 
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateBackupResponse {}
+pub struct CreateBackupResponse {
+    pub backup_id: String,
+}
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
+    Extension(factor_lookup): Extension<FactorLookup>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -71,7 +77,7 @@ pub async fn handler(
         })?;
 
     // Step 3: Verify the solved challenge
-    let verified_primary_factor = match &request.solved_challenge {
+    let (verified_primary_factor, factor_to_lookup) = match &request.solved_challenge {
         SolvedChallenge::Passkey { credential } => {
             // Step 2A: Verify the passkey credential using the WebAuthn implementation
             let user_provided_credential: RegisterPublicKeyCredential = serde_json::from_value(
@@ -87,12 +93,17 @@ pub async fn handler(
 
             // TODO/FIXME: Track used challenges to prevent replay attacks
 
-            PrimaryFactor::new_passkey(verified_passkey)
+            let credential_id = verified_passkey.cred_id().clone();
+            (
+                PrimaryFactor::new_passkey(verified_passkey),
+                FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id)),
+            )
         }
     };
 
     // Step 4: Initialize backup metadata
     let backup_metadata = BackupMetadata {
+        id: uuid::Uuid::new_v4().to_string(),
         primary_factor: verified_primary_factor,
         oidc_accounts: vec![],
         keys: vec![request.initial_encryption_key.clone()],
@@ -100,10 +111,20 @@ pub async fn handler(
 
     // TODO/FIXME: More checks and metadata initialization
 
-    // Step 5: Save the backup to S3
+    // Step 5: Link credential ID to backup ID for lookup during recovery. This should happen
+    // before the backup storage is updated, because it might fail with a duplicate key error.
+    factor_lookup
+        .insert(factor_to_lookup, backup_metadata.id.clone())
+        .await?;
+
+    // Step 6: Save the backup to S3
     backup_storage
         .create(backup.to_vec(), &backup_metadata)
         .await?;
 
-    Ok(Json(CreateBackupResponse {}))
+    // TODO/FIXME: remove factor from factor lookup if backup storage create fails
+
+    Ok(Json(CreateBackupResponse {
+        backup_id: backup_metadata.id,
+    }))
 }
