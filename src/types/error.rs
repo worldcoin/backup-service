@@ -1,6 +1,8 @@
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
+use crate::factor_lookup::FactorLookupError;
 use aide::OperationOutput;
+use aws_sdk_dynamodb::error::SdkError;
 use axum::extract::multipart::MultipartError;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -122,5 +124,28 @@ impl<T: Error> From<DiscoveryError<T>> for ErrorResponse {
     fn from(err: DiscoveryError<T>) -> Self {
         tracing::error!(message = "OIDC discovery error", error = ?err);
         ErrorResponse::internal_server_error()
+    }
+}
+
+impl From<FactorLookupError> for ErrorResponse {
+    fn from(err: FactorLookupError) -> Self {
+        match &err {
+            FactorLookupError::DynamoDbPutError(inner) => match &inner {
+                SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception() =>
+                {
+                    tracing::info!(message = "Factor already exists", error = ?err);
+                    ErrorResponse::bad_request("factor_already_exists")
+                }
+                _ => {
+                    tracing::error!(message = "DynamoDB put error", error = ?err);
+                    ErrorResponse::internal_server_error()
+                }
+            },
+            FactorLookupError::DynamoDbGetError(_) | FactorLookupError::ParseBackupIdError => {
+                tracing::info!(message = "Factor lookup error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+        }
     }
 }

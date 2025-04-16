@@ -1,5 +1,6 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::types::backup_metadata::{ExportedBackupMetadata, PrimaryFactorKind};
 use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::{Extension, Json};
@@ -31,6 +32,7 @@ pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
+    Extension(factor_lookup): Extension<FactorLookup>,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Decrypt passkey state from the token
@@ -62,17 +64,27 @@ pub async fn handler(
                 .webauthn_config()
                 .identify_discoverable_authentication(&user_provided_credential)?;
 
-            // Step 2A.3: Fetch the backup from the storage to get the reference
+            // Step 2A.3: Lookup the credential ID in the factor lookup table and get potential
+            // backup ID
+            let not_verified_backup_id = factor_lookup
+                .lookup(FactorToLookup::from_passkey(
+                    URL_SAFE_NO_PAD.encode(not_verified_credential_id),
+                ))
+                .await?;
+            let Some(not_verified_backup_id) = not_verified_backup_id else {
+                tracing::info!(message = "No backup ID found for the given credential");
+                return Err(ErrorResponse::bad_request("webauthn_error"));
+            };
+
+            // Step 2A.4: Fetch the backup from the storage to get the reference
             // credential object
             let backup_metadata = backup_storage
-                .get_metadata_by_primary_factor_id(
-                    &URL_SAFE_NO_PAD.encode(not_verified_credential_id),
-                )
+                .get_metadata_by_backup_id(&not_verified_backup_id)
                 .await?;
             let backup_metadata = match backup_metadata {
                 Some(backup_metadata) => backup_metadata,
                 None => {
-                    tracing::info!(message = "No backup metadata found for the given credential");
+                    tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 }
             };
@@ -87,7 +99,7 @@ pub async fn handler(
                 // }
             };
 
-            // Step 2A.4: Verify the credential using the reference credential object
+            // Step 2A.5: Verify the credential using the reference credential object
             let _authentication_result = environment
                 .webauthn_config()
                 .finish_discoverable_authentication(
@@ -95,21 +107,19 @@ pub async fn handler(
                     passkey_state,
                     &[reference_credential.into()],
                 )?;
+            // At this point, the credential is verified and we can use it to fetch the backup
+            let backup_id = not_verified_backup_id;
 
             // TODO/FIXME: Track used challenges to prevent replay attacks
             // TODO/FIXME: Track authentication counter
 
-            // Step 2A.5: Now that the credential is verified, we can fetch the backup
+            // Step 2A.6: Now that the credential is verified, we can fetch the backup
             // from the storage
-            let backup = backup_storage
-                .get_backup_by_primary_factor_id(
-                    &URL_SAFE_NO_PAD.encode(not_verified_credential_id),
-                )
-                .await?;
+            let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;
             match backup {
                 Some(backup) => (backup, backup_metadata),
                 None => {
-                    tracing::info!(message = "No backup found for the given credential");
+                    tracing::info!(message = "No backup found for the given backup ID");
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 }
             }

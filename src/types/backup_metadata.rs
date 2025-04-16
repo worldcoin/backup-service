@@ -11,6 +11,9 @@ use webauthn_rs::prelude::Passkey;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupMetadata {
+    /// Backup ID, generated randomly.
+    pub id: String,
+    /// The primary factor of authentication that is used to access the backup.
     pub primary_factor: PrimaryFactor,
     /// OIDC accounts that are used to access the backup in addition to the primary factor.
     pub oidc_accounts: Vec<OidcAccount>,

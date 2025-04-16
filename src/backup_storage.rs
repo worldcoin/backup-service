@@ -37,7 +37,7 @@ impl BackupStorage {
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket_arn())
-            .key(get_backup_key(&backup_metadata.primary_factor.id))
+            .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
             .if_none_match("*")
             .send()
@@ -47,7 +47,7 @@ impl BackupStorage {
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket_arn())
-            .key(get_metadata_key(&backup_metadata.primary_factor.id))
+            .key(get_metadata_key(&backup_metadata.id))
             .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
             .if_none_match("*")
             .send()
@@ -56,26 +56,24 @@ impl BackupStorage {
         Ok(())
     }
 
-    /// Retrieves a backup and metadata from S3 by primary factor ID, which is specified in metadata
-    /// during creation. If the backup or metadata does not exist, None is returned.
+    /// Retrieves a backup and metadata from S3 by backup ID, which is linked to credential using
+    /// separate FactorLookup service.
+    ///
+    /// If the backup or metadata does not exist, None is returned.
     ///
     /// # Errors
     /// * If the metadata cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
     /// * If the backup or metadata cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
     /// * If the backup or metadata cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
-    pub async fn get_by_primary_factor_id(
+    pub async fn get_by_backup_id(
         &self,
-        primary_factor_id: &str,
+        backup_id: &str,
     ) -> Result<Option<FoundBackup>, BackupManagerError> {
         // Get encrypted backup from S3
-        let backup = self
-            .get_backup_by_primary_factor_id(primary_factor_id)
-            .await?;
+        let backup = self.get_backup_by_backup_id(backup_id).await?;
 
         // Get metadata from S3
-        let metadata = self
-            .get_metadata_by_primary_factor_id(primary_factor_id)
-            .await?;
+        let metadata = self.get_metadata_by_backup_id(backup_id).await?;
 
         match (backup, metadata) {
             // If both the backup and metadata exist, return them
@@ -85,22 +83,24 @@ impl BackupStorage {
         }
     }
 
-    /// Retrieves metadata from S3 by primary factor ID, which is specified in metadata during
-    /// creation. If the metadata does not exist, None is returned.
+    /// Retrieves metadata from S3 by backup ID, which is linked to credential using
+    /// separate FactorLookup service.
+    ///
+    /// If the metadata does not exist, None is returned.
     ///
     /// # Errors
     /// * If the metadata cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
     /// * If the metadata cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
     /// * If the metadata cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
-    pub async fn get_metadata_by_primary_factor_id(
+    pub async fn get_metadata_by_backup_id(
         &self,
-        primary_factor_id: &str,
+        backup_id: &str,
     ) -> Result<Option<BackupMetadata>, BackupManagerError> {
         let metadata = self
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket_arn())
-            .key(get_metadata_key(primary_factor_id))
+            .key(get_metadata_key(backup_id))
             .send()
             .await;
 
@@ -115,22 +115,24 @@ impl BackupStorage {
         }
     }
 
-    /// Retrieves a backup from S3 by primary factor ID, which is specified in metadata during
-    /// creation. If the backup does not exist, None is returned.
+    /// Retrieves a backup from S3 by primary factor ID, which is linked to credential using
+    /// separate FactorLookup service.
+    ///
+    /// If the backup does not exist, None is returned.
     ///
     /// # Errors
     /// * If the backup cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
     /// * If the backup cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
     /// * If the backup cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
-    pub async fn get_backup_by_primary_factor_id(
+    pub async fn get_backup_by_backup_id(
         &self,
-        primary_factor_id: &str,
+        backup_id: &str,
     ) -> Result<Option<Vec<u8>>, BackupManagerError> {
         let backup = self
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket_arn())
-            .key(get_backup_key(primary_factor_id))
+            .key(get_backup_key(backup_id))
             .send()
             .await;
 
@@ -150,12 +152,12 @@ pub struct FoundBackup {
     pub metadata: BackupMetadata,
 }
 
-fn get_backup_key(primary_factor_id: &str) -> String {
-    format!("{}/backup", primary_factor_id)
+fn get_backup_key(backup_id: &str) -> String {
+    format!("{}/backup", backup_id)
 }
 
-fn get_metadata_key(primary_factor_id: &str) -> String {
-    format!("{}/metadata", primary_factor_id)
+fn get_metadata_key(backup_id: &str) -> String {
+    format!("{}/metadata", backup_id)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -189,6 +191,7 @@ mod tests {
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
 
+        let test_backup_id = Uuid::new_v4().to_string();
         let test_primary_factor_id = Uuid::new_v4().to_string();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let test_webauthn_credential = json!({
@@ -224,6 +227,7 @@ mod tests {
           }
         });
         let backup_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
             primary_factor: PrimaryFactor {
                 id: test_primary_factor_id.clone(),
                 kind: PrimaryFactorKind::Passkey {
@@ -244,7 +248,7 @@ mod tests {
 
         // Get the backup
         let found_backup = backup_storage
-            .get_by_primary_factor_id(&test_primary_factor_id)
+            .get_by_backup_id(&test_backup_id)
             .await
             .unwrap()
             .expect("Backup not found");
@@ -253,7 +257,7 @@ mod tests {
 
         // Try to get a non-existing backup - should return None
         let found_backup = backup_storage
-            .get_by_primary_factor_id("non_existing_id")
+            .get_by_backup_id("non_existing_id")
             .await
             .unwrap();
         assert!(found_backup.is_none());
