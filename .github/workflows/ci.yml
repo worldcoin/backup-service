@@ -106,7 +106,7 @@ jobs:
           docker logs backup-service-ci-container
 
       - name: Health check Docker container
-        run: curl -f http://0.0.0.0:8000/
+        run: curl -f http://0.0.0.0:8000/health
 
       - name: Clean up
         run: |
