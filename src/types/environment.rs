@@ -144,4 +144,10 @@ impl Environment {
                 .expect("Invalid issuer URL"),
         }
     }
+
+    pub fn factor_lookup_dynamodb_table_name(&self) -> &'static str {
+        match self {
+            Self::Production | Self::Staging | Self::Development => "backup-service-factor-lookup",
+        }
+    }
 }

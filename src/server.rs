@@ -1,5 +1,6 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeManager;
+use crate::factor_lookup::FactorLookup;
 use crate::routes;
 use crate::types::Environment;
 use aide::openapi::{Info, OpenApi};
@@ -13,6 +14,7 @@ pub async fn start(
     s3_client: Arc<S3Client>,
     challenge_manager: ChallengeManager,
     backup_storage: BackupStorage,
+    factor_lookup: FactorLookup,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -29,6 +31,7 @@ pub async fn start(
         .layer(Extension(openapi))
         .layer(Extension(challenge_manager))
         .layer(Extension(backup_storage))
+        .layer(Extension(factor_lookup))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::timeout::TimeoutLayer::new(
