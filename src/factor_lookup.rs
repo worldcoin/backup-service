@@ -119,10 +119,12 @@ impl FactorToLookup {
 
     /// Returns the primary key for the factor that we use for DynamoDB.
     pub fn primary_key(&self) -> String {
+        // we use | as a separator as this character is not allowed in the issuer URL or other
+        // identifiers
         match self {
-            FactorToLookup::Passkey { credential_id } => credential_id.clone(),
-            FactorToLookup::OidcAccount { iss, sub } => format!("{}:{}", iss, sub),
-            FactorToLookup::EcKeypair { public_key } => public_key.clone(),
+            FactorToLookup::Passkey { credential_id } => format!("PK|{}", credential_id),
+            FactorToLookup::OidcAccount { iss, sub } => format!("OIDC|{}|{}", iss, sub),
+            FactorToLookup::EcKeypair { public_key } => format!("EC_KEYPAIR|{}", public_key),
         }
     }
 }
