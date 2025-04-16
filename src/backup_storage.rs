@@ -184,6 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_backup() {
+        dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::Development;
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
