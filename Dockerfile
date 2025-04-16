@@ -2,6 +2,13 @@ FROM rust:1.85.1-slim as builder
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # Copy manifests
 COPY Cargo.toml Cargo.toml
 
@@ -31,5 +38,6 @@ RUN apt-get update && \
 COPY --from=builder /app/target/release/backup-service /app/backup-service
 
 # Set the entrypoint
-USER non-root
+USER 100
+EXPOSE 8000
 ENTRYPOINT ["/app/backup-service"]
