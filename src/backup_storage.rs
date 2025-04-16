@@ -26,7 +26,7 @@ impl BackupStorage {
     /// # Errors
     /// * If the backup or metadata cannot be serialized to JSON, BackupManagerError::SerdeJsonError is returned.
     /// * If the backup or metadata cannot be uploaded to S3 (e.g. due to internal error or because
-    ///   this primary factor ID is already used), BackupManagerError::PutObjectError is returned.
+    ///   this backup ID is already used), BackupManagerError::PutObjectError is returned.
     ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
         &self,
@@ -115,7 +115,7 @@ impl BackupStorage {
         }
     }
 
-    /// Retrieves a backup from S3 by primary factor ID, which is linked to credential using
+    /// Retrieves a backup from S3 by backup ID, which is linked to credential using
     /// separate FactorLookup service.
     ///
     /// If the backup does not exist, None is returned.
@@ -279,7 +279,7 @@ mod tests {
         s3_client
             .delete_object()
             .bucket(environment.s3_bucket_arn())
-            .key(get_metadata_key(&test_primary_factor_id))
+            .key(get_metadata_key(&test_backup_id))
             .send()
             .await
             .unwrap();
