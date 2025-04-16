@@ -69,6 +69,51 @@ jobs:
       - name: Clean up
         run: docker compose down
 
+  docker:
+    name: Test Docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          push: false
+          load: true
+          tags: backup-service-ci:latest
+          secrets: |
+            GITHUB_TOKEN=${{ secrets.GIT_HUB_TOKEN }}
+          cache-from: type=gha
+          cache-to: "type=gha,mode=max"
+
+      - name: Docker Compose services
+        run: |
+          docker compose up -d
+
+      - name: Run Docker container
+        run: |
+          docker run -d --network host --env-file .env.example --name backup-service-ci-container backup-service-ci:latest
+
+          # Wait for the application to start
+          sleep 10
+
+          # Output logs to GitHub action
+          docker logs backup-service-ci-container
+
+      - name: Health check Docker container
+        run: curl -f http://0.0.0.0:8000/
+
+      - name: Clean up
+        run: |
+          docker stop backup-service-ci-container
+          docker rm backup-service-ci-container
+          docker compose down
+
   deny:
     name: Cargo deny
     runs-on: ubuntu-latest
