@@ -5,7 +5,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=s3,kms
+      - SERVICES=s3,kms,dynamodb
       - DISABLE_EVENTS=1
     volumes:
       - /var/lib/localstack

@@ -20,6 +20,7 @@ schemars = "0.8.21"
 aws-config = "1.6.0"
 aws-sdk-kms = "1.63.0"
 aws-sdk-s3 = "1.79.0"
+aws-sdk-dynamodb = "1.71.2"
 
 anyhow = "1.0.97"
 base64 = "0.22.1"

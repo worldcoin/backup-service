@@ -44,8 +44,13 @@ pub async fn get_test_router() -> axum::Router {
 
     let environment = Environment::Development;
     let s3_client = Arc::new(get_test_s3_client().await);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
     let challenge_manager = get_challenge_manager().await;
     let backup_storage = BackupStorage::new(environment, s3_client.clone());
+    let factor_lookup =
+        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client);
 
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
@@ -53,6 +58,7 @@ pub async fn get_test_router() -> axum::Router {
         .layer(Extension(s3_client))
         .layer(Extension(challenge_manager))
         .layer(Extension(backup_storage))
+        .layer(Extension(factor_lookup))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {
