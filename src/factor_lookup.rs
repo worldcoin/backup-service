@@ -45,7 +45,14 @@ impl FactorLookup {
                 DocumentAttribute::BackupId.to_string(),
                 aws_sdk_dynamodb::types::AttributeValue::S(backup_id),
             )
-            .condition_expression("attribute_not_exists(PK)")
+            .item(
+                DocumentAttribute::CreatedAt.to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::N(
+                    chrono::Utc::now().timestamp_millis().to_string(),
+                ),
+            )
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", DocumentAttribute::Pk.to_string())
             .send()
             .await?;
 
@@ -136,6 +143,8 @@ pub enum DocumentAttribute {
     Pk,
     // Backup ID that factor is associated with
     BackupId,
+    // Creation timestamp for debugging
+    CreatedAt,
 }
 
 #[cfg(test)]
