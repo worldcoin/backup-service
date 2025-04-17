@@ -27,7 +27,7 @@ async fn test_create_challenge() {
     );
     assert_eq!(
         response["challenge"]["publicKey"]["rp"]["id"].as_str(),
-        Some("keys.world.org")
+        Some("keys.world.app")
     );
     assert_eq!(
         response["challenge"]["publicKey"]["user"]["name"].as_str(),
