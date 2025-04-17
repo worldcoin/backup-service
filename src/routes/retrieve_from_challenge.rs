@@ -1,14 +1,14 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
-use crate::types::backup_metadata::{ExportedBackupMetadata, PrimaryFactorKind};
+use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
 use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use webauthn_rs::prelude::{DiscoverableAuthentication, PublicKeyCredential};
+use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -77,7 +77,7 @@ pub async fn handler(
             };
 
             // Step 2A.4: Fetch the backup from the storage to get the reference
-            // credential object
+            // credential objects from all passkey factors associated with the backup
             let backup_metadata = backup_storage
                 .get_metadata_by_backup_id(&not_verified_backup_id)
                 .await?;
@@ -88,16 +88,25 @@ pub async fn handler(
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 }
             };
-            let reference_credential = match &backup_metadata.primary_factor.kind {
-                PrimaryFactorKind::Passkey {
-                    webauthn_credential,
-                } => webauthn_credential,
-                // Uncomment when other primary factor types are implemented
-                // _ => {
-                //     tracing::info!(message = "Invalid primary factor type");
-                //     return Err(ErrorResponse::bad_request("webauthn_error"));
-                // }
-            };
+            let reference_credentials: Vec<DiscoverableKey> = backup_metadata
+                .factors
+                .iter()
+                .filter_map(|factor| {
+                    #[allow(irrefutable_let_patterns)]
+                    if let FactorKind::Passkey {
+                        webauthn_credential,
+                    } = &factor.kind
+                    {
+                        Some(webauthn_credential.into())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if reference_credentials.is_empty() {
+                tracing::info!(message = "No reference credentials found");
+                return Err(ErrorResponse::bad_request("webauthn_error"));
+            }
 
             // Step 2A.5: Verify the credential using the reference credential object
             let _authentication_result = environment
@@ -105,7 +114,7 @@ pub async fn handler(
                 .finish_discoverable_authentication(
                     &user_provided_credential,
                     passkey_state,
-                    &[reference_credential.into()],
+                    &reference_credentials,
                 )?;
             // At this point, the credential is verified and we can use it to fetch the backup
             let backup_id = not_verified_backup_id;

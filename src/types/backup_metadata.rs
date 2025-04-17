@@ -1,8 +1,7 @@
 use crate::types::encryption_key::BackupEncryptionKey;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 /// Backup metadata is stored alongside every backup in the backup bucket. It's used to
@@ -13,8 +12,8 @@ use webauthn_rs::prelude::Passkey;
 pub struct BackupMetadata {
     /// Backup ID, generated randomly.
     pub id: String,
-    /// The primary factor of authentication that is used to access the backup.
-    pub primary_factor: PrimaryFactor,
+    /// Factors that are used to access the backup and modify it (including adding other factors).
+    pub factors: Vec<Factor>,
     /// OIDC accounts that are used to access the backup in addition to the primary factor.
     pub oidc_accounts: Vec<OidcAccount>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
@@ -31,28 +30,29 @@ impl BackupMetadata {
     }
 }
 
-/// The primary factor is the main factor of authentication that relies on a trusted type of credential.
+/// A factor is a unique identifier for a specific authentication method. It can be a passkey,
+/// OIDC account or a keypair.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PrimaryFactor {
-    /// Used as a primary key for the whole backup
+pub struct Factor {
+    /// Used as a unique identifier for the factor
     pub id: String,
-    /// The kind of primary factor and the associated metadata
-    pub kind: PrimaryFactorKind,
+    /// The kind of factor and the associated metadata
+    pub kind: FactorKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
-pub enum PrimaryFactorKind {
+pub enum FactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey { webauthn_credential: Passkey },
 }
 
-impl PrimaryFactor {
+impl Factor {
     pub fn new_passkey(webauthn_credential: Passkey) -> Self {
         Self {
-            id: URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
-            kind: PrimaryFactorKind::Passkey {
+            id: Uuid::new_v4().to_string(),
+            kind: FactorKind::Passkey {
                 webauthn_credential,
             },
         }
