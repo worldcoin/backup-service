@@ -68,9 +68,9 @@ async fn test_create_backup() {
         .unwrap();
     let metadata = metadata.body.collect().await.unwrap().to_vec();
     let metadata: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-    assert_eq!(metadata["primaryFactor"]["kind"]["kind"], "PASSKEY");
+    assert_eq!(metadata["factors"][0]["kind"]["kind"], "PASSKEY");
     assert_eq!(
-        metadata["primaryFactor"]["kind"]["webauthnCredential"]["cred"]["cred_id"],
+        metadata["factors"][0]["kind"]["webauthnCredential"]["cred"]["cred_id"],
         credential["id"]
     );
     assert_eq!(metadata["oidcAccounts"], json!([]));

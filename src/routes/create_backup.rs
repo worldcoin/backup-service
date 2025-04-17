@@ -2,7 +2,7 @@ use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
-use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor};
+use crate::types::backup_metadata::{BackupMetadata, Factor};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Environment, ErrorResponse, SolvedChallenge};
 use axum::extract::Multipart;
@@ -77,7 +77,7 @@ pub async fn handler(
         })?;
 
     // Step 3: Verify the solved challenge
-    let (verified_primary_factor, factor_to_lookup) = match &request.solved_challenge {
+    let (backup_factor, factor_to_lookup) = match &request.solved_challenge {
         SolvedChallenge::Passkey { credential } => {
             // Step 2A: Verify the passkey credential using the WebAuthn implementation
             let user_provided_credential: RegisterPublicKeyCredential = serde_json::from_value(
@@ -95,7 +95,7 @@ pub async fn handler(
 
             let credential_id = verified_passkey.cred_id().clone();
             (
-                PrimaryFactor::new_passkey(verified_passkey),
+                Factor::new_passkey(verified_passkey),
                 FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id)),
             )
         }
@@ -104,7 +104,7 @@ pub async fn handler(
     // Step 4: Initialize backup metadata
     let backup_metadata = BackupMetadata {
         id: uuid::Uuid::new_v4().to_string(),
-        primary_factor: verified_primary_factor,
+        factors: vec![backup_factor],
         oidc_accounts: vec![],
         keys: vec![request.initial_encryption_key.clone()],
     };

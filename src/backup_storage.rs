@@ -175,7 +175,7 @@ pub enum BackupManagerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::backup_metadata::{BackupMetadata, PrimaryFactor, PrimaryFactorKind};
+    use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
     use crate::types::encryption_key::BackupEncryptionKey;
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
@@ -228,12 +228,12 @@ mod tests {
         });
         let backup_metadata = BackupMetadata {
             id: test_backup_id.clone(),
-            primary_factor: PrimaryFactor {
+            factors: vec![Factor {
                 id: test_primary_factor_id.clone(),
-                kind: PrimaryFactorKind::Passkey {
+                kind: FactorKind::Passkey {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                 },
-            },
+            }],
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
