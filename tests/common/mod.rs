@@ -167,7 +167,7 @@ pub async fn make_credential_from_passkey_challenge(
         serde_json::from_value(challenge_response["challenge"].clone()).unwrap();
     let credential = passkey_client
         .register(
-            Url::parse("https://keys.world.org").unwrap(),
+            Url::parse("https://keys.world.app").unwrap(),
             credential_input,
             passkey::client::DefaultClientData,
         )
@@ -197,7 +197,7 @@ pub async fn authenticate_with_passkey_challenge(
         serde_json::from_value(challenge_response["challenge"].clone()).unwrap();
     let credential = passkey_client
         .authenticate(
-            &Url::parse("https://keys.world.org").unwrap(),
+            &Url::parse("https://keys.world.app").unwrap(),
             credential_request_options,
             passkey::client::DefaultClientData,
         )

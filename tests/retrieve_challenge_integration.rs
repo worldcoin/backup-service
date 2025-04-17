@@ -16,7 +16,7 @@ async fn test_retrieve_challenge() {
 
     assert_eq!(
         response["challenge"]["publicKey"]["rpId"].as_str(),
-        Some("keys.world.org")
+        Some("keys.world.app")
     );
     assert_eq!(
         response["challenge"]["publicKey"]["challenge"]

@@ -97,8 +97,8 @@ impl Environment {
     /// Configuration to generate passkeys
     pub fn webauthn_config(&self) -> Webauthn {
         WebauthnBuilder::new(
-            "keys.world.org",
-            &Url::parse("https://keys.world.org").expect("Invalid URL"),
+            "keys.world.app",
+            &Url::parse("https://keys.world.app").expect("Invalid URL"),
         )
         .expect("Failed to create WebauthnBuilder")
         .rp_name("World App")
