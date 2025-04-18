@@ -10,6 +10,14 @@ use uuid::Uuid;
 pub struct CreateChallengePasskeyRequest {
     name: String,
     display_name: String,
+    platform: Platform,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Platform {
+    Android,
+    Ios,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -26,12 +34,22 @@ pub async fn handler(
     request: Json<CreateChallengePasskeyRequest>,
 ) -> Result<Json<CreateChallengePasskeyResponse>, ErrorResponse> {
     // Step 1: Create a new challenge using WebAuthn implementation
-    let (challenge, registration) = environment.webauthn_config().start_passkey_registration(
-        Uuid::new_v4(),
-        &request.name,
-        &request.display_name,
-        None,
-    )?;
+    let (challenge, registration) = match request.platform {
+        Platform::Ios => environment.webauthn_config().start_passkey_registration(
+            Uuid::new_v4(),
+            &request.name,
+            &request.display_name,
+            None,
+        )?,
+        Platform::Android => environment
+            .webauthn_config()
+            .start_google_passkey_in_google_password_manager_only_registration(
+                Uuid::new_v4(),
+                &request.name,
+                &request.display_name,
+                None,
+            )?,
+    };
     let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
 
     // Step 2: Encrypt the server-side object in a JWE

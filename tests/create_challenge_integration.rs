@@ -12,6 +12,7 @@ async fn test_create_challenge() {
         json!({
             "name": "MOCK USERNAME",
             "displayName": "MOCK DISPLAY NAME",
+            "platform": "IOS",
         }),
     )
     .await;
