@@ -102,6 +102,18 @@ impl Environment {
         )
         .expect("Failed to create WebauthnBuilder")
         .rp_name("World App")
+        // Android dev & staging — app signing key hash
+        .append_allowed_origin(
+            &"android:apk-key-hash:o0Fu39yqrsxeWSucqge7eOzG8xrsRAn0nKbTtN_x2-A"
+                .parse()
+                .unwrap(),
+        )
+        // Android prod — app signing key hash
+        .append_allowed_origin(
+            &"android:apk-key-hash:ndK9En8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8"
+                .parse()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build Webauthn")
     }

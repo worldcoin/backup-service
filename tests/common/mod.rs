@@ -146,6 +146,7 @@ pub async fn get_passkey_challenge() -> serde_json::Value {
         json!({
             "name": "MOCK USERNAME",
             "displayName": "MOCK DISPLAY NAME",
+            "platform": "IOS"
         }),
     )
     .await;
