@@ -44,6 +44,10 @@ pub struct Factor {
 pub enum FactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey { webauthn_credential: Passkey },
+    #[serde(rename_all = "camelCase")]
+    OidcAccount { account: OidcAccountKind },
+    #[serde(rename_all = "camelCase")]
+    EcKeypair { public_key: String },
 }
 
 impl Factor {
@@ -53,6 +57,20 @@ impl Factor {
             kind: FactorKind::Passkey {
                 webauthn_credential,
             },
+        }
+    }
+
+    pub fn new_oidc_account(account: OidcAccountKind) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            kind: FactorKind::OidcAccount { account },
+        }
+    }
+
+    pub fn new_ec_keypair(public_key: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            kind: FactorKind::EcKeypair { public_key },
         }
     }
 }

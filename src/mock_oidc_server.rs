@@ -6,11 +6,12 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, IssuerUrl, JsonWebKeyId, PrivateSigningKey, StandardClaims,
-    SubjectIdentifier,
+    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
 use rsa::RsaPrivateKey;
+use uuid::Uuid;
 
 /// Mock OIDC server for testing purposes. We have to expose it as a module, because it's used in
 /// both integration and unit tests.
@@ -65,9 +66,11 @@ impl MockOidcServer {
             vec![Audience::new(environment.google_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
-            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            StandardClaims::new(SubjectIdentifier::new(Uuid::new_v4().to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new("test-nonce".to_string())))
+        .set_email(Some(EndUserEmail::new("hello@example.com".to_string())));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(
@@ -91,7 +94,9 @@ impl MockOidcServer {
             Utc::now(), // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new("test-nonce".to_string())))
+        .set_email(Some(EndUserEmail::new("hello@example.com".to_string())));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(

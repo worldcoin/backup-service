@@ -1,9 +1,35 @@
+use crate::types::OidcToken;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum SolvedChallenge {
+    // todo: rename to authorization
     #[serde(rename_all = "camelCase")]
     Passkey { credential: serde_json::Value },
+    #[serde(rename_all = "camelCase")]
+    OidcAccount {
+        // OIDC token from external provider, like Google or Apple
+        oidc_token: OidcToken,
+        // Base64-encoded public key of local P256 keypair in SEC1 representation.
+        // In other words: base64-encode(keypair.public_key.to_sec1_bytes()).
+        //
+        // Nonce of the OIDC token should be equal to: sha256(public_key_as_hex).
+        // This rule exists to ensure compatibility with Turnkey:
+        // https://docs.turnkey.com/authentication/social-logins
+        public_key: String,
+        // Base64-encoded signature of the backend challenge, signed with the private key of
+        // the local P256 keypair.
+        signature: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    EcKeypair {
+        // Base64-encoded public key of local P256 keypair in SEC1 representation.
+        // In other words: base64-encode(keypair.public_key.to_sec1_bytes()).
+        public_key: String,
+        // Base64-encoded signature of the backend challenge in DER representation, signed with the private key of
+        // the local P256 keypair.
+        signature: String,
+    },
 }

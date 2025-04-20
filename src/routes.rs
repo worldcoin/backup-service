@@ -7,6 +7,7 @@ use axum::extract::DefaultBodyLimit;
 
 mod add_oidc_account;
 mod create_backup;
+mod create_challenge_keypair;
 mod create_challenge_passkey;
 mod docs;
 mod health;
@@ -20,6 +21,10 @@ pub fn handler(environment: Environment) -> ApiRouter {
         .api_route(
             "/create/challenge/passkey",
             post(create_challenge_passkey::handler),
+        )
+        .api_route(
+            "/create/challenge/keypair",
+            post(create_challenge_keypair::handler),
         )
         .api_route(
             "/create",

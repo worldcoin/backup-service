@@ -133,6 +133,9 @@ pub async fn handler(
                 }
             }
         }
+        // TODO/FIXME: Implement other challenge types
+        SolvedChallenge::OidcAccount { .. } => todo!(),
+        SolvedChallenge::EcKeypair { .. } => todo!(),
     };
 
     // Step 3: Return the backup and metadata
