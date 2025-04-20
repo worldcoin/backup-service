@@ -74,8 +74,8 @@ pub enum OidcTokenVerifierError {
 /// If issued at is in the future or too far in the past, the token is invalid
 fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
     let now = Utc::now();
-    // Token should not be issued more than 1 hour in the past
-    let min = now - chrono::Duration::hours(1);
+    // Token should not be issued more than 5 minutes in the past
+    let min = now - chrono::Duration::minutes(5);
     // Token should not be issued more than 30 seconds in the future (clock skew)
     let max = now + chrono::Duration::seconds(30);
     if iat < min || iat > max {

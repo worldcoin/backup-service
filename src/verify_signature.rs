@@ -22,13 +22,25 @@ pub fn verify_signature(
     signature: &str,
     trusted_payload: &[u8],
 ) -> Result<(), VerifySignatureError> {
+    if public_key.is_empty() || signature.is_empty() || trusted_payload.is_empty() {
+        return Err(VerifySignatureError::EmptyArgumentError);
+    }
+
     // Decode the verifying key from base64
     let public_key = STANDARD.decode(public_key)?;
+    // Check if the public key is of the expected length (65 bytes for P-256)
+    if public_key.len() != 65 {
+        return Err(VerifySignatureError::DecodeVerifyingKeyError);
+    }
     let verifying_key = VerifyingKey::from_sec1_bytes(&public_key)
         .map_err(|_| VerifySignatureError::DecodeVerifyingKeyError)?;
 
     // Decode the signature from base64
     let signature = STANDARD.decode(signature)?;
+    // Check if the signature is between 70 and 72 bytes (DER format)
+    if signature.len() < 70 || signature.len() > 72 {
+        return Err(VerifySignatureError::DecodeSignatureError);
+    }
     let signature = p256::ecdsa::Signature::from_der(&signature)
         .map_err(|_| VerifySignatureError::DecodeSignatureError)?;
 
@@ -42,6 +54,8 @@ pub fn verify_signature(
 
 #[derive(thiserror::Error, Debug)]
 pub enum VerifySignatureError {
+    #[error("Public key, signature or trusted payload is empty")]
+    EmptyArgumentError,
     #[error("Failed to decode a value from base64: {0}")]
     Base64DecodeError(#[from] base64::DecodeError),
     #[error("Failed to create verifying key from SEC1 bytes")]
