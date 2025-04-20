@@ -1,5 +1,5 @@
 use crate::oidc_nonce_verifier::OidcNonceVerifier;
-use crate::types::{Environment, ErrorResponse};
+use crate::types::{Environment, ErrorResponse, OidcToken};
 use aws_sdk_s3::Client as S3Client;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
@@ -9,13 +9,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
-pub enum OidcToken {
-    #[serde(rename_all = "camelCase")]
-    Google { token: String },
-}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
