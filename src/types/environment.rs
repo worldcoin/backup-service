@@ -8,7 +8,9 @@ use webauthn_rs::{Webauthn, WebauthnBuilder};
 pub enum Environment {
     Production,
     Staging,
-    Development,
+    Development {
+        jwk_set_url_port_override: Option<usize>,
+    },
 }
 
 impl Environment {
@@ -20,8 +22,16 @@ impl Environment {
         match env.as_str() {
             "production" => Self::Production,
             "staging" => Self::Staging,
-            "development" => Self::Development,
+            "development" => Self::Development {
+                jwk_set_url_port_override: None,
+            },
             _ => panic!("Invalid environment: {}", env),
+        }
+    }
+
+    pub fn development(jwk_set_url_port_override: Option<usize>) -> Self {
+        Self::Development {
+            jwk_set_url_port_override,
         }
     }
 
@@ -35,7 +45,7 @@ impl Environment {
             // so we use the bucket name instead.
             // Path-style addressing (which is used only on development
             // for local stack support) cannot be used with ARN buckets.
-            Self::Development => "backup-service-bucket",
+            Self::Development { .. } => "backup-service-bucket",
         }
     }
 
@@ -45,7 +55,7 @@ impl Environment {
             // Regular AWS endpoints to be used for production and staging
             Self::Production | Self::Staging => None,
             // Localstack to be used for development
-            Self::Development => Some("http://localhost:4566"),
+            Self::Development { .. } => Some("http://localhost:4566"),
         }
     }
 
@@ -65,7 +75,7 @@ impl Environment {
         let mut builder = s3_config.to_builder();
         // Override "force path style" to true for compatibility with localstack
         // https://github.com/awslabs/aws-sdk-rust/discussions/874
-        if let Self::Development = self {
+        if let Self::Development { .. } = self {
             builder.set_force_path_style(Some(true));
         }
         builder.build()
@@ -75,7 +85,7 @@ impl Environment {
     pub fn show_api_docs(&self) -> bool {
         match self {
             Self::Production => false,
-            Self::Staging | Self::Development => true,
+            Self::Staging | Self::Development { .. } => true,
         }
     }
 
@@ -130,8 +140,11 @@ impl Environment {
                 JsonWebKeySetUrl::new("https://www.googleapis.com/oauth2/v3/certs".to_string())
                     .expect("Invalid JWK set URL")
             }
-            Self::Development => {
-                JsonWebKeySetUrl::new("http://localhost:8001/oauth2/v3/certs".to_string())
+            Self::Development {
+                jwk_set_url_port_override: port,
+            } => {
+                let port = port.unwrap_or(8001);
+                JsonWebKeySetUrl::new(format!("http://localhost:{}/oauth2/v3/certs", port))
                     .expect("Invalid JWK set URL")
             }
         }
@@ -141,7 +154,7 @@ impl Environment {
     pub fn google_client_id(&self) -> ClientId {
         match self {
             Self::Production | Self::Staging => todo!(),
-            Self::Development => ClientId::new(
+            Self::Development { .. } => ClientId::new(
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
                     .to_string(),
             ),
@@ -152,14 +165,16 @@ impl Environment {
     pub fn google_issuer_url(&self) -> IssuerUrl {
         match self {
             Self::Production | Self::Staging => todo!(),
-            Self::Development => IssuerUrl::new("https://accounts.google.com".to_string())
+            Self::Development { .. } => IssuerUrl::new("https://accounts.google.com".to_string())
                 .expect("Invalid issuer URL"),
         }
     }
 
     pub fn factor_lookup_dynamodb_table_name(&self) -> &'static str {
         match self {
-            Self::Production | Self::Staging | Self::Development => "backup-service-factor-lookup",
+            Self::Production | Self::Staging | Self::Development { .. } => {
+                "backup-service-factor-lookup"
+            }
         }
     }
 }

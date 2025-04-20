@@ -1,6 +1,7 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeManager;
 use crate::factor_lookup::FactorLookup;
+use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::routes;
 use crate::types::Environment;
 use aide::openapi::{Info, OpenApi};
@@ -15,6 +16,7 @@ pub async fn start(
     challenge_manager: ChallengeManager,
     backup_storage: BackupStorage,
     factor_lookup: FactorLookup,
+    oidc_token_verifier: OidcTokenVerifier,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -32,6 +34,7 @@ pub async fn start(
         .layer(Extension(challenge_manager))
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
+        .layer(Extension(oidc_token_verifier))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::timeout::TimeoutLayer::new(

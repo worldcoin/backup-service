@@ -164,7 +164,7 @@ mod test {
     #[tokio::test]
     async fn test_factor_lookup() {
         let dynamodb_client = get_test_dynamodb_client().await;
-        let environment = Environment::Development;
+        let environment = Environment::development(None);
         let factor_lookup = FactorLookup::new(environment, dynamodb_client);
 
         let mock_factor_id = uuid::Uuid::new_v4().to_string();
@@ -185,7 +185,7 @@ mod test {
     #[tokio::test]
     async fn test_factor_lookup_with_invalid_factor() {
         let dynamodb_client = get_test_dynamodb_client().await;
-        let environment = Environment::Development;
+        let environment = Environment::development(None);
         let factor_lookup = FactorLookup::new(environment, dynamodb_client);
 
         // Lookup a non-existent factor
@@ -197,7 +197,7 @@ mod test {
     #[tokio::test]
     async fn test_factor_lookup_with_duplicate_insert() {
         let dynamodb_client = get_test_dynamodb_client().await;
-        let environment = Environment::Development;
+        let environment = Environment::development(None);
         let factor_lookup = FactorLookup::new(environment, dynamodb_client);
 
         let mock_factor_id = uuid::Uuid::new_v4().to_string();

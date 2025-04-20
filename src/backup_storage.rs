@@ -187,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_get_backup() {
         dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::Development;
+        let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
 
@@ -237,7 +237,6 @@ mod tests {
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
-            oidc_accounts: vec![],
         };
 
         // Create a backup
