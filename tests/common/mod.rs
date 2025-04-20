@@ -24,12 +24,12 @@ use url::Url;
 use uuid::Uuid;
 
 pub async fn get_test_s3_client() -> S3Client {
-    let environment = Environment::Development;
+    let environment = Environment::development(None);
     S3Client::from_conf(environment.s3_client_config().await)
 }
 
 pub async fn get_challenge_manager() -> ChallengeManager {
-    let environment = Environment::Development;
+    let environment = Environment::development(None);
     let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
     let kms_jwe = KmsJwe::new(environment.challenge_token_kms_key(), kms_client);
     ChallengeManager::new(environment.challenge_token_ttl(), kms_jwe)
@@ -42,7 +42,7 @@ pub async fn get_test_router() -> axum::Router {
         .try_init()
         .ok();
 
-    let environment = Environment::Development;
+    let environment = Environment::development(None);
     let s3_client = Arc::new(get_test_s3_client().await);
     let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
         &environment.aws_config().await,
@@ -51,6 +51,8 @@ pub async fn get_test_router() -> axum::Router {
     let backup_storage = BackupStorage::new(environment, s3_client.clone());
     let factor_lookup =
         backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client);
+    let oidc_token_verifier =
+        backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment);
 
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
@@ -59,6 +61,7 @@ pub async fn get_test_router() -> axum::Router {
         .layer(Extension(challenge_manager))
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
+        .layer(Extension(oidc_token_verifier))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {

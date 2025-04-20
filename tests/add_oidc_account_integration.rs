@@ -12,7 +12,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_add_oidc_account_integration() {
-    let environment = Environment::Development;
+    let environment = Environment::development(None);
     let oidc_server = common::MockOidcServer::new().await;
 
     let mut passkey_client = common::get_mock_passkey_client();
