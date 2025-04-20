@@ -1,6 +1,8 @@
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
+use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
 use aws_sdk_dynamodb::error::SdkError;
 use axum::extract::multipart::MultipartError;
@@ -145,6 +147,32 @@ impl From<FactorLookupError> for ErrorResponse {
             FactorLookupError::DynamoDbGetError(_) | FactorLookupError::ParseBackupIdError => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
+            }
+        }
+    }
+}
+
+impl From<VerifySignatureError> for ErrorResponse {
+    fn from(err: VerifySignatureError) -> Self {
+        tracing::info!(message = "Signature verification error", error = ?err);
+        ErrorResponse::bad_request("signature_verification_error")
+    }
+}
+
+impl From<OidcTokenVerifierError> for ErrorResponse {
+    fn from(err: OidcTokenVerifierError) -> Self {
+        match &err {
+            OidcTokenVerifierError::JwkSetFetchError => {
+                tracing::error!(message = "Failed to fetch JWK set from OIDC provider", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            OidcTokenVerifierError::TokenParseError => {
+                tracing::info!(message = "Failed to parse OIDC token", error = ?err);
+                ErrorResponse::bad_request("oidc_token_parse_error")
+            }
+            OidcTokenVerifierError::TokenVerificationError => {
+                tracing::info!(message = "Failed to verify OIDC token", error = ?err);
+                ErrorResponse::bad_request("oidc_token_verification_error")
             }
         }
     }

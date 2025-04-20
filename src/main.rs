@@ -3,6 +3,7 @@ use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::factor_lookup::FactorLookup;
 use backup_service::kms_jwe::KmsJwe;
+use backup_service::oidc_token_verifier::OidcTokenVerifier;
 use backup_service::server;
 use backup_service::types::Environment;
 use dotenvy::dotenv;
@@ -28,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     let backup_storage = BackupStorage::new(environment, s3_client.clone());
     let factor_lookup = FactorLookup::new(environment, dynamodb_client);
+    let oidc_token_verifier = OidcTokenVerifier::new(environment);
 
     server::start(
         environment,
@@ -35,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
         challenge_manager,
         backup_storage,
         factor_lookup,
+        oidc_token_verifier,
     )
     .await
 }
