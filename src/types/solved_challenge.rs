@@ -2,10 +2,10 @@ use crate::types::OidcToken;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+// todo: rename to Authorization
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum SolvedChallenge {
-    // todo: rename to authorization
     #[serde(rename_all = "camelCase")]
     Passkey { credential: serde_json::Value },
     #[serde(rename_all = "camelCase")]
