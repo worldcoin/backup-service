@@ -105,7 +105,6 @@ pub async fn handler(
     let backup_metadata = BackupMetadata {
         id: uuid::Uuid::new_v4().to_string(),
         factors: vec![backup_factor],
-        oidc_accounts: vec![],
         keys: vec![request.initial_encryption_key.clone()],
     };
 

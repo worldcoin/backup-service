@@ -73,7 +73,6 @@ async fn test_create_backup() {
         metadata["factors"][0]["kind"]["webauthnCredential"]["cred"]["cred_id"],
         credential["id"]
     );
-    assert_eq!(metadata["oidcAccounts"], json!([]));
 }
 
 #[tokio::test]

@@ -14,8 +14,6 @@ pub struct BackupMetadata {
     pub id: String,
     /// Factors that are used to access the backup and modify it (including adding other factors).
     pub factors: Vec<Factor>,
-    /// OIDC accounts that are used to access the backup in addition to the primary factor.
-    pub oidc_accounts: Vec<OidcAccount>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
     pub keys: Vec<BackupEncryptionKey>,
 }
