@@ -25,7 +25,6 @@ use p256::SecretKey;
 pub use passkey_client::*;
 use serde_json::json;
 use std::sync::Arc;
-use std::vec::Vec;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
