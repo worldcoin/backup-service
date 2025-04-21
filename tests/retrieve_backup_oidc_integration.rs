@@ -5,7 +5,6 @@ use crate::common::{
     send_post_request_with_environment, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
-use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -18,20 +17,21 @@ async fn test_retrieve_backup_with_oidc_account() {
     let subject = Uuid::new_v4().to_string();
 
     // Create a backup with OIDC account
-    let ((public_key, secret_key, _oidc_token, environment), create_response, oidc_server) =
-        create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
-    assert_eq!(create_response.status(), StatusCode::OK);
+    let test_backup = create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
+    assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
     let retrieve_challenge = get_keypair_challenge().await;
 
     // Generate new OIDC token for the same user
-    let new_oidc_token =
-        oidc_server.generate_token(environment, Some(SubjectIdentifier::new(subject.clone())));
+    let new_oidc_token = test_backup.oidc_server.generate_token(
+        test_backup.environment,
+        Some(SubjectIdentifier::new(subject.clone())),
+    );
 
     // Sign the retrieval challenge with the same keypair
     let signature = sign_keypair_challenge(
-        &secret_key,
+        &test_backup.secret_key,
         retrieve_challenge["challenge"].as_str().unwrap(),
     );
 
@@ -45,13 +45,13 @@ async fn test_retrieve_backup_with_oidc_account() {
                     "kind": "GOOGLE",
                     "token": new_oidc_token,
                 },
-                "publicKey": public_key,
+                "publicKey": test_backup.public_key,
                 "signature": signature,
             },
             "challengeToken": retrieve_challenge["token"],
         }),
         // Must be sent to the same JWT issuer as the one used to create the backup
-        Some(Environment::development(Some(oidc_server.port()))),
+        Some(test_backup.environment),
     )
     .await;
 
@@ -84,21 +84,22 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     let subject = Uuid::new_v4().to_string();
 
     // Create a backup with OIDC account
-    let ((public_key, secret_key, _oidc_token, environment), create_response, oidc_server) =
-        create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
-    assert_eq!(create_response.status(), StatusCode::OK);
+    let test_backup = create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
+    assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
     let retrieve_challenge = get_keypair_challenge().await;
 
     // Generate new OIDC token for a DIFFERENT user
     let different_subject = Uuid::new_v4().to_string();
-    let different_oidc_token =
-        oidc_server.generate_token(environment, Some(SubjectIdentifier::new(different_subject)));
+    let different_oidc_token = test_backup.oidc_server.generate_token(
+        test_backup.environment,
+        Some(SubjectIdentifier::new(different_subject)),
+    );
 
     // Sign the retrieval challenge with the same keypair
     let signature = sign_keypair_challenge(
-        &secret_key,
+        &test_backup.secret_key,
         retrieve_challenge["challenge"].as_str().unwrap(),
     );
 
@@ -112,13 +113,13 @@ async fn test_retrieve_backup_with_different_oidc_account() {
                     "kind": "GOOGLE",
                     "token": different_oidc_token,
                 },
-                "publicKey": public_key,
+                "publicKey": test_backup.public_key,
                 "signature": signature,
             },
             "challengeToken": retrieve_challenge["token"],
         }),
         // Must be sent to the same JWT issuer as the one used to create the backup
-        Some(Environment::development(Some(oidc_server.port()))),
+        Some(test_backup.environment),
     )
     .await;
 
@@ -142,16 +143,17 @@ async fn test_retrieve_backup_with_different_keypair() {
     let subject = Uuid::new_v4().to_string();
 
     // Create a backup with OIDC account
-    let ((public_key, _secret_key, _oidc_token, environment), create_response, oidc_server) =
-        create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
-    assert_eq!(create_response.status(), StatusCode::OK);
+    let test_backup = create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
+    assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
     let retrieve_challenge = get_keypair_challenge().await;
 
     // Generate new OIDC token for the same user
-    let new_oidc_token =
-        oidc_server.generate_token(environment, Some(SubjectIdentifier::new(subject.clone())));
+    let new_oidc_token = test_backup.oidc_server.generate_token(
+        test_backup.environment,
+        Some(SubjectIdentifier::new(subject.clone())),
+    );
 
     // Generate a different keypair for signing
     let (_, different_secret_key) = generate_keypair();
@@ -172,13 +174,13 @@ async fn test_retrieve_backup_with_different_keypair() {
                     "kind": "GOOGLE",
                     "token": new_oidc_token,
                 },
-                "publicKey": public_key,
+                "publicKey": test_backup.public_key,
                 "signature": signature,
             },
             "challengeToken": retrieve_challenge["token"],
         }),
         // Must be sent to the same JWT issuer as the one used to create the backup
-        Some(Environment::development(Some(oidc_server.port()))),
+        Some(test_backup.environment),
     )
     .await;
 

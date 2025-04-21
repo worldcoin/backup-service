@@ -335,15 +335,20 @@ pub async fn create_test_backup_with_keypair(
     (keypair, create_response)
 }
 
-/// Create a test backup with an OIDC account. Returns (keypair, oidc_token, environment) and the create response.
+pub struct TestBackupWithOidcAccount {
+    pub public_key: String,
+    pub secret_key: SecretKey,
+    pub oidc_token: String,
+    pub environment: Environment,
+    pub response: Response,
+    pub oidc_server: backup_service::mock_oidc_server::MockOidcServer,
+}
+
+/// Create a test backup with an OIDC account.
 pub async fn create_test_backup_with_oidc_account(
     subject: &str,
     backup_data: &[u8],
-) -> (
-    (String, SecretKey, String, Environment),
-    Response,
-    backup_service::mock_oidc_server::MockOidcServer,
-) {
+) -> TestBackupWithOidcAccount {
     // Setup OIDC server
     let oidc_server = backup_service::mock_oidc_server::MockOidcServer::new().await;
     let environment =
@@ -389,11 +394,14 @@ pub async fn create_test_backup_with_oidc_account(
     )
     .await;
 
-    (
-        (public_key, secret_key, oidc_token, environment),
-        create_response,
+    TestBackupWithOidcAccount {
+        public_key,
+        secret_key,
+        oidc_token,
+        environment,
+        response: create_response,
         oidc_server,
-    )
+    }
 }
 
 /// Generate a P256 keypair that's used as a temporary session keypair in OIDC authentication
