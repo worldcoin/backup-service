@@ -11,6 +11,7 @@ mod create_challenge_keypair;
 mod create_challenge_passkey;
 mod docs;
 mod health;
+mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
 
@@ -38,6 +39,10 @@ pub fn handler(environment: Environment) -> ApiRouter {
         .api_route(
             "/retrieve/challenge/passkey",
             post(retrieve_challenge_passkey::handler),
+        )
+        .api_route(
+            "/retrieve/challenge/keypair",
+            post(retrieve_challenge_keypair::handler),
         )
         .api_route(
             "/retrieve/from-challenge",
