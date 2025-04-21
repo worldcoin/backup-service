@@ -17,6 +17,7 @@ use base64::Engine;
 use http_body_util::BodyExt;
 #[allow(unused_imports)]
 pub use oidc_server::*;
+use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
@@ -72,6 +73,27 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {
     let app = get_test_router(None).await;
+    app.oneshot(
+        Request::builder()
+            .uri(route)
+            .method("POST")
+            .header("Content-Type", "application/json")
+            .body(payload.to_string())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// Send a POST request with a specific environment. Helpful when trying to fetch a backup from
+/// an environment that's attached to a specific mock JWT issuer.
+pub async fn send_post_request_with_environment(
+    route: &str,
+    payload: serde_json::Value,
+    environment: Option<Environment>,
+) -> Response {
+    let environment = environment.unwrap_or_else(|| Environment::development(None));
+    let app = get_test_router(Some(environment)).await;
     app.oneshot(
         Request::builder()
             .uri(route)
@@ -212,6 +234,18 @@ pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
+/// Get a keypair retrieval challenge response from the server.
+pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
+    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let challenge_response: Bytes = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    serde_json::from_slice(&challenge_response).unwrap()
+}
+
 /// Authenticate using a passkey client with a retrieval challenge. Returns the credential as a JSON value.
 pub async fn authenticate_with_passkey_challenge(
     passkey_client: &mut MockPasskeyClient,
@@ -262,6 +296,112 @@ pub async fn create_test_backup(
     .await;
 
     (credential, create_response)
+}
+
+/// Create a test backup with an EC keypair. Returns the keypair (public_key, secret_key) and the create response.
+pub async fn create_test_backup_with_keypair(
+    backup_data: &[u8],
+) -> ((String, SecretKey), Response) {
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate keypair and sign the challenge
+    let keypair = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &keypair.1,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Send the keypair signature to the server to create a backup
+    let create_response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "solvedChallenge": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": keypair.0.clone(),
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+        }),
+        Bytes::from(backup_data.to_vec()),
+        None,
+    )
+    .await;
+
+    (keypair, create_response)
+}
+
+pub struct TestBackupWithOidcAccount {
+    pub public_key: String,
+    pub secret_key: SecretKey,
+    pub oidc_token: String,
+    pub environment: Environment,
+    pub response: Response,
+    pub oidc_server: backup_service::mock_oidc_server::MockOidcServer,
+}
+
+/// Create a test backup with an OIDC account.
+pub async fn create_test_backup_with_oidc_account(
+    subject: &str,
+    backup_data: &[u8],
+) -> TestBackupWithOidcAccount {
+    // Setup OIDC server
+    let oidc_server = backup_service::mock_oidc_server::MockOidcServer::new().await;
+    let environment =
+        Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate OIDC token
+    let oidc_token = oidc_server.generate_token(
+        environment,
+        Some(SubjectIdentifier::new(subject.to_string())),
+    );
+
+    // Generate temporary keypair for OIDC authentication and sign the challenge
+    let (public_key, secret_key) = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Send the OIDC token to the server to create a backup
+    let create_response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "solvedChallenge": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token.clone(),
+                },
+                "publicKey": public_key.clone(),
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+        }),
+        Bytes::from(backup_data.to_vec()),
+        Some(environment),
+    )
+    .await;
+
+    TestBackupWithOidcAccount {
+        public_key,
+        secret_key,
+        oidc_token,
+        environment,
+        response: create_response,
+        oidc_server,
+    }
 }
 
 /// Generate a P256 keypair that's used as a temporary session keypair in OIDC authentication

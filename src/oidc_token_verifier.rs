@@ -42,7 +42,10 @@ impl OidcTokenVerifier {
         // TODO/FIXME: Cache the keys
         let signature_keys = CoreJsonWebKeySet::fetch_async(&jwk_set_url, &self.reqwest_client)
             .await
-            .map_err(|_| OidcTokenVerifierError::JwkSetFetchError)?;
+            .map_err(|err| {
+                tracing::error!(message = "Failed to fetch JWK set", err = ?err);
+                OidcTokenVerifierError::JwkSetFetchError
+            })?;
 
         // Create the token verifier
         let token_verifier =
@@ -50,12 +53,17 @@ impl OidcTokenVerifier {
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
         // Verify the token and extract claims
-        let oidc_token = CoreIdToken::from_str(oidc_token)
-            .map_err(|_| OidcTokenVerifierError::TokenParseError)?;
+        let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
+            tracing::warn!(message = "Failed to parse OIDC token", err = ?err);
+            OidcTokenVerifierError::TokenParseError
+        })?;
 
         let claims = oidc_token
             .claims(&token_verifier, OidcNonceVerifier::default())
-            .map_err(|_| OidcTokenVerifierError::TokenVerificationError)?;
+            .map_err(|err| {
+                tracing::error!(message = "Token verification error", err = ?err);
+                OidcTokenVerifierError::TokenVerificationError
+            })?;
 
         Ok(claims.clone())
     }
@@ -98,7 +106,7 @@ mod tests {
         let verifier = OidcTokenVerifier::new(environment);
 
         // Generate a valid token
-        let token = oidc_server.generate_token(environment);
+        let token = oidc_server.generate_token(environment, None);
 
         // Verify the token
         let result = verifier.verify_token(&OidcToken::Google { token }).await;

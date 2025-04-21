@@ -72,7 +72,7 @@ async fn test_create_backup_with_oidc_token() {
     let challenge_response = get_keypair_challenge().await;
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment);
+    let oidc_token = oidc_server.generate_token(environment, None);
 
     // Generate temporary keypair for OIDC authentication and sign the challenge
     let (public_key, secret_key) = generate_keypair();

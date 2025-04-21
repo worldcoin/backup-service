@@ -59,14 +59,23 @@ impl MockOidcServer {
         }
     }
 
-    pub fn generate_token(&self, environment: Environment) -> String {
+    pub fn port(&self) -> usize {
+        self.server.socket_address().port() as usize
+    }
+
+    pub fn generate_token(
+        &self,
+        environment: Environment,
+        subject: Option<SubjectIdentifier>,
+    ) -> String {
+        let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             environment.google_issuer_url(),
             vec![Audience::new(environment.google_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
-            StandardClaims::new(SubjectIdentifier::new(Uuid::new_v4().to_string())),
+            StandardClaims::new(subject),
             EmptyAdditionalClaims {},
         )
         .set_nonce(Some(Nonce::new("test-nonce".to_string())))
