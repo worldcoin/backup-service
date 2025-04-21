@@ -39,6 +39,7 @@ async fn test_add_oidc_account_integration() {
             },
         }),
         Bytes::from(b"TEST FILE".as_slice()),
+        None,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
