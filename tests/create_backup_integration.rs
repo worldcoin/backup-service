@@ -28,7 +28,7 @@ async fn test_create_backup_with_passkey() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
@@ -85,7 +85,7 @@ async fn test_create_backup_with_oidc_token() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
@@ -132,7 +132,7 @@ async fn test_create_backup_with_ec_keypair() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key,
                 "signature": signature,
@@ -173,7 +173,7 @@ async fn test_create_backup_with_incorrect_token() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
@@ -220,7 +220,7 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
@@ -258,7 +258,7 @@ async fn test_create_backup_with_empty_file() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
@@ -296,7 +296,7 @@ async fn test_create_backup_with_large_file() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
@@ -342,7 +342,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
@@ -388,7 +388,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key2,
                 "signature": signature,

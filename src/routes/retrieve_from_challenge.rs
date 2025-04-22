@@ -3,7 +3,7 @@ use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind, OidcAccountKind};
-use crate::types::{Environment, ErrorResponse, SolvedChallenge};
+use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::verify_signature::verify_signature;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -15,7 +15,7 @@ use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKe
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrieveBackupFromChallengeRequest {
-    solved_challenge: SolvedChallenge,
+    authorization: Authorization,
     challenge_token: String,
 }
 
@@ -39,8 +39,8 @@ pub async fn handler(
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Verify the solved challenge and get the backup from S3
-    let (backup, metadata) = match &request.solved_challenge {
-        SolvedChallenge::Passkey { credential } => {
+    let (backup, metadata) = match &request.authorization {
+        Authorization::Passkey { credential } => {
             // Step 1A.1: Decrypt passkey state from the token
             let challenge_token_payload = challenge_manager
                 .extract_token_payload(ChallengeType::Passkey, request.challenge_token.to_string())
@@ -136,7 +136,7 @@ pub async fn handler(
                 }
             }
         }
-        SolvedChallenge::OidcAccount {
+        Authorization::OidcAccount {
             oidc_token,
             public_key,
             signature,
@@ -229,7 +229,7 @@ pub async fn handler(
                 }
             }
         }
-        SolvedChallenge::EcKeypair {
+        Authorization::EcKeypair {
             public_key,
             signature,
         } => {

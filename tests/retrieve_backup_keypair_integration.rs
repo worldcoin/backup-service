@@ -30,7 +30,7 @@ async fn test_retrieve_backup_with_ec_keypair() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key,
                 "signature": signature,
@@ -84,7 +84,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key,
                 "signature": signature,
@@ -130,7 +130,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key1,
                 "signature": signature,
@@ -171,7 +171,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": public_key,
                 "signature": signature,

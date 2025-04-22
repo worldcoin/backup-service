@@ -29,7 +29,7 @@ async fn test_retrieve_backup() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": retrieve_credential,
             },
@@ -81,7 +81,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": retrieve_credential,
             },
@@ -130,7 +130,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": retrieve_credential,
             },
@@ -176,7 +176,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
     let retrieve_response = send_post_request(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": retrieve_credential,
             },

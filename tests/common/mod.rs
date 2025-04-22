@@ -280,7 +280,7 @@ pub async fn create_test_backup(
     let create_response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential.clone(),
             },
@@ -316,7 +316,7 @@ pub async fn create_test_backup_with_keypair(
     let create_response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "EC_KEYPAIR",
                 "publicKey": keypair.0.clone(),
                 "signature": signature,
@@ -374,7 +374,7 @@ pub async fn create_test_backup_with_oidc_account(
     let create_response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",

@@ -39,7 +39,7 @@ async fn test_retrieve_backup_with_oidc_account() {
     let retrieve_response = send_post_request_with_environment(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
@@ -107,7 +107,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     let retrieve_response = send_post_request_with_environment(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
@@ -168,7 +168,7 @@ async fn test_retrieve_backup_with_different_keypair() {
     let retrieve_response = send_post_request_with_environment(
         "/retrieve/from-challenge",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
