@@ -5,7 +5,7 @@ use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{BackupMetadata, Factor, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Environment, ErrorResponse, OidcToken, SolvedChallenge};
+use crate::types::{Authorization, Environment, ErrorResponse, OidcToken};
 use crate::verify_signature::verify_signature;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
@@ -18,7 +18,7 @@ use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupRequest {
-    solved_challenge: SolvedChallenge,
+    authorization: Authorization,
     challenge_token: String,
     initial_encryption_key: BackupEncryptionKey,
 }
@@ -69,8 +69,8 @@ pub async fn handler(
     }
 
     // Step 2: Verify the solved challenge
-    let (backup_factor, factor_to_lookup) = match &request.solved_challenge {
-        SolvedChallenge::Passkey { credential } => {
+    let (backup_factor, factor_to_lookup) = match &request.authorization {
+        Authorization::Passkey { credential } => {
             // Step 2A: Verify the passkey credential using the WebAuthn implementation
 
             // Step 2A.1: Decrypt server-side passkey state from the token
@@ -105,7 +105,7 @@ pub async fn handler(
                 FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id)),
             )
         }
-        SolvedChallenge::OidcAccount {
+        Authorization::OidcAccount {
             oidc_token,
             public_key,
             signature,
@@ -157,7 +157,7 @@ pub async fn handler(
                 ),
             )
         }
-        SolvedChallenge::EcKeypair {
+        Authorization::EcKeypair {
             public_key,
             signature,
         } => {

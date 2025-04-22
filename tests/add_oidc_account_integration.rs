@@ -28,7 +28,7 @@ async fn test_add_oidc_account_integration() {
     let response = send_post_request_with_multipart(
         "/create",
         json!({
-            "solvedChallenge": {
+            "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
             },
