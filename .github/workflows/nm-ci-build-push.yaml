@@ -23,6 +23,7 @@ jobs:
       # Add the checkout step before 'uses'
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Build/push container to Nethermind artifactory
         uses: ./.github/workflows/nm-ci-reusable-workflow-build-push.yaml
         with:
