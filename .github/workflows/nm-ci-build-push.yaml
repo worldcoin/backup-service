@@ -1,0 +1,40 @@
+name: Container Build and Push
+
+on:
+  workflow_run:
+    workflows: ["CI"]       # Matches the name: field in ci.yaml
+    types:
+      - completed         # Triggers after CI finishes
+    branches:
+      - main              # Only for completions on the main branch
+
+permissions:
+  id-token: write
+  attestations: write
+  contents: read
+
+jobs:
+  build:
+    # Add the 'if' condition
+    if: github.event.workflow_run.conclusion == 'success'
+    # Add runs-on if not defined in the reusable workflow job itself
+    runs-on: ubuntu-latest
+    steps:
+      # Add the checkout step before 'uses'
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Call Reusable Workflow
+        uses: ./.github/workflows/nm-ci-reusable-workflow-build-push.yaml
+        with:
+          # Optional inputs (with their defaults shown)
+          artifactory_url: "nethermind.jfrog.io"
+          platforms: "linux/amd64"
+          context: "."
+          setup-qemu: false
+          dockerfile_path: "Dockerfile"
+          additional_tags: "" # Example: 'latest,1.0.0'
+          # Required Inputs
+          artifactory_repo: "tfh-backup-oci-local-dev"
+          skip_attest: true
