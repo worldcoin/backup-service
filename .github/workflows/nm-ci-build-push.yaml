@@ -17,23 +17,19 @@ jobs:
   build:
     # Add the 'if' condition
     if: github.event.workflow_run.conclusion == 'success'
-    # Add runs-on if not defined in the reusable workflow job itself
-    runs-on: ubuntu-latest
-    steps:
-      # Add the checkout step before 'uses'
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build/push container to Nethermind artifactory
-        uses: ./.github/workflows/nm-ci-reusable-workflow-build-push.yaml
-        with:
-          # Optional inputs (with their defaults shown)
-          artifactory_url: "nethermind.jfrog.io"
-          platforms: "linux/amd64"
-          context: "."
-          setup-qemu: false
-          dockerfile_path: "Dockerfile"
-          additional_tags: "" # Example: 'latest,1.0.0'
-          # Required Inputs
-          artifactory_repo: "tfh-backup-oci-local-dev"
-          skip_attest: true
+    uses: ./.github/workflows/nm-ci-reusable-workflow-build-push.yaml
+    with:
+      # Optional inputs (with their defaults shown)
+      artifactory_url: "nethermind.jfrog.io"
+      platforms: "linux/amd64"
+      context: "."
+      setup-qemu: false
+      dockerfile_path: "Dockerfile"
+      additional_tags: "" # Example: 'latest,1.0.0'
+      # Required Inputs
+      artifactory_repo: "tfh-backup-oci-local-dev"
+      skip_attest: true
+    # Required secrets
+    secrets:
+      artifactory_access_token: ${{ secrets.ARTIFACTORY_ACCESS_TOKEN }}
+      artifactory_username: ${{ secrets.ARTIFACTORY_USERNAME }}
