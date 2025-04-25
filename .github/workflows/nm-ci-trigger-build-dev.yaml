@@ -1,0 +1,17 @@
+name: Trigger Nethermind downstream build for dev
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  trigger-nm-build-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Downstream Workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.NM_REPO_ACCESS_TOKEN }}
+          repository: nethermindeth/tfh-backup-service
+          event-type: run-workflow
+          client-payload: '{"workflow":"docker-build-push.yaml","ref":"${{ github.ref }}","sha":"${{ github.sha }}","inputs":{"artifactory_repo":"tfh-backup-oci-local-dev","skip_attest":true}}'
