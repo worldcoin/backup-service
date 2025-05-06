@@ -31,9 +31,10 @@ impl FactorLookup {
     ///   or if the factor already exists in the table.
     pub async fn insert(
         &self,
-        factor: FactorToLookup,
+        factor: &FactorToLookup,
         backup_id: String,
     ) -> Result<(), FactorLookupError> {
+        // TODO/FIXME: Add scope for factor lookups, e.g. main / sync factors
         self.dynamodb_client
             .put_item()
             .table_name(self.environment.factor_lookup_dynamodb_table_name())
@@ -62,7 +63,7 @@ impl FactorLookup {
     /// Looks up the backup ID for the given factor.
     pub async fn lookup(
         &self,
-        factor: FactorToLookup,
+        factor: &FactorToLookup,
     ) -> Result<Option<String>, FactorLookupError> {
         let result = self
             .dynamodb_client
@@ -173,12 +174,12 @@ mod test {
         let factor = FactorToLookup::from_passkey(mock_factor_id);
         let backup_id = "test_backup_id".to_string();
         factor_lookup
-            .insert(factor.clone(), backup_id.clone())
+            .insert(&factor, backup_id.clone())
             .await
             .unwrap();
 
         // Lookup the factor
-        let result = factor_lookup.lookup(factor).await.unwrap();
+        let result = factor_lookup.lookup(&factor).await.unwrap();
         assert_eq!(result, Some(backup_id));
     }
 
@@ -190,7 +191,7 @@ mod test {
 
         // Lookup a non-existent factor
         let factor = FactorToLookup::from_passkey("non_existent_credential_id".to_string());
-        let result = factor_lookup.lookup(factor).await.unwrap();
+        let result = factor_lookup.lookup(&factor).await.unwrap();
         assert_eq!(result, None);
     }
 
@@ -206,13 +207,13 @@ mod test {
         let factor = FactorToLookup::from_passkey(mock_factor_id);
         let backup_id = "test_backup_id".to_string();
         factor_lookup
-            .insert(factor.clone(), backup_id.clone())
+            .insert(&factor, backup_id.clone())
             .await
             .unwrap();
 
         // Attempt to insert the same factor again
         let result = factor_lookup
-            .insert(factor.clone(), "test_backup_id_2".to_string())
+            .insert(&factor, "test_backup_id_2".to_string())
             .await;
         assert_eq!(
             result.unwrap_err().to_string(),

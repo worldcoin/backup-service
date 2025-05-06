@@ -2,7 +2,7 @@ mod common;
 
 use crate::common::{
     generate_keypair, get_keypair_challenge, get_passkey_challenge,
-    make_credential_from_passkey_challenge, send_post_request_with_multipart,
+    make_credential_from_passkey_challenge, make_sync_factor, send_post_request_with_multipart,
     sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
@@ -24,6 +24,9 @@ async fn test_create_backup_with_passkey() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -37,6 +40,8 @@ async fn test_create_backup_with_passkey() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -81,6 +86,9 @@ async fn test_create_backup_with_oidc_token() {
         challenge_response["challenge"].as_str().unwrap(),
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -99,6 +107,8 @@ async fn test_create_backup_with_oidc_token() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
@@ -128,6 +138,9 @@ async fn test_create_backup_with_ec_keypair() {
         challenge_response["challenge"].as_str().unwrap(),
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the keypair signature to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -142,6 +155,8 @@ async fn test_create_backup_with_ec_keypair() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -169,6 +184,9 @@ async fn test_create_backup_with_incorrect_token() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -182,6 +200,8 @@ async fn test_create_backup_with_incorrect_token() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -193,7 +213,16 @@ async fn test_create_backup_with_incorrect_token() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "jwt_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "jwt_error",
+                "message": "jwt_error",
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -216,6 +245,9 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
             + 1
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -229,6 +261,8 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -240,7 +274,16 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "webauthn_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "webauthn_error",
+                "message": "webauthn_error",
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -254,6 +297,9 @@ async fn test_create_backup_with_empty_file() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -267,6 +313,8 @@ async fn test_create_backup_with_empty_file() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"".as_slice()),
         None,
@@ -278,7 +326,16 @@ async fn test_create_backup_with_empty_file() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "empty_backup_file"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "empty_backup_file",
+                "message": "empty_backup_file",
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -292,6 +349,9 @@ async fn test_create_backup_with_large_file() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -305,6 +365,8 @@ async fn test_create_backup_with_large_file() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(vec![0; 5 * 1024 * 1024 + 1]), // 5 MB file + 1 byte
         None,
@@ -316,7 +378,16 @@ async fn test_create_backup_with_large_file() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "backup_file_too_large"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_file_too_large",
+                "message": "backup_file_too_large",
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -338,6 +409,9 @@ async fn test_create_backup_with_invalid_oidc_token() {
         challenge_response["challenge"].as_str().unwrap(),
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -356,6 +430,8 @@ async fn test_create_backup_with_invalid_oidc_token() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
@@ -366,7 +442,16 @@ async fn test_create_backup_with_invalid_oidc_token() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(response, json!({"error": "oidc_token_verification_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "oidc_token_verification_error",
+                "message": "oidc_token_verification_error",
+            },
+        })
+    );
 }
 
 #[tokio::test]
@@ -384,6 +469,9 @@ async fn test_create_backup_with_invalid_ec_keypair() {
     // Generate another keypair
     let (public_key2, _) = generate_keypair();
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Pass the public key from the second keypair, but the signature from the first keypair
     let response = send_post_request_with_multipart(
         "/create",
@@ -398,6 +486,8 @@ async fn test_create_backup_with_invalid_ec_keypair() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -409,5 +499,16 @@ async fn test_create_backup_with_invalid_ec_keypair() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "signature_verification_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "signature_verification_error",
+                "message": "signature_verification_error",
+            },
+        })
+    );
 }
+
+// TODO/FIXME: add tests for incorrect sync factor

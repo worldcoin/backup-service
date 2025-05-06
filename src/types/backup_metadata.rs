@@ -14,6 +14,9 @@ pub struct BackupMetadata {
     pub id: String,
     /// Factors that are used to access the backup and modify it (including adding other factors).
     pub factors: Vec<Factor>,
+    /// Factors that are used to update backup content and view backup metadata
+    /// (but not update backup metadata).
+    pub sync_factors: Vec<Factor>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
     pub keys: Vec<BackupEncryptionKey>,
 }
@@ -41,9 +44,15 @@ pub struct Factor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[allow(clippy::large_enum_variant)]
 pub enum FactorKind {
     #[serde(rename_all = "camelCase")]
-    Passkey { webauthn_credential: Passkey },
+    Passkey {
+        webauthn_credential: Passkey,
+        // Registration object presented by the client when signing up. Used by the client to be
+        // to register the passkey in Turnkey later, not during initial sign up.
+        registration: serde_json::Value,
+    },
     #[serde(rename_all = "camelCase")]
     OidcAccount { account: OidcAccountKind },
     #[serde(rename_all = "camelCase")]
@@ -51,11 +60,12 @@ pub enum FactorKind {
 }
 
 impl Factor {
-    pub fn new_passkey(webauthn_credential: Passkey) -> Self {
+    pub fn new_passkey(webauthn_credential: Passkey, registration: serde_json::Value) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::Passkey {
                 webauthn_credential,
+                registration,
             },
         }
     }

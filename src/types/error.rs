@@ -38,13 +38,32 @@ impl ErrorResponse {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 struct ErrorResponseSchema {
-    error: String,
+    allow_retry: bool,
+    error: ErrorResponseObject,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ErrorResponseObject {
+    code: String,
+    message: String,
 }
 
 impl IntoResponse for ErrorResponse {
     fn into_response(self) -> axum::response::Response {
-        (self.status, Json(ErrorResponseSchema { error: self.error })).into_response()
+        (
+            self.status,
+            Json(ErrorResponseSchema {
+                allow_retry: false,
+                error: ErrorResponseObject {
+                    code: self.error.clone(),
+                    message: self.error,
+                },
+            }),
+        )
+            .into_response()
     }
 }
 
