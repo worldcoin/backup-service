@@ -2,6 +2,7 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
+use crate::sync_factor_token::SyncFactorTokenManager;
 use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind, OidcAccountKind};
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -11,7 +12,6 @@ use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
-use crate::sync_factor_token::SyncFactorTokenManager;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

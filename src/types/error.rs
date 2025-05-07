@@ -2,6 +2,7 @@ use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::sync_factor_token::SyncFactorTokenError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
 use aws_sdk_dynamodb::error::SdkError;
@@ -14,7 +15,6 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::error::Error;
 use webauthn_rs::prelude::WebauthnError;
-use crate::sync_factor_token::SyncFactorTokenError;
 
 #[derive(Debug, Clone)]
 pub struct ErrorResponse {
@@ -201,9 +201,12 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
 impl From<SyncFactorTokenError> for ErrorResponse {
     fn from(err: SyncFactorTokenError) -> Self {
         match &err {
-            SyncFactorTokenError::DynamoDbPutError(_) | SyncFactorTokenError::DynamoDbGetError(_)
-            | SyncFactorTokenError::DynamoDbUpdateError(_) | SyncFactorTokenError::MalformedToken
-            | SyncFactorTokenError::ParseBackupIdError | SyncFactorTokenError::ParseExpirationError => {
+            SyncFactorTokenError::DynamoDbPutError(_)
+            | SyncFactorTokenError::DynamoDbGetError(_)
+            | SyncFactorTokenError::DynamoDbUpdateError(_)
+            | SyncFactorTokenError::MalformedToken
+            | SyncFactorTokenError::ParseBackupIdError
+            | SyncFactorTokenError::ParseExpirationError => {
                 tracing::error!(message = "Sync factor token error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
