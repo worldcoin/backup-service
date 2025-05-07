@@ -38,6 +38,7 @@ impl ChallengeManager {
         }
     }
 
+    // TODO/FIXME: add method context, e.g. create-backup / retrieve-backup / add-factor
     pub async fn create_challenge_token(
         &self,
         challenge_type: ChallengeType,

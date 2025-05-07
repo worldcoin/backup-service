@@ -166,11 +166,7 @@ impl Environment {
 
     /// Issuer URL for the Google OIDC provider
     pub fn google_issuer_url(&self) -> IssuerUrl {
-        match self {
-            Self::Production | Self::Staging => todo!(),
-            Self::Development { .. } => IssuerUrl::new("https://accounts.google.com".to_string())
-                .expect("Invalid issuer URL"),
-        }
+        IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL")
     }
 
     pub fn factor_lookup_dynamodb_table_name(&self) -> &'static str {

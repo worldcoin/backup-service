@@ -70,13 +70,13 @@ pub async fn handler(
             // Step 1A.4: Lookup the credential ID in the factor lookup table and get potential
             // backup ID
             let not_verified_backup_id = factor_lookup
-                .lookup(FactorToLookup::from_passkey(
+                .lookup(&FactorToLookup::from_passkey(
                     URL_SAFE_NO_PAD.encode(not_verified_credential_id),
                 ))
                 .await?;
             let Some(not_verified_backup_id) = not_verified_backup_id else {
                 tracing::info!(message = "No backup ID found for the given credential");
-                return Err(ErrorResponse::bad_request("webauthn_error"));
+                return Err(ErrorResponse::bad_request("backup_not_found"));
             };
 
             // Step 1A.5: Fetch the backup from the storage to get the reference
@@ -98,6 +98,7 @@ pub async fn handler(
                     #[allow(irrefutable_let_patterns)]
                     if let FactorKind::Passkey {
                         webauthn_credential,
+                        registration: _,
                     } = &factor.kind
                     {
                         Some(webauthn_credential.into())
@@ -170,10 +171,10 @@ pub async fn handler(
                 ),
             };
 
-            let not_verified_backup_id = factor_lookup.lookup(oidc_factor).await?;
+            let not_verified_backup_id = factor_lookup.lookup(&oidc_factor).await?;
             let Some(not_verified_backup_id) = not_verified_backup_id else {
                 tracing::info!(message = "No backup ID found for the given OIDC account");
-                return Err(ErrorResponse::bad_request("oidc_account_error"));
+                return Err(ErrorResponse::bad_request("backup_not_found"));
             };
 
             // Step 1B.6: Fetch the backup metadata to verify the OIDC account exists in the factors
@@ -243,7 +244,7 @@ pub async fn handler(
 
             // Step 1C.3: Lookup the public key in the factor lookup table and get potential backup ID
             let not_verified_backup_id = factor_lookup
-                .lookup(FactorToLookup::from_ec_keypair(public_key.to_string()))
+                .lookup(&FactorToLookup::from_ec_keypair(public_key.to_string()))
                 .await?;
             let Some(not_verified_backup_id) = not_verified_backup_id else {
                 tracing::info!(message = "No backup ID found for the given EC keypair");

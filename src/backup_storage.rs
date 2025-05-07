@@ -145,6 +145,27 @@ impl BackupStorage {
             Err(err) => Err(BackupManagerError::GetObjectError(err)),
         }
     }
+
+    /// Updates a backup in S3 by backup ID. Overwrites the existing backup with the new one.
+    ///
+    /// # Errors
+    /// * If the backup cannot be uploaded to S3, BackupManagerError::PutObjectError is returned.
+    /// * If the backup cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    pub async fn update_backup(
+        &self,
+        backup_id: &str,
+        backup: Vec<u8>,
+    ) -> Result<(), BackupManagerError> {
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket_arn())
+            .key(get_backup_key(backup_id))
+            .body(ByteStream::from(backup))
+            .send()
+            .await?;
+
+        Ok(())
+    }
 }
 
 pub struct FoundBackup {
@@ -232,8 +253,10 @@ mod tests {
                 id: test_primary_factor_id.clone(),
                 kind: FactorKind::Passkey {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
+                    registration: json!({}),
                 },
             }],
+            sync_factors: vec![],
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
@@ -292,5 +315,45 @@ mod tests {
             }
             _ => panic!("Expected PutObjectError"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_by_backup_id() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let updated_backup_data = vec![6, 7, 8, 9, 10];
+
+        // Create a backup
+        backup_storage
+            .create(
+                test_backup_data.clone(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                },
+            )
+            .await
+            .unwrap();
+
+        // Update the backup
+        backup_storage
+            .update_backup(&test_backup_id, updated_backup_data.clone())
+            .await
+            .unwrap();
+
+        // Get the updated backup
+        let found_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(found_backup.backup, updated_backup_data);
     }
 }

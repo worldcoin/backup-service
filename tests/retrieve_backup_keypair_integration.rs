@@ -104,7 +104,16 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "jwt_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "jwt_error",
+                "message": "jwt_error",
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -150,7 +159,16 @@ async fn test_retrieve_backup_with_wrong_keypair() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "signature_verification_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "signature_verification_error",
+                "message": "signature_verification_error",
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -191,5 +209,14 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "keypair_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "keypair_error",
+                "message": "keypair_error",
+            }
+        })
+    );
 }

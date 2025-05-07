@@ -21,6 +21,8 @@ pub struct CreateBackupRequest {
     authorization: Authorization,
     challenge_token: String,
     initial_encryption_key: BackupEncryptionKey,
+    initial_sync_factor: Authorization,
+    initial_sync_challenge_token: String,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -39,12 +41,7 @@ pub async fn handler(
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart)
-        .await
-        .map_err(|err| {
-            tracing::info!(message = "Failed to parse multipart data", error = ?err);
-            ErrorResponse::bad_request("invalid_multipart_data")
-        })?;
+    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
         tracing::info!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request("missing_payload_field")
@@ -101,7 +98,13 @@ pub async fn handler(
 
             let credential_id = verified_passkey.cred_id().clone();
             (
-                Factor::new_passkey(verified_passkey),
+                Factor::new_passkey(
+                    verified_passkey,
+                    serde_json::to_value(credential.clone()).map_err(|err| {
+                        tracing::info!(message = "Failed to serialize passkey credential", error = ?err);
+                        ErrorResponse::internal_server_error()
+                    })?,
+                ),
                 FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id)),
             )
         }
@@ -182,22 +185,60 @@ pub async fn handler(
         }
     };
 
-    // Step 3: Initialize backup metadata
+    // Step 3: Verify sync factor, which is used for updating the backup content. Only EC keypair
+    // authorization is supported for now.
+    let (initial_sync_factor, initial_sync_factor_to_lookup) = match &request.initial_sync_factor {
+        Authorization::EcKeypair {
+            public_key,
+            signature,
+        } => {
+            // Step 3.1: Get the challenge payload from the challenge token
+            let trusted_challenge = challenge_manager
+                .extract_token_payload(
+                    ChallengeType::Keypair,
+                    request.initial_sync_challenge_token.to_string(),
+                )
+                .await?;
+
+            // Step 3.2: Verify the signature using the public key
+            verify_signature(public_key, signature, trusted_challenge.as_ref())?;
+
+            // Step 3.3: Track used challenges to prevent replay attacks
+            // TODO/FIXME
+
+            // Step 3.4: Create a factor that's going to be saved in the metadata and a factor to lookup
+            (
+                Factor::new_ec_keypair(public_key.to_string()),
+                FactorToLookup::from_ec_keypair(public_key.to_string()),
+            )
+        }
+        Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
+            tracing::info!(message = "Invalid sync factor type");
+            return Err(ErrorResponse::bad_request("invalid_sync_factor"));
+        }
+    };
+
+    // Step 4: Initialize backup metadata
     let backup_metadata = BackupMetadata {
         id: uuid::Uuid::new_v4().to_string(),
         factors: vec![backup_factor],
+        sync_factors: vec![initial_sync_factor],
         keys: vec![request.initial_encryption_key.clone()],
     };
 
     // TODO/FIXME: More checks and metadata initialization
 
-    // Step 4: Link credential ID to backup ID for lookup during recovery. This should happen
-    // before the backup storage is updated, because it might fail with a duplicate key error.
+    // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery
+    // and sync. This should happen before the backup storage is updated, because
+    // it might fail with a duplicate key error.
     factor_lookup
-        .insert(factor_to_lookup, backup_metadata.id.clone())
+        .insert(&factor_to_lookup, backup_metadata.id.clone())
+        .await?;
+    factor_lookup
+        .insert(&initial_sync_factor_to_lookup, backup_metadata.id.clone())
         .await?;
 
-    // Step 5: Save the backup to S3
+    // Step 6: Save the backup to S3
     backup_storage
         .create(backup.to_vec(), &backup_metadata)
         .await?;

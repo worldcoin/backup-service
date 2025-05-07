@@ -222,6 +222,30 @@ pub async fn make_credential_from_passkey_challenge(
     serde_json::to_value(credential).unwrap()
 }
 
+// Get sync factor as keypair that signs a challenge from the server.
+// Returns (factor, challenge token, secret key).
+pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate keypair and sign the challenge
+    let (public_key, secret_key) = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    (
+        json!({
+            "kind": "EC_KEYPAIR",
+            "publicKey": public_key,
+            "signature": signature,
+        }),
+        challenge_response["token"].as_str().unwrap().to_string(),
+        secret_key,
+    )
+}
+
 /// Get a passkey retrieval challenge response from the server.
 pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
     let challenge_response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
@@ -276,6 +300,9 @@ pub async fn create_test_backup(
     let credential =
         make_credential_from_passkey_challenge(passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let create_response = send_post_request_with_multipart(
         "/create",
@@ -289,6 +316,8 @@ pub async fn create_test_backup(
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -312,6 +341,9 @@ pub async fn create_test_backup_with_keypair(
         challenge_response["challenge"].as_str().unwrap(),
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the keypair signature to the server to create a backup
     let create_response = send_post_request_with_multipart(
         "/create",
@@ -326,6 +358,8 @@ pub async fn create_test_backup_with_keypair(
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -333,6 +367,52 @@ pub async fn create_test_backup_with_keypair(
     .await;
 
     (keypair, create_response)
+}
+
+/// Create a test backup with an EC keypair, returning the sync factor's secret key as well.
+/// Returns:
+/// - The main keypair (public_key, secret_key)
+/// - The create response
+/// - The sync factor's secret key
+pub async fn create_test_backup_with_sync_keypair(
+    backup_data: &[u8],
+) -> ((String, SecretKey), Response, SecretKey) {
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate keypair and sign the challenge
+    let keypair = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &keypair.1,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, sync_secret_key) = make_sync_factor().await;
+
+    // Send the keypair signature to the server to create a backup
+    let create_response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": keypair.0.clone(),
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
+        }),
+        Bytes::from(backup_data.to_vec()),
+        None,
+    )
+    .await;
+
+    (keypair, create_response, sync_secret_key)
 }
 
 pub struct TestBackupWithOidcAccount {
@@ -370,6 +450,9 @@ pub async fn create_test_backup_with_oidc_account(
         challenge_response["challenge"].as_str().unwrap(),
     );
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the OIDC token to the server to create a backup
     let create_response = send_post_request_with_multipart(
         "/create",
@@ -388,6 +471,8 @@ pub async fn create_test_backup_with_oidc_account(
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(backup_data.to_vec()),
         Some(environment),

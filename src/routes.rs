@@ -14,6 +14,8 @@ mod health;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
+mod sync_backup;
+mod sync_challenge_keypair;
 
 pub fn handler(environment: Environment) -> ApiRouter {
     ApiRouter::new()
@@ -48,4 +50,9 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/retrieve/from-challenge",
             post(retrieve_from_challenge::handler),
         )
+        .api_route(
+            "/sync/challenge/keypair",
+            post(sync_challenge_keypair::handler),
+        )
+        .api_route("/sync", post(sync_backup::handler))
 }

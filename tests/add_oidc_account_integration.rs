@@ -1,8 +1,8 @@
 mod common;
 
 use crate::common::{
-    get_passkey_challenge, make_credential_from_passkey_challenge, send_post_request,
-    send_post_request_with_multipart,
+    get_passkey_challenge, make_credential_from_passkey_challenge, make_sync_factor,
+    send_post_request, send_post_request_with_multipart,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -24,6 +24,9 @@ async fn test_add_oidc_account_integration() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
 
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
@@ -37,6 +40,8 @@ async fn test_add_oidc_account_integration() {
                 "kind": "PRF",
                 "encryptedKey": "ENCRYPTED_KEY",
             },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -109,7 +114,11 @@ async fn test_add_oidc_account_integration() {
         assert_eq!(
             response,
             json!({
-                "error": "invalid_oidc_token"
+                "allowRetry": false,
+                "error": {
+                    "code": "invalid_oidc_token",
+                    "message": "invalid_oidc_token"
+                }
             })
         );
     }

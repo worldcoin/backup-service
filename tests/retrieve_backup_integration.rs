@@ -100,7 +100,16 @@ async fn test_retrieve_backup_with_incorrect_token() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "jwt_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "jwt_error",
+                "message": "jwt_error",
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -149,7 +158,16 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response, json!({"error": "webauthn_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "webauthn_error",
+                "message": "webauthn_error",
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -193,5 +211,14 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
         .unwrap()
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(response, json!({"error": "webauthn_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_not_found",
+                "message": "backup_not_found",
+            }
+        })
+    );
 }

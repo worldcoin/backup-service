@@ -22,5 +22,7 @@ pub enum BackupEncryptionKey {
     Turnkey {
         encrypted_key: String,
         turnkey_account_id: String,
+        turnkey_user_id: String,
+        turnkey_private_key_id: String,
     },
 }

@@ -135,7 +135,16 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Verify error message
-    assert_eq!(response, json!({"error": "oidc_account_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_not_found",
+                "message": "backup_not_found",
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -196,5 +205,14 @@ async fn test_retrieve_backup_with_different_keypair() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Verify error message
-    assert_eq!(response, json!({"error": "signature_verification_error"}));
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "signature_verification_error",
+                "message": "signature_verification_error",
+            }
+        })
+    );
 }
