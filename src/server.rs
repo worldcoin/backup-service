@@ -3,6 +3,7 @@ use crate::challenge_manager::ChallengeManager;
 use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::routes;
+use crate::sync_factor_token::SyncFactorTokenManager;
 use crate::types::Environment;
 use aide::openapi::{Info, OpenApi};
 use aws_sdk_s3::Client as S3Client;
@@ -17,6 +18,7 @@ pub async fn start(
     backup_storage: BackupStorage,
     factor_lookup: FactorLookup,
     oidc_token_verifier: OidcTokenVerifier,
+    sync_factor_token_manager: SyncFactorTokenManager,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -35,6 +37,7 @@ pub async fn start(
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
+        .layer(Extension(sync_factor_token_manager))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::timeout::TimeoutLayer::new(

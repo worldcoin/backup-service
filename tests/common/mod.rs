@@ -57,9 +57,14 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
     let challenge_manager = get_challenge_manager().await;
     let backup_storage = BackupStorage::new(environment, s3_client.clone());
     let factor_lookup =
-        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client);
+        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
     let oidc_token_verifier =
         backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment);
+    let sync_factor_token_manager = backup_service::sync_factor_token::SyncFactorTokenManager::new(
+        environment,
+        environment.sync_factor_token_ttl(),
+        dynamodb_client.clone(),
+    );
 
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
@@ -69,6 +74,7 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
+        .layer(Extension(sync_factor_token_manager))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {

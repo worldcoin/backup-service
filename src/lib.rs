@@ -8,6 +8,7 @@ pub mod oidc_nonce_verifier;
 pub mod oidc_token_verifier;
 pub mod routes;
 pub mod server;
+pub mod sync_factor_token;
 pub mod types;
 pub mod verify_signature;
 
