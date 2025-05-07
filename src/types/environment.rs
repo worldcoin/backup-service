@@ -39,7 +39,9 @@ impl Environment {
     pub fn s3_bucket_arn(&self) -> &str {
         match self {
             Self::Production | Self::Staging => {
-                todo!("Implement bucket name for production and staging")
+                env::var("BACKUP_S3_BUCKET_ARN")
+                    .expect("BACKUP_S3_BUCKET_ARN environment variable is not set")
+                    .as_str()
             }
             // We can't specify the bucket ARN for localstack,
             // so we use the bucket name instead.
@@ -153,7 +155,10 @@ impl Environment {
     /// The client ID for the Google OIDC provider
     pub fn google_client_id(&self) -> ClientId {
         match self {
-            Self::Production | Self::Staging => todo!(),
+            Self::Production | Self::Staging => ClientId::new(
+                "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+                    .to_string(),
+            ),
             Self::Development { .. } => ClientId::new(
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
                     .to_string(),
