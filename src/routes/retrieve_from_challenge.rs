@@ -27,6 +27,7 @@ pub struct RetrieveBackupFromChallengeResponse {
     backup: String,
     /// Metadata about the backup, including the Turnkey ID and encryption keys.
     metadata: ExportedBackupMetadata,
+    /// Token to add a new sync factor later.
     sync_factor_token: String,
 }
 

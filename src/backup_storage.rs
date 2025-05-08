@@ -1,4 +1,4 @@
-use crate::types::backup_metadata::BackupMetadata;
+use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
@@ -166,6 +166,85 @@ impl BackupStorage {
 
         Ok(())
     }
+
+    /// Adds a regular factor to the backup metadata in S3.
+    /// TODO/FIXME: Make this atomic.
+    pub async fn add_factor(
+        &self,
+        backup_id: &str,
+        factor: Factor,
+    ) -> Result<(), BackupManagerError> {
+        // Get the current metadata
+        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        // Check if this factor already exists by comparing kinds
+        if metadata.factors.iter().any(|f| f.kind == factor.kind)
+            || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
+        {
+            return Err(BackupManagerError::FactorAlreadyExists);
+        }
+
+        // Add the factor to the metadata
+        metadata.factors.push(factor);
+
+        // Save the updated metadata
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket_arn())
+            .key(get_metadata_key(backup_id))
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Adds a sync factor to the backup metadata in S3.
+    /// TODO/FIXME: Make this atomic.
+    pub async fn add_sync_factor(
+        &self,
+        backup_id: &str,
+        sync_factor: Factor,
+    ) -> Result<(), BackupManagerError> {
+        // Sync factor must be a keypair
+        match sync_factor.kind {
+            FactorKind::EcKeypair { .. } => {}
+            FactorKind::Passkey { .. } | FactorKind::OidcAccount { .. } => {
+                return Err(BackupManagerError::SyncFactorMustBeKeypair);
+            }
+        }
+
+        // Get the current metadata
+        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        // Check if this factor already exists by comparing kinds
+        if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
+            || metadata
+                .sync_factors
+                .iter()
+                .any(|f| f.kind == sync_factor.kind)
+        {
+            return Err(BackupManagerError::FactorAlreadyExists);
+        }
+
+        // Add the sync factor to the metadata
+        metadata.sync_factors.push(sync_factor);
+
+        // Save the updated metadata
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket_arn())
+            .key(get_metadata_key(backup_id))
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(())
+    }
 }
 
 pub struct FoundBackup {
@@ -191,12 +270,18 @@ pub enum BackupManagerError {
     GetObjectError(#[from] SdkError<aws_sdk_s3::operation::get_object::GetObjectError>),
     #[error("Failed to convert ByteStream to bytes: {0:?}")]
     ByteStreamError(#[from] aws_sdk_s3::primitives::ByteStreamError),
+    #[error("Sync factor must be a keypair")]
+    SyncFactorMustBeKeypair,
+    #[error("Backup not found")]
+    BackupNotFound,
+    #[error("Factor already exists")]
+    FactorAlreadyExists,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
+    use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::types::encryption_key::BackupEncryptionKey;
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
@@ -255,6 +340,7 @@ mod tests {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                     registration: json!({}),
                 },
+                created_at: Default::default(),
             }],
             sync_factors: vec![],
             keys: vec![BackupEncryptionKey::Prf {
@@ -355,5 +441,149 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, updated_backup_data);
+    }
+
+    #[tokio::test]
+    async fn test_add_factor() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        // Create a test backup
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+        };
+
+        // Create a backup
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Create a test factor
+        let google_account = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "12345".to_string(),
+            email: "test@example.com".to_string(),
+        });
+
+        // Add the factor
+        backup_storage
+            .add_factor(&test_backup_id, google_account.clone())
+            .await
+            .unwrap();
+
+        // Get the updated metadata and verify the factor was added
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 1);
+        assert_eq!(updated_backup.metadata.factors[0].kind, google_account.kind);
+
+        // Try to add the same factor again - should fail with FactorAlreadyExists
+        let result = backup_storage
+            .add_factor(&test_backup_id, google_account.clone())
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::FactorAlreadyExists) => {}
+            _ => panic!("Expected FactorAlreadyExists"),
+        }
+
+        // Try to add a factor to a non-existent backup - should fail with BackupNotFound
+        let result = backup_storage
+            .add_factor("non_existent_backup", google_account.clone())
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::BackupNotFound) => {}
+            _ => panic!("Expected BackupNotFound"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_sync_factor() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        // Create a test backup
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+        };
+
+        // Create a backup
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Add the sync factor
+        let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
+        backup_storage
+            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .await
+            .unwrap();
+
+        // Get the updated metadata and verify the sync factor was added
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.sync_factors.len(), 1);
+        assert_eq!(
+            updated_backup.metadata.sync_factors[0].kind,
+            keypair_factor.kind
+        );
+
+        // Try to add the same sync factor again - should fail with FactorAlreadyExists
+        let result = backup_storage
+            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::FactorAlreadyExists) => {}
+            _ => panic!("Expected FactorAlreadyExists"),
+        }
+
+        // Try to add an invalid factor type (OIDC account) as a sync factor - should fail
+        let oidc_factor = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "12345".to_string(),
+            email: "test@example.com".to_string(),
+        });
+        let result = backup_storage
+            .add_sync_factor(&test_backup_id, oidc_factor)
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::SyncFactorMustBeKeypair) => {}
+            _ => panic!("Expected SyncFactorMustBeKeypair"),
+        }
+
+        // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
+        let result = backup_storage
+            .add_sync_factor("non_existent_backup", keypair_factor.clone())
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::BackupNotFound) => {}
+            _ => panic!("Expected BackupNotFound"),
+        }
     }
 }

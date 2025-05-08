@@ -1,4 +1,5 @@
 use crate::types::encryption_key::BackupEncryptionKey;
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -26,6 +27,7 @@ impl BackupMetadata {
     /// exported to the client.
     pub fn exported(&self) -> ExportedBackupMetadata {
         ExportedBackupMetadata {
+            id: self.id.clone(),
             keys: self.keys.clone(),
         }
     }
@@ -40,6 +42,8 @@ pub struct Factor {
     pub id: String,
     /// The kind of factor and the associated metadata
     pub kind: FactorKind,
+    /// The time when the factor was created
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,6 +71,7 @@ impl Factor {
                 webauthn_credential,
                 registration,
             },
+            created_at: Utc::now(),
         }
     }
 
@@ -74,6 +79,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::OidcAccount { account },
+            created_at: Utc::now(),
         }
     }
 
@@ -81,6 +87,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::EcKeypair { public_key },
+            created_at: Utc::now(),
         }
     }
 }
@@ -105,6 +112,8 @@ pub enum OidcAccountKind {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedBackupMetadata {
+    /// The ID of the backup.
+    id: String,
     /// Allows user to decrypt the backup if they are able to decrypt one of keys (e.g. using PRF,
     /// Turnkey, etc.)
     keys: Vec<BackupEncryptionKey>,

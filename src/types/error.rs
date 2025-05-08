@@ -138,6 +138,18 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
+            BackupManagerError::SyncFactorMustBeKeypair => {
+                tracing::info!(message = "Sync factor must be a keypair", error = ?err);
+                ErrorResponse::bad_request("sync_factor_must_be_keypair")
+            }
+            BackupManagerError::BackupNotFound => {
+                tracing::info!(message = "Backup not found", error = ?err);
+                ErrorResponse::bad_request("backup_not_found")
+            }
+            BackupManagerError::FactorAlreadyExists => {
+                tracing::info!(message = "Factor already exists", error = ?err);
+                ErrorResponse::bad_request("factor_already_exists")
+            }
         }
     }
 }
