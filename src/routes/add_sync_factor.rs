@@ -2,7 +2,7 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::sync_factor_token::SyncFactorTokenManager;
-use crate::types::backup_metadata::{Factor};
+use crate::types::backup_metadata::Factor;
 use crate::types::{Authorization, ErrorResponse};
 use crate::verify_signature::verify_signature;
 use axum::{Extension, Json};

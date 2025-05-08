@@ -531,10 +531,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a keypair factor (valid for sync)
-        let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
-
         // Add the sync factor
+        let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await

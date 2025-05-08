@@ -2,8 +2,8 @@ mod common;
 
 use crate::common::{
     authenticate_with_passkey_challenge, create_test_backup, generate_keypair,
-    get_passkey_retrieval_challenge, send_post_request, sign_keypair_challenge, verify_s3_backup_exists,
-    verify_s3_metadata_exists, send_post_request_with_multipart,
+    get_passkey_retrieval_challenge, send_post_request, send_post_request_with_multipart,
+    sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -17,9 +17,15 @@ async fn test_add_sync_factor_happy_path() {
     let mut passkey_client = common::get_mock_passkey_client();
 
     // Create a backup first
-    let (_credential, create_response) = create_test_backup(&mut passkey_client, b"TEST BACKUP DATA").await;
+    let (_credential, create_response) =
+        create_test_backup(&mut passkey_client, b"TEST BACKUP DATA").await;
     assert_eq!(create_response.status(), StatusCode::OK);
-    let create_body = create_response.into_body().collect().await.unwrap().to_bytes();
+    let create_body = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
     let backup_id = create_response["backupId"].as_str().unwrap();
 
@@ -44,21 +50,28 @@ async fn test_add_sync_factor_happy_path() {
     .await;
 
     assert_eq!(retrieve_response.status(), StatusCode::OK);
-    let body = retrieve_response.into_body().collect().await.unwrap().to_bytes();
+    let body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let retrieve_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let sync_factor_token = retrieve_response["syncFactorToken"].as_str().unwrap();
 
     // Get a challenge for adding a sync factor
-    let sync_factor_challenge_response = send_post_request(
-        "/add-sync-factor/challenge/keypair",
-        json!({}),
-    )
-    .await;
-    
+    let sync_factor_challenge_response =
+        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
+
     assert_eq!(sync_factor_challenge_response.status(), StatusCode::OK);
-    let challenge_body = sync_factor_challenge_response.into_body().collect().await.unwrap().to_bytes();
+    let challenge_body = sync_factor_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let challenge_response: serde_json::Value = serde_json::from_slice(&challenge_body).unwrap();
-    
+
     // Generate a new keypair and sign the challenge
     let (public_key, secret_key) = generate_keypair();
     let signature = sign_keypair_challenge(
@@ -82,35 +95,42 @@ async fn test_add_sync_factor_happy_path() {
     .await;
 
     assert_eq!(add_sync_factor_response.status(), StatusCode::OK);
-    let body = add_sync_factor_response.into_body().collect().await.unwrap().to_bytes();
+    let body = add_sync_factor_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    
+
     // Verify the response contains the backup ID
     assert_eq!(response["backupId"], backup_id);
 
     // Verify the backup metadata was updated with the new sync factor
     let metadata = verify_s3_metadata_exists(backup_id).await;
-    
+
     // Check that we now have both sync factors (initial + new one)
     let sync_factors = metadata["syncFactors"].as_array().unwrap();
     assert_eq!(sync_factors.len(), 2);
-    
+
     // Verify the new sync factor is in the list
     let new_sync_factor_exists = sync_factors.iter().any(|factor| {
         factor["kind"]["kind"] == "EC_KEYPAIR" && factor["kind"]["publicKey"] == public_key
     });
     assert!(new_sync_factor_exists);
-    
+
     // Try to use the same token again - should fail as tokens are one-time use
-    let second_challenge_response = send_post_request(
-        "/add-sync-factor/challenge/keypair",
-        json!({}),
-    )
-    .await;
+    let second_challenge_response =
+        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
     assert_eq!(second_challenge_response.status(), StatusCode::OK);
-    let challenge_body = second_challenge_response.into_body().collect().await.unwrap().to_bytes();
+    let challenge_body = second_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let second_challenge: serde_json::Value = serde_json::from_slice(&challenge_body).unwrap();
-    
+
     let (another_public_key, another_secret_key) = generate_keypair();
     let another_signature = sign_keypair_challenge(
         &another_secret_key,
@@ -131,22 +151,33 @@ async fn test_add_sync_factor_happy_path() {
     .await;
 
     assert_eq!(reuse_token_response.status(), StatusCode::BAD_REQUEST);
-    let error_body = reuse_token_response.into_body().collect().await.unwrap().to_bytes();
+    let error_body = reuse_token_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&error_body).unwrap();
-    assert_eq!(error_response["error"]["code"].as_str().unwrap(), "sync_factor_token_already_used");
-    
+    assert_eq!(
+        error_response["error"]["code"].as_str().unwrap(),
+        "sync_factor_token_already_used"
+    );
+
     // Now verify we can use the newly added sync factor to sync a backup
     // Get a sync challenge
     let sync_challenge_response = send_post_request("/sync/challenge/keypair", json!({})).await;
-    let sync_challenge_body = sync_challenge_response.into_body().collect().await.unwrap().to_bytes();
+    let sync_challenge_body = sync_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let sync_challenge: serde_json::Value = serde_json::from_slice(&sync_challenge_body).unwrap();
-    
+
     // Sign the challenge with our new sync factor's secret key
-    let sync_signature = sign_keypair_challenge(
-        &secret_key,
-        sync_challenge["challenge"].as_str().unwrap(),
-    );
-    
+    let sync_signature =
+        sign_keypair_challenge(&secret_key, sync_challenge["challenge"].as_str().unwrap());
+
     // Sync the backup with new content
     let sync_response = send_post_request_with_multipart(
         "/sync",
@@ -162,12 +193,17 @@ async fn test_add_sync_factor_happy_path() {
         None,
     )
     .await;
-    
+
     assert_eq!(sync_response.status(), StatusCode::OK);
-    let sync_body = sync_response.into_body().collect().await.unwrap().to_bytes();
+    let sync_body = sync_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let sync_response: serde_json::Value = serde_json::from_slice(&sync_body).unwrap();
     assert_eq!(sync_response["backupId"], backup_id);
-    
+
     // Verify the backup was updated in S3
     verify_s3_backup_exists(backup_id, b"UPDATED BACKUP DATA").await;
 }
@@ -175,15 +211,17 @@ async fn test_add_sync_factor_happy_path() {
 #[tokio::test]
 async fn test_add_sync_factor_with_invalid_token() {
     // Get a challenge for adding a sync factor
-    let sync_factor_challenge_response = send_post_request(
-        "/add-sync-factor/challenge/keypair",
-        json!({}),
-    )
-    .await;
+    let sync_factor_challenge_response =
+        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
     assert_eq!(sync_factor_challenge_response.status(), StatusCode::OK);
-    let challenge_body = sync_factor_challenge_response.into_body().collect().await.unwrap().to_bytes();
+    let challenge_body = sync_factor_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let challenge_response: serde_json::Value = serde_json::from_slice(&challenge_body).unwrap();
-    
+
     // Generate a new keypair and sign the challenge
     let (public_key, secret_key) = generate_keypair();
     let signature = sign_keypair_challenge(
@@ -207,8 +245,16 @@ async fn test_add_sync_factor_with_invalid_token() {
     .await;
 
     assert_eq!(add_sync_factor_response.status(), StatusCode::BAD_REQUEST);
-    let body = add_sync_factor_response.into_body().collect().await.unwrap().to_bytes();
+    let body = add_sync_factor_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    
-    assert_eq!(error_response["error"]["code"].as_str().unwrap(), "sync_factor_token_not_found");
+
+    assert_eq!(
+        error_response["error"]["code"].as_str().unwrap(),
+        "sync_factor_token_not_found"
+    );
 }
