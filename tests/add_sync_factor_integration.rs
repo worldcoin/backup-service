@@ -7,9 +7,7 @@ use crate::common::{
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use base64::Engine;
 use http_body_util::BodyExt;
-use p256::ecdsa::signature::Signer;
 use serde_json::json;
 
 #[tokio::test]

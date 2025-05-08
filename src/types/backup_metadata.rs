@@ -1,4 +1,5 @@
 use crate::types::encryption_key::BackupEncryptionKey;
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,6 +42,8 @@ pub struct Factor {
     pub id: String,
     /// The kind of factor and the associated metadata
     pub kind: FactorKind,
+    /// The time when the factor was created
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,6 +71,7 @@ impl Factor {
                 webauthn_credential,
                 registration,
             },
+            created_at: DateTime::from(Utc::now()),
         }
     }
 
@@ -75,6 +79,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::OidcAccount { account },
+            created_at: DateTime::from(Utc::now()),
         }
     }
 
@@ -82,6 +87,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::EcKeypair { public_key },
+            created_at: DateTime::from(Utc::now()),
         }
     }
 }

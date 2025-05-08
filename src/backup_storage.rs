@@ -340,6 +340,7 @@ mod tests {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                     registration: json!({}),
                 },
+                created_at: Default::default(),
             }],
             sync_factors: vec![],
             keys: vec![BackupEncryptionKey::Prf {
