@@ -98,13 +98,13 @@ impl Environment {
         )
     }
 
-    /// What's the TTL for the challenge tokens
+    /// TTL for all challenge tokens
     pub fn challenge_token_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)
     }
 
-    /// What's the TTL for the token that's issued during recovery and allows to add a new sync factor
+    /// TTL for the token that's issued during recovery and allows to add a new sync factor
     pub fn sync_factor_token_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)

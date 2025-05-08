@@ -26,6 +26,7 @@ impl BackupMetadata {
     /// exported to the client.
     pub fn exported(&self) -> ExportedBackupMetadata {
         ExportedBackupMetadata {
+            id: self.id.clone(),
             keys: self.keys.clone(),
         }
     }
@@ -105,6 +106,8 @@ pub enum OidcAccountKind {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedBackupMetadata {
+    /// The ID of the backup.
+    id: String,
     /// Allows user to decrypt the backup if they are able to decrypt one of keys (e.g. using PRF,
     /// Turnkey, etc.)
     keys: Vec<BackupEncryptionKey>,
