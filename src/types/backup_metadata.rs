@@ -71,7 +71,7 @@ impl Factor {
                 webauthn_credential,
                 registration,
             },
-            created_at: DateTime::from(Utc::now()),
+            created_at: Utc::now(),
         }
     }
 
@@ -79,7 +79,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::OidcAccount { account },
-            created_at: DateTime::from(Utc::now()),
+            created_at: Utc::now(),
         }
     }
 
@@ -87,7 +87,7 @@ impl Factor {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::EcKeypair { public_key },
-            created_at: DateTime::from(Utc::now()),
+            created_at: Utc::now(),
         }
     }
 }
