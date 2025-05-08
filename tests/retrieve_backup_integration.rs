@@ -48,9 +48,10 @@ async fn test_retrieve_backup() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // Verify we got back a backup and metadata
+    // Verify we got back a backup, metadata and factor sync token
     assert!(response["backup"].is_string());
     assert!(response["metadata"].is_object());
+    assert!(response["syncFactorToken"].is_string());
 
     // Decode and verify the backup data
     let backup_base64 = response["backup"].as_str().unwrap();

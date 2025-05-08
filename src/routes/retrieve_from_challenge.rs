@@ -2,6 +2,7 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
+use crate::sync_factor_token::SyncFactorTokenManager;
 use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind, OidcAccountKind};
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -26,7 +27,7 @@ pub struct RetrieveBackupFromChallengeResponse {
     backup: String,
     /// Metadata about the backup, including the Turnkey ID and encryption keys.
     metadata: ExportedBackupMetadata,
-    // TODO/FIXME: token to add a new backup update keypair
+    sync_factor_token: String,
 }
 
 /// Request to retrieve a backup using a solved challenge.
@@ -36,6 +37,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
     Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
+    Extension(sync_factor_token_manager): Extension<SyncFactorTokenManager>,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Verify the solved challenge and get the backup from S3
@@ -297,9 +299,15 @@ pub async fn handler(
         }
     };
 
-    // Step 3: Return the backup and metadata
+    // Step 3: Create a sync factor token to allow the user to add a new sync factor later
+    let sync_factor_token = sync_factor_token_manager
+        .create_token(metadata.id.clone())
+        .await?;
+
+    // Step 4: Return the backup and metadata
     Ok(Json(RetrieveBackupFromChallengeResponse {
         backup: STANDARD.encode(backup),
         metadata: metadata.exported(),
+        sync_factor_token,
     }))
 }

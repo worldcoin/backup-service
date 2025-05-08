@@ -2,6 +2,7 @@ use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::sync_factor_token::SyncFactorTokenError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
 use aws_sdk_dynamodb::error::SdkError;
@@ -192,6 +193,34 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
             OidcTokenVerifierError::TokenVerificationError => {
                 tracing::info!(message = "Failed to verify OIDC token", error = ?err);
                 ErrorResponse::bad_request("oidc_token_verification_error")
+            }
+        }
+    }
+}
+
+impl From<SyncFactorTokenError> for ErrorResponse {
+    fn from(err: SyncFactorTokenError) -> Self {
+        match &err {
+            SyncFactorTokenError::DynamoDbPutError(_)
+            | SyncFactorTokenError::DynamoDbGetError(_)
+            | SyncFactorTokenError::DynamoDbUpdateError(_)
+            | SyncFactorTokenError::MalformedToken
+            | SyncFactorTokenError::ParseBackupIdError
+            | SyncFactorTokenError::ParseExpirationError => {
+                tracing::error!(message = "Sync factor token error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            SyncFactorTokenError::TokenNotFound => {
+                tracing::info!(message = "Sync factor token not found", error = ?err);
+                ErrorResponse::bad_request("sync_factor_token_not_found")
+            }
+            SyncFactorTokenError::TokenAlreadyUsed => {
+                tracing::info!(message = "Sync factor token already used", error = ?err);
+                ErrorResponse::bad_request("sync_factor_token_already_used")
+            }
+            SyncFactorTokenError::TokenExpired => {
+                tracing::info!(message = "Sync factor token expired", error = ?err);
+                ErrorResponse::bad_request("sync_factor_token_expired")
             }
         }
     }
