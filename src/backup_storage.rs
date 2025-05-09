@@ -36,7 +36,7 @@ impl BackupStorage {
         // Save encrypted backup to S3
         self.s3_client
             .put_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
             .if_none_match("*")
@@ -46,7 +46,7 @@ impl BackupStorage {
         // Save metadata to S3
         self.s3_client
             .put_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(&backup_metadata.id))
             .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
             .if_none_match("*")
@@ -99,7 +99,7 @@ impl BackupStorage {
         let metadata = self
             .s3_client
             .get_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .send()
             .await;
@@ -131,7 +131,7 @@ impl BackupStorage {
         let backup = self
             .s3_client
             .get_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .send()
             .await;
@@ -158,7 +158,7 @@ impl BackupStorage {
     ) -> Result<(), BackupManagerError> {
         self.s3_client
             .put_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
             .send()
@@ -192,7 +192,7 @@ impl BackupStorage {
         // Save the updated metadata
         self.s3_client
             .put_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
@@ -237,7 +237,7 @@ impl BackupStorage {
         // Save the updated metadata
         self.s3_client
             .put_object()
-            .bucket(self.environment.s3_bucket_arn())
+            .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
@@ -386,7 +386,7 @@ mod tests {
         // should still return an error
         s3_client
             .delete_object()
-            .bucket(environment.s3_bucket_arn())
+            .bucket(environment.s3_bucket())
             .key(get_metadata_key(&test_backup_id))
             .send()
             .await
