@@ -29,6 +29,16 @@ impl BackupMetadata {
         ExportedBackupMetadata {
             id: self.id.clone(),
             keys: self.keys.clone(),
+            factors: self
+                .factors
+                .iter()
+                .map(|factor| factor.exported())
+                .collect(),
+            sync_factors: self
+                .sync_factors
+                .iter()
+                .map(|factor| factor.exported())
+                .collect(),
         }
     }
 }
@@ -44,6 +54,23 @@ pub struct Factor {
     pub kind: FactorKind,
     /// The time when the factor was created
     pub created_at: DateTime<Utc>,
+}
+
+impl Factor {
+    pub fn exported(&self) -> ExportedFactor {
+        ExportedFactor {
+            id: self.id.clone(),
+            kind: match &self.kind {
+                FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
+                    registration: registration.clone(),
+                },
+                FactorKind::OidcAccount { account: _ } => ExportedFactorKind::OidcAccount {},
+                FactorKind::EcKeypair { public_key } => ExportedFactorKind::EcKeypair {
+                    public_key: public_key.clone(),
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -117,4 +144,39 @@ pub struct ExportedBackupMetadata {
     /// Allows user to decrypt the backup if they are able to decrypt one of keys (e.g. using PRF,
     /// Turnkey, etc.)
     keys: Vec<BackupEncryptionKey>,
+    /// The factors that are used to access the backup and modify it (including adding other factors).
+    factors: Vec<ExportedFactor>,
+    /// Allows user to see if they already have the sync factor keypair or they should generate a
+    /// new one.
+    sync_factors: Vec<ExportedFactor>,
+}
+
+/// See [`Factor`] for more details. Exported version of the factor that contains only the fields
+/// that are exported to the client when performing the recovery / viewing the metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedFactor {
+    /// Used as a unique identifier for the factor
+    pub id: String,
+    /// The kind of factor and the associated metadata
+    pub kind: ExportedFactorKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[allow(clippy::large_enum_variant)]
+pub enum ExportedFactorKind {
+    #[serde(rename_all = "camelCase")]
+    Passkey {
+        // Registration object presented by the client when signing up. Used by the client to be
+        // to register the passkey in Turnkey later, not during initial sign up.
+        registration: serde_json::Value,
+    },
+    #[serde(rename_all = "camelCase")]
+    OidcAccount {
+        // Do not export the sub and email for now, figure out later if need it and how can we
+        // obfuscate it.
+    },
+    #[serde(rename_all = "camelCase")]
+    EcKeypair { public_key: String },
 }
