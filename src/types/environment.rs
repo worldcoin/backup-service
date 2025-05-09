@@ -36,15 +36,11 @@ impl Environment {
     }
 
     /// S3 bucket where backups are stored
-    pub fn s3_bucket_arn(&self) -> String {
+    pub fn s3_bucket(&self) -> String {
         match self {
-            Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET_ARN")
-                .expect("BACKUP_S3_BUCKET_ARN environment variable is not set")
+            Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
+                .expect("BACKUP_S3_BUCKET environment variable is not set")
                 .to_string(),
-            // We can't specify the bucket ARN for localstack,
-            // so we use the bucket name instead.
-            // Path-style addressing (which is used only on development
-            // for local stack support) cannot be used with ARN buckets.
             Self::Development { .. } => "backup-service-bucket".to_string(),
         }
     }
