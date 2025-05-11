@@ -64,7 +64,11 @@ impl Factor {
                 FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
                     registration: registration.clone(),
                 },
-                FactorKind::OidcAccount { account: _ } => ExportedFactorKind::OidcAccount {},
+                FactorKind::OidcAccount { account } => ExportedFactorKind::OidcAccount {
+                    account: match account {
+                        OidcAccountKind::Google { .. } => ExportedOidcAccountKind::Google {},
+                    },
+                },
                 FactorKind::EcKeypair { public_key } => ExportedFactorKind::EcKeypair {
                     public_key: public_key.clone(),
                 },
@@ -173,10 +177,17 @@ pub enum ExportedFactorKind {
         registration: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
-    OidcAccount {
-        // Do not export the sub and email for now, figure out later if need it and how can we
-        // obfuscate it.
-    },
+    OidcAccount { account: ExportedOidcAccountKind },
     #[serde(rename_all = "camelCase")]
     EcKeypair { public_key: String },
+}
+
+/// Exported version of the OIDC account. Allows the mobile app to render that some account was
+/// added, but for now, it doesn't contain which account it is.
+/// TODO/FIXME: Figure out if we should export email and sub here or not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+pub enum ExportedOidcAccountKind {
+    #[serde(rename_all = "camelCase")]
+    Google {},
 }

@@ -16,6 +16,8 @@ mod health;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
+mod retrieve_metadata;
+mod retrieve_metadata_challenge_keypair;
 mod sync_backup;
 mod sync_challenge_keypair;
 
@@ -67,4 +69,10 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(sync_challenge_keypair::handler),
         )
         .api_route("/sync", post(sync_backup::handler))
+        // Metadata retrieval
+        .api_route(
+            "/retrieve-metadata/challenge/keypair",
+            post(retrieve_metadata_challenge_keypair::handler),
+        )
+        .api_route("/retrieve-metadata", post(retrieve_metadata::handler))
 }
