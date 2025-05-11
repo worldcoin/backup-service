@@ -29,11 +29,20 @@ pub fn verify_turnkey_activity_webauthn_stamp(
     }
 
     // Chain of trust:
-    //   activity JSON
-    //        └─(SHA-256 hash)─▶ passkey challenge
-    //                                 └─(embedded in)─▶ clientDataJSON
-    //                                                      └─(combined into)─▶ signedData
-    //                                                                               └─(signed with `signature_base64url`)─▶ credential_public_key
+    //
+    // activity JSON
+    //      │
+    //      ▼  (SHA-256 hash)
+    // passkey challenge
+    //      │
+    //      ▼  (embedded in)
+    // clientDataJSON
+    //      │
+    //      ▼  (combined into)
+    // signedData
+    //      │
+    //      ▼  (signed with `signature_base64url` by)
+    // credential_public_key
 
     // Compute the passkey challenge using Turnkey's algorithm based on the activity JSON
     // Ref: https://github.com/tkhq/sdk/blob/0c391acab671b0ccadfad66fd6b3e926f21654ea/packages/webauthn-stamper/src/index.ts#L70
