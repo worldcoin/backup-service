@@ -8,4 +8,4 @@ mod oidc_token;
 pub use authorization::Authorization;
 pub use environment::Environment;
 pub use error::ErrorResponse;
-pub use oidc_token::OidcToken;
+pub use oidc_token::{OidcToken, OidcPlatform};

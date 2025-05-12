@@ -152,11 +152,25 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Google OIDC provider
-    pub fn google_client_id(&self) -> ClientId {
+    /// The client ID for the Google OIDC provider for Android devices
+    pub fn google_client_id_android(&self) -> ClientId {
         match self {
             Self::Production | Self::Staging => ClientId::new(
                 "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+                    .to_string(),
+            ),
+            Self::Development { .. } => ClientId::new(
+                "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// The client ID for the Google OIDC provider for iOS devices
+    pub fn google_client_id_ios(&self) -> ClientId {
+        match self {
+            Self::Production | Self::Staging => ClientId::new(
+                "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
                     .to_string(),
             ),
             Self::Development { .. } => ClientId::new(

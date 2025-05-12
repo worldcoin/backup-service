@@ -60,7 +60,7 @@ impl MockOidcServer {
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(environment.google_client_id_android().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -84,7 +84,7 @@ impl MockOidcServer {
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(environment.google_client_id_android().to_string())],
             Utc::now(), // expiration time
             Utc::now(), // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -108,7 +108,7 @@ impl MockOidcServer {
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(environment.google_client_id_android().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -144,7 +144,7 @@ impl MockOidcServer {
     pub fn generate_token_with_incorrect_issuer(&self, environment: Environment) -> String {
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(environment.google_client_id_android().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -190,7 +190,7 @@ impl MockOidcServer {
     pub fn generate_token_with_incorrect_issued_at(&self, environment: Environment) -> String {
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(environment.google_client_id_android().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now()
                 .checked_add_signed(Duration::minutes(30))
