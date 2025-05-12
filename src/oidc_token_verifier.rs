@@ -32,9 +32,7 @@ impl OidcTokenVerifier {
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token, platform } => {
                 let client_id = match platform {
-                    Some(OidcPlatform::Android) => {
-                        self.environment.google_client_id_android()
-                    }
+                    Some(OidcPlatform::Android) => self.environment.google_client_id_android(),
                     Some(OidcPlatform::Ios) => self.environment.google_client_id_ios(),
                     // Android is used by default for compatibility reasons. TODO/FIXME: disallow None
                     None => self.environment.google_client_id_android(),
@@ -119,7 +117,12 @@ mod tests {
         let token = oidc_server.generate_token(environment, None);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should pass with a valid token
         assert!(result.is_ok());
@@ -137,7 +140,12 @@ mod tests {
         let token = oidc_server.generate_expired_token(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should fail with an expired token
         assert!(result.is_err());
@@ -159,7 +167,12 @@ mod tests {
         let token = oidc_server.generate_incorrectly_signed_token(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should fail with an incorrectly signed token
         assert!(result.is_err());
@@ -181,7 +194,12 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_issuer(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should fail with an incorrect issuer
         assert!(result.is_err());
@@ -203,7 +221,12 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_audience(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should fail with an incorrect audience
         assert!(result.is_err());
@@ -225,7 +248,12 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_issued_at(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token, platform: None }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google {
+                token,
+                platform: None,
+            })
+            .await;
 
         // The test should fail with an incorrect issued_at
         assert!(result.is_err());

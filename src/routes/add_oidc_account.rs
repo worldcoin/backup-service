@@ -1,10 +1,10 @@
+use crate::types::{Environment, ErrorResponse, OidcToken};
 use aws_sdk_s3::Client as S3Client;
 use axum::{Extension, Json};
 use openidconnect::reqwest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::types::{Environment, ErrorResponse, OidcToken};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
