@@ -50,6 +50,8 @@ impl DynamoCacheManager {
     /// Creates a new sync factor token that allows to update `backup_id` and stores it
     /// in the DynamoDB database. The token is returned to the caller.
     ///
+    /// Sync Factor Tokens are prefixed in Dynamo with `syncFactorToken#`
+    ///
     /// # Errors
     /// * `SyncFactorTokenError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
     pub async fn create_sync_factor_token(
@@ -62,7 +64,7 @@ impl DynamoCacheManager {
         let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
 
         // Hash the token for storage
-        let token_hash = hash_token(&token);
+        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
         // Calculate TTL timestamp
         let expiration_time = Utc::now() + self.default_ttl;
@@ -105,13 +107,13 @@ impl DynamoCacheManager {
     /// * `DynamoCacheError::DynamoDbGetError` - if the token cannot be fetched from the DynamoDB table
     /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be marked as used in the DynamoDB table
     /// * `DynamoCacheError::TokenNotFound` - if the token does not exist in the database
-    /// * `DynamoCacheError::TokenAlreadyUsed` - if the token was already used
+    /// * `DynamoCacheError::AlreadyUsed` - if the token was already used
     /// * `DynamoCacheError::TokenExpired` - if the token has expired
     /// * `DynamoCacheError::ParseBackupIdError` - if the backup ID cannot be parsed from the token
     /// * `DynamoCacheError::MalformedToken` - if the token is missing required attributes
     pub async fn use_sync_factor_token(&self, token: String) -> Result<String, DynamoCacheError> {
         // Hash the token for lookup
-        let token_hash = hash_token(&token);
+        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
         // Get the token from DynamoDB
         let result = self
@@ -136,7 +138,7 @@ impl DynamoCacheManager {
             .as_bool()
             .map_err(|_| DynamoCacheError::MalformedToken)?;
         if *is_used {
-            return Err(DynamoCacheError::TokenAlreadyUsed);
+            return Err(DynamoCacheError::AlreadyUsed);
         }
 
         // Check if the token has expired
@@ -176,25 +178,66 @@ impl DynamoCacheManager {
             .await
             .map_err(|err| match err.into_service_error() {
                 UpdateItemError::ConditionalCheckFailedException(_) => {
-                    DynamoCacheError::TokenAlreadyUsed
+                    DynamoCacheError::AlreadyUsed
                 }
                 err => DynamoCacheError::DynamoDbUpdateError(err),
             })?;
 
         Ok(backup_id)
     }
+
+    /// Records a hashed challenge token as used in DynamoDB to prevent replay attacks.
+    ///
+    /// # Errors
+    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
+    pub async fn use_challenge_token(
+        &self,
+        challenge_token: String,
+    ) -> Result<(), DynamoCacheError> {
+        let token_hash = hash_token(USED_CHALLENGE_PREFIX, &challenge_token);
+
+        let expiration_time = Utc::now() + self.default_ttl;
+        let ttl = expiration_time.timestamp();
+
+        self.dynamodb_client
+            .put_item()
+            .table_name(self.environment.cache_table_name())
+            .item(
+                UsedChallengeAttribute::Pk.to_string(),
+                AttributeValue::S(token_hash),
+            )
+            .item(
+                UsedChallengeAttribute::ExpiresAt.to_string(),
+                AttributeValue::N(ttl.to_string()),
+            )
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", UsedChallengeAttribute::Pk.to_string())
+            .send()
+            .await
+            .map_err(|err| {
+                if let SdkError::ServiceError(context) = &err {
+                    if context.err().is_conditional_check_failed_exception() {
+                        return DynamoCacheError::AlreadyUsed;
+                    }
+                }
+                DynamoCacheError::DynamoDbPutError(err)
+            })?;
+        Ok(())
+    }
 }
 
 /// Hashes a token using SHA-256 and returns the hex representation
-fn hash_token(token: &str) -> String {
+fn hash_token(prefix: &str, token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
-    format!("{:x}", hasher.finalize())
+    format!("{prefix}#{:x}", hasher.finalize())
 }
+
+const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken#";
 
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum SyncFactorTokenAttribute {
-    /// Primary key for the token
+    /// Primary key for the token (prefix SYNC_FACTOR_TOKEN_PREFIX)
     #[strum(serialize = "PK")]
     Pk,
     /// Backup ID that the token is associated with
@@ -207,13 +250,13 @@ pub enum SyncFactorTokenAttribute {
     ExpiresAt,
 }
 
+const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash#";
+
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum UsedChallengeAttribute {
-    /// Primary key for the token
+    /// Primary key for the token (prefix USED_CHALLENGE_PREFIX)
     #[strum(serialize = "PK")]
     Pk,
-    /// SHA256(challenge_token)
-    ChallengeTokenHash,
     /// Expiration timestamp for TTL
     ExpiresAt,
 }
@@ -228,8 +271,8 @@ pub enum DynamoCacheError {
     DynamoDbUpdateError(#[from] UpdateItemError),
     #[error("Token not found")]
     TokenNotFound,
-    #[error("Token has already been used")]
-    TokenAlreadyUsed,
+    #[error("Token or challenge has already been used")]
+    AlreadyUsed,
     #[error("Token has expired")]
     TokenExpired,
     #[error("Malformed token: missing required attributes")]
@@ -242,8 +285,6 @@ pub enum DynamoCacheError {
 
 #[cfg(test)]
 mod tests {
-    use serial_test::serial;
-
     use super::*;
     use std::time::Duration;
 
@@ -254,7 +295,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_create_and_use_token() {
         let dynamodb_client = get_test_dynamodb_client().await;
         let environment = Environment::development(None);
@@ -278,7 +318,7 @@ mod tests {
 
         // Try to use the token again - should fail as already used
         let result = token_manager.use_sync_factor_token(token).await;
-        assert!(matches!(result, Err(DynamoCacheError::TokenAlreadyUsed)));
+        assert!(matches!(result, Err(DynamoCacheError::AlreadyUsed)));
     }
 
     #[tokio::test]
@@ -295,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
+
     async fn test_token_expiration() {
         let dynamodb_client = get_test_dynamodb_client().await;
         let environment = Environment::development(None);
@@ -321,4 +361,62 @@ mod tests {
         let result = token_manager.use_sync_factor_token(token).await;
         assert!(matches!(result, Err(DynamoCacheError::TokenExpired)));
     }
+
+    #[tokio::test]
+    async fn test_prevent_challenge_token_reuse_replay_attack() {
+        let dynamodb_client = get_test_dynamodb_client().await;
+
+        let environment = Environment::development(None);
+        let token_manager =
+            DynamoCacheManager::new(environment, Duration::from_secs(60), dynamodb_client);
+
+        let challenge_token = format!("my_one_time_challenge_token_{}", uuid::Uuid::new_v4());
+
+        // first time it succeeds
+        token_manager
+            .use_challenge_token(challenge_token.to_string())
+            .await
+            .unwrap();
+
+        // second time it fails
+        let result = token_manager
+            .use_challenge_token(challenge_token.to_string())
+            .await;
+        assert!(matches!(result, Err(DynamoCacheError::AlreadyUsed)));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_challenge_token_is_hashed() {
+        let dynamodb_client = get_test_dynamodb_client().await;
+        let environment = Environment::development(None);
+        let token_manager = DynamoCacheManager::new(
+            environment,
+            Duration::from_secs(60),
+            dynamodb_client.clone(),
+        );
+
+        let challenge_token = format!("my_one_time_challenge_token_{}", uuid::Uuid::new_v4());
+
+        token_manager
+            .use_challenge_token(challenge_token.to_string())
+            .await
+            .unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(challenge_token.as_bytes());
+        let token_hash = format!("{USED_CHALLENGE_PREFIX}#{:x}", hasher.finalize());
+
+        dynamodb_client
+            .get_item()
+            .table_name(environment.cache_table_name())
+            .key(
+                SyncFactorTokenAttribute::Pk.to_string(),
+                AttributeValue::S(token_hash.clone()),
+            )
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // NOTE: explicit lack of tests for expired tokens. we don't care that they're expired, they cannot be re-used.
 }

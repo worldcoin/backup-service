@@ -226,13 +226,13 @@ impl From<DynamoCacheError> for ErrorResponse {
                 tracing::info!(message = "Sync factor token not found", error = ?err);
                 ErrorResponse::bad_request("sync_factor_token_not_found")
             }
-            DynamoCacheError::TokenAlreadyUsed => {
-                tracing::info!(message = "Sync factor token already used", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_already_used")
-            }
             DynamoCacheError::TokenExpired => {
                 tracing::info!(message = "Sync factor token expired", error = ?err);
                 ErrorResponse::bad_request("sync_factor_token_expired")
+            }
+            DynamoCacheError::AlreadyUsed => {
+                tracing::info!(message = "The token or challenge has already been used", error = ?err);
+                ErrorResponse::bad_request("already_used")
             }
         }
     }
