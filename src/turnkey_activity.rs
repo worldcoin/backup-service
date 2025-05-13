@@ -15,6 +15,9 @@ use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType};
 /// challenge, while signing a Turnkey activity (to do Turnkey part of backup flow) with just
 /// one passkey signature (and one tap UX).
 ///
+/// Since we're using a single passkey message, user doesn't have to login twice — once to backup
+/// service and once to Turnkey.
+///
 /// Reference:
 /// * https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn
 /// * https://github.com/tkhq/sdk/blob/0c391acab671b0ccadfad66fd6b3e926f21654ea/packages/webauthn-stamper/src/index.ts#L70
