@@ -100,8 +100,8 @@ impl Environment {
         std::time::Duration::from_secs(15 * 60)
     }
 
-    /// TTL for the token that's issued during recovery and allows to add a new sync factor
-    pub fn sync_factor_token_ttl(&self) -> std::time::Duration {
+    /// Default TTL for the DynamoDB cache layer
+    pub fn cache_default_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)
     }
@@ -179,11 +179,9 @@ impl Environment {
         }
     }
 
-    pub fn sync_factor_token_table_name(&self) -> &'static str {
+    pub fn cache_table_name(&self) -> &'static str {
         match self {
-            Self::Production | Self::Staging | Self::Development { .. } => {
-                "backup-service-sync-factor-tokens"
-            }
+            Self::Production | Self::Staging | Self::Development { .. } => "backup-service-cache",
         }
     }
 }

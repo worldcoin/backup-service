@@ -95,6 +95,7 @@ pub async fn handler(
 
             // Step 2A.3: Track used challenge to prevent replay attacks
             // TODO/FIXME: Track used challenges to prevent replay attacks
+            // Paolo
 
             let credential_id = verified_passkey.cred_id().clone();
             (

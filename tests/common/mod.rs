@@ -60,9 +60,9 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
     let oidc_token_verifier =
         backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment);
-    let sync_factor_token_manager = backup_service::sync_factor_token::SyncFactorTokenManager::new(
+    let sync_factor_token_manager = backup_service::dynamo_cache::DynamoCacheManager::new(
         environment,
-        environment.sync_factor_token_ttl(),
+        environment.cache_default_ttl(),
         dynamodb_client.clone(),
     );
 
