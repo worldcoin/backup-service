@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use chrono::Duration;
 use p256::ecdsa::{self, signature::Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType};
@@ -111,6 +112,68 @@ pub fn verify_turnkey_activity_webauthn_stamp(
     Ok(())
 }
 
+/// For a given Turnkey activity JSON, verifies that:
+/// * The activity contains the expected account ID (corresponding to backup metadata)
+/// * The activity contains the expected activity type
+/// * The activity is not expired (based on the TTL)
+///
+/// # Errors
+/// - `TurnkeyActivityError::ActivityJsonParseError` if the activity JSON cannot be parsed
+/// - `TurnkeyActivityError::MissingOrganizationId` if the activity JSON does not contain the `organizationId` field
+/// - `TurnkeyActivityError::OrganizationIdMismatch` if the `organizationId` does not match the expected account ID
+/// - `TurnkeyActivityError::MissingActivityType` if the activity JSON does not contain the `type` field
+/// - `TurnkeyActivityError::ActivityTypeMismatch` if the `type` does not match the expected activity type
+/// - `TurnkeyActivityError::MissingTimestamp` if the activity JSON does not contain the `timestampMs` field
+/// - `TurnkeyActivityError::InvalidTimestamp` if the `timestampMs` cannot be parsed as an i64
+/// - `TurnkeyActivityError::ActivityExpired` if the activity is expired based on the TTL
+pub fn verify_turnkey_activity_parameters(
+    activity_json: &str,
+    expected_turnkey_account_id: &str,
+    expected_activity_type: &str,
+    activity_ttl: Duration,
+) -> Result<(), TurnkeyActivityError> {
+    // Parse the activity JSON
+    let activity: serde_json::Value = serde_json::from_str(activity_json)
+        .map_err(|_| TurnkeyActivityError::ActivityJsonParseError)?;
+
+    // Verify organization ID matches expected account ID
+    let organization_id = activity["organizationId"]
+        .as_str()
+        .ok_or(TurnkeyActivityError::MissingOrganizationId)?;
+
+    if organization_id != expected_turnkey_account_id {
+        return Err(TurnkeyActivityError::OrganizationIdMismatch);
+    }
+
+    // Verify activity type
+    let activity_type = activity["type"]
+        .as_str()
+        .ok_or(TurnkeyActivityError::MissingActivityType)?;
+
+    if activity_type != expected_activity_type {
+        return Err(TurnkeyActivityError::ActivityTypeMismatch);
+    }
+
+    // Verify timestamp is not expired
+    let timestamp_ms = activity["timestampMs"]
+        .as_str()
+        .ok_or(TurnkeyActivityError::MissingTimestamp)?
+        .parse::<i64>()
+        .map_err(|_| TurnkeyActivityError::InvalidTimestamp)?;
+
+    let activity_time = chrono::DateTime::from_timestamp_millis(timestamp_ms)
+        .ok_or(TurnkeyActivityError::InvalidTimestamp)?;
+
+    let current_time = chrono::Utc::now();
+    let time_diff = current_time.signed_duration_since(activity_time);
+
+    if time_diff > activity_ttl {
+        return Err(TurnkeyActivityError::ActivityExpired);
+    }
+
+    Ok(())
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum TurnkeyActivityError {
     #[error("Incorrect key type, expected P256 with ECDSA")]
@@ -131,12 +194,30 @@ pub enum TurnkeyActivityError {
     SignatureConversionError,
     #[error("Signature verification failed")]
     SignatureVerificationError,
+    #[error("Failed to parse activity JSON")]
+    ActivityJsonParseError,
+    #[error("Missing organizationId field in activity JSON")]
+    MissingOrganizationId,
+    #[error("organizationId does not match expected Turnkey account ID")]
+    OrganizationIdMismatch,
+    #[error("Missing type field in activity JSON")]
+    MissingActivityType,
+    #[error("Activity type does not match expected type")]
+    ActivityTypeMismatch,
+    #[error("Missing timestampMs field in activity JSON")]
+    MissingTimestamp,
+    #[error("Invalid timestamp format in activity JSON")]
+    InvalidTimestamp,
+    #[error("Activity has expired based on TTL")]
+    ActivityExpired,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use serde_json::json;
+    use tracing_subscriber::fmt::format::json;
     use webauthn_rs::prelude::{COSEEC2Key, COSEKeyType, ECDSACurve};
 
     #[test]
@@ -220,5 +301,117 @@ mod tests {
             "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiWmpFeU1XSmpNMk00WVRNM1lqYzFZVEUwT0RZMU1qUTFOVFpoWWpjME9XTTRPV0V6WW1VNE1tWXpPRGxoTlRsaU5EWTFaVGcyTkRKa01XTmxNRGc1TkEiLCJvcmlnaW4iOiJodHRwOi8vbG9jYWxob3N0OjMwMDAiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
             "MEQCIDjJBMjQD470A5dzt-JY1GIBwB5mbnxpsqoJx2tFAaBFAiAy2u97FwJnE8jZNbBKfV-mVHMVPlzeIYZhHuqrH7lWQg",
         ).unwrap_err().to_string(), "Mismatch between challenge in the assertion and the hash of activity JSON")
+    }
+
+    #[test]
+    fn test_verify_turnkey_activity_parameters_success() {
+        let timestamp = Utc::now().timestamp_millis();
+        let activity_json = json!({
+            "parameters": {
+                "userId": "d9620d04-e928-4ada-941c-beb2f17e968c"
+            },
+            "organizationId": "17d89304-c865-4485-ba45-277a5f2076af",
+            "timestampMs": timestamp.to_string(),
+            "type": "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY"
+        })
+        .to_string();
+        let expected_account_id = "17d89304-c865-4485-ba45-277a5f2076af";
+        let expected_activity_type = "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY";
+        let ttl = Duration::minutes(60);
+
+        verify_turnkey_activity_parameters(
+            &activity_json,
+            expected_account_id,
+            expected_activity_type,
+            ttl,
+        )
+        .expect("Should verify successfully");
+    }
+
+    #[test]
+    fn test_verify_turnkey_activity_parameters_wrong_organization_id() {
+        let timestamp = Utc::now().timestamp_millis();
+        let activity_json = json!({
+            "parameters": {
+                "userId": "d9620d04-e928-4ada-941c-beb2f17e968c"
+            },
+            "organizationId": "17d89304-c865-4485-ba45-277a5f2076af",
+            "timestampMs": timestamp.to_string(),
+            "type": "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY"
+        })
+        .to_string();
+        let expected_account_id = "different-account-id";
+        let expected_activity_type = "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY";
+        let ttl = Duration::minutes(60);
+
+        let result = verify_turnkey_activity_parameters(
+            &activity_json,
+            expected_account_id,
+            expected_activity_type,
+            ttl,
+        );
+
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "organizationId does not match expected Turnkey account ID"
+        );
+    }
+
+    #[test]
+    fn test_verify_turnkey_activity_parameters_wrong_activity_type() {
+        let timestamp = Utc::now().timestamp_millis();
+        let activity_json = json!({
+            "parameters": {
+                "userId": "d9620d04-e928-4ada-941c-beb2f17e968c"
+            },
+            "organizationId": "17d89304-c865-4485-ba45-277a5f2076af",
+            "timestampMs": timestamp.to_string(),
+            "type": "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY"
+        })
+        .to_string();
+        let expected_account_id = "17d89304-c865-4485-ba45-277a5f2076af";
+        let expected_activity_type = "DIFFERENT_ACTIVITY_TYPE";
+        let ttl = Duration::minutes(60);
+
+        let result = verify_turnkey_activity_parameters(
+            &activity_json,
+            expected_account_id,
+            expected_activity_type,
+            ttl,
+        );
+
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Activity type does not match expected type"
+        );
+    }
+
+    #[test]
+    fn test_verify_turnkey_activity_parameters_expired() {
+        let timestamp = Utc::now().timestamp_millis() - 1000 * 60 * 61; // 61 minutes ago
+        let activity_json = json!({
+            "parameters": {
+                "userId": "d9620d04-e928-4ada-941c-beb2f17e968c"
+            },
+            "organizationId": "17d89304-c865-4485-ba45-277a5f2076af",
+            "timestampMs": timestamp.to_string(),
+            "type": "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY"
+        })
+        .to_string();
+        let expected_account_id = "17d89304-c865-4485-ba45-277a5f2076af";
+        let expected_activity_type = "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY";
+        let ttl = Duration::minutes(60);
+
+        let result = verify_turnkey_activity_parameters(
+            &activity_json,
+            expected_account_id,
+            expected_activity_type,
+            ttl,
+        );
+
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Activity has expired based on TTL"
+        );
     }
 }
