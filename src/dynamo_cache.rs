@@ -242,6 +242,8 @@ pub enum DynamoCacheError {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use std::time::Duration;
 
@@ -252,6 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_create_and_use_token() {
         let dynamodb_client = get_test_dynamodb_client().await;
         let environment = Environment::development(None);
@@ -292,6 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_token_expiration() {
         let dynamodb_client = get_test_dynamodb_client().await;
         let environment = Environment::development(None);
