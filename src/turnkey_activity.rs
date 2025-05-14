@@ -220,7 +220,6 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use serde_json::json;
-    use tracing_subscriber::fmt::format::json;
     use webauthn_rs::prelude::{COSEEC2Key, COSEKeyType, ECDSACurve};
 
     #[test]

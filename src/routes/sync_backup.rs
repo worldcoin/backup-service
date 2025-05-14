@@ -88,7 +88,10 @@ pub async fn handler(
     // Step 3: Find the backup metadata using the factor to lookup
     let backup_id = factor_lookup.lookup(&factor_to_lookup).await?;
     let Some(backup_id) = backup_id else {
-        tracing::info!(message = "No backup ID found for the given sync keypair account");
+        tracing::info!(
+            message = "No backup ID found for the given sync keypair account",
+            sync_factor_public_key = sync_factor_public_key
+        );
         return Err(ErrorResponse::bad_request("backup_not_found"));
     };
     let found_backup = backup_storage.get_by_backup_id(&backup_id).await?;

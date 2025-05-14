@@ -10,6 +10,7 @@ use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tracing::Level;
 
 pub async fn start(
     environment: Environment,
@@ -39,7 +40,11 @@ pub async fn start(
         .layer(Extension(oidc_token_verifier))
         .layer(Extension(sync_factor_token_manager))
         .layer(tower_http::compression::CompressionLayer::new())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(tower_http::trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
         .layer(tower_http::timeout::TimeoutLayer::new(
             std::time::Duration::from_secs(30),
         ));

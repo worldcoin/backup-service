@@ -1,3 +1,4 @@
+use crate::mask_email;
 use crate::types::encryption_key::BackupEncryptionKey;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -60,13 +61,16 @@ impl Factor {
     pub fn exported(&self) -> ExportedFactor {
         ExportedFactor {
             id: self.id.clone(),
+            created_at: self.created_at.timestamp() as u64,
             kind: match &self.kind {
                 FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
                     registration: registration.clone(),
                 },
                 FactorKind::OidcAccount { account } => ExportedFactorKind::OidcAccount {
                     account: match account {
-                        OidcAccountKind::Google { .. } => ExportedOidcAccountKind::Google {},
+                        OidcAccountKind::Google { email, .. } => ExportedOidcAccountKind::Google {
+                            masked_email: mask_email(email).unwrap_or_default(),
+                        },
                     },
                 },
                 FactorKind::EcKeypair { public_key } => ExportedFactorKind::EcKeypair {
@@ -162,6 +166,8 @@ pub struct ExportedBackupMetadata {
 pub struct ExportedFactor {
     /// Used as a unique identifier for the factor
     pub id: String,
+    /// Timestamp when the factor was created
+    pub created_at: u64,
     /// The kind of factor and the associated metadata
     pub kind: ExportedFactorKind,
 }
@@ -189,5 +195,5 @@ pub enum ExportedFactorKind {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum ExportedOidcAccountKind {
     #[serde(rename_all = "camelCase")]
-    Google {},
+    Google { masked_email: String },
 }
