@@ -44,7 +44,7 @@ impl FactorLookup {
             )
             .item(
                 DocumentAttribute::BackupId.to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(backup_id),
+                aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
             )
             .item(
                 DocumentAttribute::CreatedAt.to_string(),
@@ -56,6 +56,12 @@ impl FactorLookup {
             .expression_attribute_names("#pk", DocumentAttribute::Pk.to_string())
             .send()
             .await?;
+
+        tracing::info!(
+            message = "Inserted factor into DynamoDB",
+            pk = factor.primary_key(),
+            backup_id = backup_id,
+        );
 
         Ok(())
     }
