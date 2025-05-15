@@ -120,6 +120,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             ChallengeManagerError::FailedToDecryptToken(_)
             | ChallengeManagerError::NoValidPayloadClaim
             | ChallengeManagerError::NoValidChallengeTypeClaim
+            | ChallengeManagerError::NoValidChallengeContextClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
                 tracing::info!(message = "Challenge manager error", error = ?err);
                 ErrorResponse::bad_request("jwt_error")

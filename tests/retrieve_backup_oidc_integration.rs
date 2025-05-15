@@ -1,7 +1,7 @@
 mod common;
 
 use crate::common::{
-    create_test_backup_with_oidc_account, generate_keypair, get_keypair_challenge,
+    create_test_backup_with_oidc_account, generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_environment, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
@@ -21,7 +21,7 @@ async fn test_retrieve_backup_with_oidc_account() {
     assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
-    let retrieve_challenge = get_keypair_challenge().await;
+    let retrieve_challenge = get_keypair_retrieve_challenge().await;
 
     // Generate new OIDC token for the same user
     let new_oidc_token = test_backup.oidc_server.generate_token(
@@ -88,7 +88,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
-    let retrieve_challenge = get_keypair_challenge().await;
+    let retrieve_challenge = get_keypair_retrieve_challenge().await;
 
     // Generate new OIDC token for a DIFFERENT user
     let different_subject = Uuid::new_v4().to_string();
@@ -156,7 +156,7 @@ async fn test_retrieve_backup_with_different_keypair() {
     assert_eq!(test_backup.response.status(), StatusCode::OK);
 
     // Get a new challenge for retrieving the backup
-    let retrieve_challenge = get_keypair_challenge().await;
+    let retrieve_challenge = get_keypair_retrieve_challenge().await;
 
     // Generate new OIDC token for the same user
     let new_oidc_token = test_backup.oidc_server.generate_token(

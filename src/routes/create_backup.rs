@@ -1,6 +1,6 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{BackupMetadata, Factor, OidcAccountKind};
@@ -71,9 +71,12 @@ pub async fn handler(
             // Step 2A: Verify the passkey credential using the WebAuthn implementation
 
             // Step 2A.1: Decrypt server-side passkey state from the token
-            let challenge_token_payload = challenge_manager
+            let (challenge_token_payload, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Passkey, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Create {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
             let passkey_state: PasskeyRegistration =
                 serde_json::from_slice(&challenge_token_payload).map_err(|err| {
                     // If a valid token cannot be deserialized, it's an internal error
@@ -116,9 +119,12 @@ pub async fn handler(
             // Step 2B: Verify the OIDC token and signature by keypair that's mentioned in the token
 
             // Step 2B.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Create {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 2B.2: Verify the OIDC token
             let claims = oidc_token_verifier.verify_token(oidc_token).await?;
@@ -167,9 +173,12 @@ pub async fn handler(
             // Step 2C: Verify the authorization using a custom keypair
 
             // Step 2C.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Create {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 2C.2: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
@@ -193,12 +202,15 @@ pub async fn handler(
             signature,
         } => {
             // Step 3.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(
                     ChallengeType::Keypair,
                     request.initial_sync_challenge_token.to_string(),
                 )
                 .await?;
+            if challenge_context != (ChallengeContext::Create {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 3.2: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;

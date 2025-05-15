@@ -1,4 +1,4 @@
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
 use axum::{Extension, Json};
 use schemars::JsonSchema;
@@ -26,7 +26,11 @@ pub async fn handler(
     // Step 2: Encrypt the server-side object in a JWE
     let authentication_json = serde_json::to_string(&authentication)?;
     let token = challenge_manager
-        .create_challenge_token(ChallengeType::Passkey, authentication_json.as_bytes())
+        .create_challenge_token(
+            ChallengeType::Passkey,
+            authentication_json.as_bytes(),
+            ChallengeContext::Retrieve {},
+        )
         .await?;
 
     Ok(Json(RetrieveChallengePasskeyResponse {
