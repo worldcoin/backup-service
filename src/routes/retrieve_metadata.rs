@@ -1,5 +1,5 @@
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
 use crate::types::{Authorization, ErrorResponse};
@@ -38,9 +38,12 @@ pub async fn handler(
             signature,
         } => {
             // Step 1.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::RetrieveMetadata {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 1.2: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;

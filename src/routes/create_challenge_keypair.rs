@@ -1,4 +1,4 @@
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::ErrorResponse;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
@@ -23,7 +23,11 @@ pub async fn handler(
 
     // Step 2: Encrypt the challenge in a JWE to verify later
     let token = challenge_manager
-        .create_challenge_token(ChallengeType::Keypair, &challenge)
+        .create_challenge_token(
+            ChallengeType::Keypair,
+            &challenge,
+            ChallengeContext::Create {},
+        )
         .await?;
 
     Ok(Json(CreateChallengeKeypairResponse {
