@@ -234,6 +234,7 @@ impl BackupStorage {
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
 
+        // Save the updated metadata
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket())
