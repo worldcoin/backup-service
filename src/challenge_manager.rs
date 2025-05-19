@@ -174,6 +174,8 @@ pub enum ChallengeContext {
     RetrieveMetadata {},
     #[serde(rename_all = "camelCase")]
     Sync {},
+    #[serde(rename_all = "camelCase")]
+    DeleteFactor { factor_id: String },
 }
 
 pub type TokenPayload = Vec<u8>;
