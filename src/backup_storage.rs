@@ -1,4 +1,5 @@
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
+use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
@@ -168,11 +169,13 @@ impl BackupStorage {
     }
 
     /// Adds a regular factor to the backup metadata in S3.
+    /// Optionally adds a new backup encryption key.
     /// TODO/FIXME: Make this atomic.
     pub async fn add_factor(
         &self,
         backup_id: &str,
         factor: Factor,
+        new_encryption_key: Option<BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
         // Get the current metadata
         let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
@@ -188,6 +191,11 @@ impl BackupStorage {
 
         // Add the factor to the metadata
         metadata.factors.push(factor);
+
+        // Add the new encryption key if provided
+        if let Some(encryption_key) = new_encryption_key {
+            metadata.keys.push(encryption_key);
+        }
 
         // Save the updated metadata
         self.s3_client
@@ -534,7 +542,7 @@ mod tests {
 
         // Add the factor
         backup_storage
-            .add_factor(&test_backup_id, google_account.clone())
+            .add_factor(&test_backup_id, google_account.clone(), None)
             .await
             .unwrap();
 
@@ -550,7 +558,7 @@ mod tests {
 
         // Try to add the same factor again - should fail with FactorAlreadyExists
         let result = backup_storage
-            .add_factor(&test_backup_id, google_account.clone())
+            .add_factor(&test_backup_id, google_account.clone(), None)
             .await;
         assert!(result.is_err());
         match result {
@@ -560,12 +568,74 @@ mod tests {
 
         // Try to add a factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
-            .add_factor("non_existent_backup", google_account.clone())
+            .add_factor("non_existent_backup", google_account.clone(), None)
             .await;
         assert!(result.is_err());
         match result {
             Err(BackupManagerError::BackupNotFound) => {}
             _ => panic!("Expected BackupNotFound"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_factor_with_encryption_key() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        // Create a test backup with initial encryption key
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_key = BackupEncryptionKey::Prf {
+            encrypted_key: "INITIAL_KEY".to_string(),
+        };
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![initial_key],
+        };
+
+        // Create a backup
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Create a test factor and new encryption key
+        let new_factor = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "67890".to_string(),
+            email: "test2@example.com".to_string(),
+        });
+
+        let new_key = BackupEncryptionKey::Prf {
+            encrypted_key: "NEW_KEY".to_string(),
+        };
+
+        // Add the factor with the new encryption key
+        backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(new_key.clone()))
+            .await
+            .unwrap();
+
+        // Get the updated metadata and verify both the factor and key were added
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 1);
+        assert_eq!(updated_backup.metadata.factors[0].kind, new_factor.kind);
+
+        // Check that both keys are present
+        assert_eq!(updated_backup.metadata.keys.len(), 2);
+        match &updated_backup.metadata.keys[1] {
+            BackupEncryptionKey::Prf { encrypted_key } => {
+                assert_eq!(encrypted_key, "NEW_KEY");
+            }
+            _ => panic!("Expected Prf key"),
         }
     }
 

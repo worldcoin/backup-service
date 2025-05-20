@@ -5,6 +5,9 @@ use aide::axum::{
 };
 use axum::extract::DefaultBodyLimit;
 
+mod add_factor;
+mod add_factor_challenge_existing_passkey;
+mod add_factor_challenge_new_keypair;
 mod add_oidc_account;
 mod add_sync_factor;
 mod add_sync_factor_challenge_keypair;
@@ -65,6 +68,16 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(add_sync_factor_challenge_keypair::handler),
         )
         .api_route("/add-sync-factor", post(add_sync_factor::handler))
+        // Add factor using existing passkey
+        .api_route(
+            "/add-factor/challenge/existing/passkey",
+            post(add_factor_challenge_existing_passkey::handler),
+        )
+        .api_route(
+            "/add-factor/challenge/new/keypair",
+            post(add_factor_challenge_new_keypair::handler),
+        )
+        .api_route("/add-factor", post(add_factor::handler))
         // Backup sync
         .api_route(
             "/sync/challenge/keypair",

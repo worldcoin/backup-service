@@ -176,6 +176,17 @@ pub enum ChallengeContext {
     Sync {},
     #[serde(rename_all = "camelCase")]
     DeleteFactor { factor_id: String },
+    #[serde(rename_all = "camelCase")]
+    AddFactor { new_factor_type: NewFactorType },
+    #[serde(rename_all = "camelCase")]
+    AddFactorByNewFactor {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NewFactorType {
+    #[serde(rename_all = "camelCase")]
+    OidcAccount { oidc_token: String },
 }
 
 pub type TokenPayload = Vec<u8>;
