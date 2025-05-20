@@ -135,7 +135,8 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
-            | BackupManagerError::ByteStreamError(_) => {
+            | BackupManagerError::ByteStreamError(_)
+            | BackupManagerError::DeleteObjectError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
@@ -150,6 +151,10 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::FactorAlreadyExists => {
                 tracing::info!(message = "Factor already exists", error = ?err);
                 ErrorResponse::bad_request("factor_already_exists")
+            }
+            BackupManagerError::FactorNotFound => {
+                tracing::info!(message = "Factor not found", error = ?err);
+                ErrorResponse::bad_request("factor_not_found")
             }
         }
     }
