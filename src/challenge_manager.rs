@@ -164,20 +164,31 @@ pub enum ChallengeType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "UPPERCASE")]
 pub enum ChallengeContext {
+    /// Signed by new sync factor when adding it to the backup metadata.
     #[serde(rename_all = "camelCase")]
     AddSyncFactor {},
+    /// Signed by first factor of a new backup when creating it.
     #[serde(rename_all = "camelCase")]
     Create {},
+    /// Signed by the factor that's used to recover the backup.
     #[serde(rename_all = "camelCase")]
     Retrieve {},
+    /// Signed by sync factor when retrieving the backup metadata for rendering a page like settings.
     #[serde(rename_all = "camelCase")]
     RetrieveMetadata {},
+    /// Signed by sync factor when updating the ciphertext of the backup.
     #[serde(rename_all = "camelCase")]
     Sync {},
+    /// Signed by sync factor when removing an existing factor from backup metadata.
     #[serde(rename_all = "camelCase")]
     DeleteFactor { factor_id: String },
+    /// Challenge used as part of adding a new factor to the backup. This challenge has to be
+    /// signed by the existing factor and include reference to the new factor. It allows to verify
+    /// that new factor has been "authorized" by the existing factor.
     #[serde(rename_all = "camelCase")]
     AddFactor { new_factor_type: NewFactorType },
+    /// Challenge used as part of adding a new factor to the backup. This challenge has to be
+    /// signed by the new factor. It allows to verify that user has access to the new factor.
     #[serde(rename_all = "camelCase")]
     AddFactorByNewFactor {},
 }
