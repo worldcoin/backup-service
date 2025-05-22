@@ -34,10 +34,10 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
     (oidc_server, environment, backup_id, passkey_client)
 }
 
-/// Gets a challenge for adding a new factor with a passkey
-async fn get_add_factor_passkey_challenge(oidc_token: &str) -> Value {
+/// Gets challenges for adding a new factor (both existing passkey and new keypair challenges)
+async fn get_add_factor_challenges(oidc_token: &str) -> Value {
     let challenge_response = common::send_post_request(
-        "/add-factor/challenge/existing/passkey",
+        "/add-factor/challenge",
         json!({
             "newFactor": {
                 "kind": "OIDC_ACCOUNT",
@@ -46,14 +46,6 @@ async fn get_add_factor_passkey_challenge(oidc_token: &str) -> Value {
         }),
     )
     .await;
-
-    parse_response_body(challenge_response).await
-}
-
-/// Gets a challenge for adding a new keypair factor
-async fn get_add_factor_keypair_challenge() -> Value {
-    let challenge_response =
-        common::send_post_request("/add-factor/challenge/new/keypair", json!({})).await;
 
     parse_response_body(challenge_response).await
 }
@@ -127,17 +119,16 @@ async fn test_add_factor_happy_path() {
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both existing passkey and new factor
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair and sign the new factor challenge
     let (new_public_key, _, new_factor_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Add the new factor
@@ -148,7 +139,7 @@ async fn test_add_factor_happy_path() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -159,7 +150,7 @@ async fn test_add_factor_happy_path() {
                 "publicKey": new_public_key,
                 "signature": new_factor_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
@@ -203,19 +194,16 @@ async fn test_add_factor_with_mismatched_oidc_token() {
         )),
     );
 
-    // Get existing factor challenge with the original token
-    let existing_challenge = get_add_factor_passkey_challenge(&original_oidc_token).await;
-
-    // Get a challenge for the new factor
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges with the original token
+    let challenges = get_add_factor_challenges(&original_oidc_token).await;
 
     // Create keypair and sign the challenge
     let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Attempt to add the new factor but use a different OIDC token than what was used for the challenge
@@ -226,7 +214,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -237,7 +225,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
                 "publicKey": new_public_key,
                 "signature": new_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
@@ -274,13 +262,12 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both factors
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair and sign the challenge
     let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity WITHOUT the challenge
     let turnkey_activity = json!({
@@ -311,7 +298,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity, // Activity without challenge
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -322,7 +309,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
                 "publicKey": new_public_key,
                 "signature": new_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
@@ -350,24 +337,23 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both factors
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair and sign the challenge
     let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create valid Turnkey activity with the challenge
     let (_turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
 
     // Sign the activity with the passkey
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Modify the activity AFTER signing it by generating it again with new timestamp
     let (modified_activity, _) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
 
     // Attempt to add the new factor with the modified activity
     let response = common::send_post_request_with_environment(
@@ -377,7 +363,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": modified_activity, // Modified after signing
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -388,7 +374,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
                 "publicKey": new_public_key,
                 "signature": new_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": null,
         }),
         Some(environment),
@@ -410,21 +396,20 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both factors
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair for new factor...
     let (new_public_key, _, _) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // ... but sign the challenge with a different keypair
     let (_, _, new_incorrect_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Add the new factor
@@ -435,7 +420,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -446,7 +431,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
                 "publicKey": new_public_key,
                 "signature": new_incorrect_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
@@ -491,17 +476,16 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both factors
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair and sign the challenge
     let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity and get passkey assertion from user 1
     let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
     let mut passkey_assertion = get_passkey_assertion(&mut passkey_client_1, &challenge_hash).await;
 
     // But replace credential ID with user 2's credential
@@ -516,7 +500,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -527,7 +511,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
                 "publicKey": new_public_key,
                 "signature": new_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
@@ -564,17 +548,16 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(environment.clone(), None);
 
-    // Get challenges for existing passkey and new OIDC factor
-    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
-    let new_challenge = get_add_factor_keypair_challenge().await;
+    // Get challenges for both factors
+    let challenges = get_add_factor_challenges(&oidc_token).await;
 
     // Create keypair and sign the challenge
     let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Attempt to add the new factor with a different account ID in the encrypted backup key
@@ -585,7 +568,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
                 "kind": "PASSKEY",
                 "credential": passkey_assertion
             },
-            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -596,7 +579,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
                 "publicKey": new_public_key,
                 "signature": new_signature,
             },
-            "newFactorChallengeToken": new_challenge["token"],
+            "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
