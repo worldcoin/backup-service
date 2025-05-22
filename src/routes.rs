@@ -67,7 +67,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(add_sync_factor_challenge_keypair::handler),
         )
         .api_route("/add-sync-factor", post(add_sync_factor::handler))
-        // Add factor challenge endpoint (returns both challenges at once)
+        // Add factor to the backup - new OIDC account, new passkey, etc.
         .api_route("/add-factor/challenge", post(add_factor_challenge::handler))
         .api_route("/add-factor", post(add_factor::handler))
         // Backup sync
