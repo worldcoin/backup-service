@@ -341,6 +341,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     assert_eq!(error_response["error"]["code"], "webauthn_error");
 }
 
+// Modified Turnkey activity after signing
 #[tokio::test]
 async fn test_add_factor_with_modified_turnkey_activity() {
     // Setup test environment
@@ -398,4 +399,228 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let error_response = parse_response_body(response).await;
     assert_eq!(error_response["error"]["code"], "webauthn_error");
+}
+
+// Incorrectly signed challenge for new keypair
+#[tokio::test]
+async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
+    // Setup test environment
+    let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
+
+    // Generate OIDC token
+    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+
+    // Get challenges for existing passkey and new OIDC factor
+    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
+    let new_challenge = get_add_factor_keypair_challenge().await;
+
+    // Create keypair for new factor...
+    let (new_public_key, _, _) =
+        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+
+    // ... but sign the challenge with a different keypair
+    let (_, _, new_incorrect_signature) =
+        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+
+    // Create Turnkey activity and get passkey assertion
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+    let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
+
+    // Add the new factor
+    let response = common::send_post_request_with_environment(
+        "/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion
+            },
+            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token
+                },
+                "publicKey": new_public_key,
+                "signature": new_incorrect_signature,
+            },
+            "newFactorChallengeToken": new_challenge["token"],
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
+            },
+        }),
+        Some(environment),
+    )
+    .await;
+
+    // Verify the response
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let add_factor_response = parse_response_body(response).await;
+    assert_eq!(
+        add_factor_response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "signature_verification_error",
+                "message": "signature_verification_error",
+            }
+        })
+    );
+}
+
+// Attempt to add a new factor with a passkey credential for a different user
+#[tokio::test]
+async fn test_add_factor_with_passkey_credential_for_different_user() {
+    let (oidc_server, environment, _, _) = setup_test_environment().await;
+    let mut passkey_client_1 = common::get_mock_passkey_client();
+    let mut passkey_client_2 = common::get_mock_passkey_client();
+
+    // Create a backup with the first and second passkey
+    let (_, response) = create_test_backup(&mut passkey_client_1, b"BACKUP DATA").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (passkey_client_2_credential, response) =
+        create_test_backup(&mut passkey_client_2, b"BACKUP DATA").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Generate OIDC token
+    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+
+    // Get challenges for existing passkey and new OIDC factor
+    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
+    let new_challenge = get_add_factor_keypair_challenge().await;
+
+    // Create keypair and sign the challenge
+    let (new_public_key, _, new_signature) =
+        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+
+    // Create Turnkey activity and get passkey assertion from user 1
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+    let mut passkey_assertion = get_passkey_assertion(&mut passkey_client_1, &challenge_hash).await;
+
+    // But replace credential ID with user 2's credential
+    passkey_assertion["id"] = passkey_client_2_credential["id"].clone();
+    passkey_assertion["rawId"] = passkey_client_2_credential["rawId"].clone();
+
+    // Attempt to add the new factor with the modified passkey assertion
+    let response = common::send_post_request_with_environment(
+        "/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion
+            },
+            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token
+                },
+                "publicKey": new_public_key,
+                "signature": new_signature,
+            },
+            "newFactorChallengeToken": new_challenge["token"],
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
+            },
+        }),
+        Some(environment),
+    )
+    .await;
+
+    // Verify the response
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let add_factor_response = parse_response_body(response).await;
+    assert_eq!(
+        add_factor_response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "webauthn_error",
+                "message": "webauthn_error",
+            }
+        })
+    );
+}
+
+// Different account ID in the Turnkey activity and encrypted backup key
+#[tokio::test]
+async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encrypted_backup_key() {
+    // Setup test environment
+    let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
+
+    // Generate OIDC token
+    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+
+    // Get challenges for existing passkey and new OIDC factor
+    let existing_challenge = get_add_factor_passkey_challenge(&oidc_token).await;
+    let new_challenge = get_add_factor_keypair_challenge().await;
+
+    // Create keypair and sign the challenge
+    let (new_public_key, _, new_signature) =
+        create_keypair_and_sign(new_challenge["challenge"].as_str().unwrap());
+
+    // Create Turnkey activity and get passkey assertion
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity(existing_challenge["challenge"].as_str().unwrap());
+    let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
+
+    // Attempt to add the new factor with a different account ID in the encrypted backup key
+    let response = common::send_post_request_with_environment(
+        "/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion
+            },
+            "existingFactorChallengeToken": existing_challenge["token"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token
+                },
+                "publicKey": new_public_key,
+                "signature": new_signature,
+            },
+            "newFactorChallengeToken": new_challenge["token"],
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                // Different account ID than in the activity, not org123
+                "turnkeyAccountId": "different_account_id",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
+            },
+        }),
+        Some(environment),
+    )
+    .await;
+
+    // Verify the response
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let add_factor_response = parse_response_body(response).await;
+    assert_eq!(
+        add_factor_response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "webauthn_error",
+                "message": "webauthn_error",
+            }
+        })
+    );
 }
