@@ -99,7 +99,8 @@ pub async fn handler(
         return Err(ErrorResponse::internal_server_error());
     }
 
-    // Step 5: Delete the factor from the backup
+    // Step 5: Delete the factor from the backup and factor lookup
+    factor_lookup.delete(&factor_to_lookup).await?;
     backup_storage
         .remove_factor(&backup_id, &request.factor_id)
         .await?;
