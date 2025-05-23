@@ -1,10 +1,12 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
-use crate::types::backup_metadata::FactorKind;
-use crate::types::{Authorization, ErrorResponse};
+use crate::types::backup_metadata::{FactorKind, OidcAccountKind};
+use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::verify_signature::verify_signature;
 use axum::{Extension, Json};
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,7 @@ pub struct DeleteFactorResponse {}
 
 /// Request to delete a factor from backup metadata using a solved challenge.
 pub async fn handler(
+    Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
@@ -99,7 +102,40 @@ pub async fn handler(
         return Err(ErrorResponse::internal_server_error());
     }
 
-    // Step 5: Delete the factor from the backup
+    // Step 5: Delete the factor from the backup and factor lookup
+    let factor_to_delete = found_backup.metadata.factors.iter().find_map(|factor| {
+        // Match on factor ID provided in the request
+        if factor.id == request.factor_id {
+            // And convert it to a factor to lookup format
+            match &factor.kind {
+                FactorKind::EcKeypair { public_key } => {
+                    Some(FactorToLookup::from_ec_keypair(public_key.to_string()))
+                }
+                FactorKind::Passkey {
+                    webauthn_credential,
+                    ..
+                } => Some(FactorToLookup::from_passkey(
+                    BASE64_URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
+                )),
+                FactorKind::OidcAccount { account } => match account {
+                    OidcAccountKind::Google { sub, email: _ } => {
+                        Some(FactorToLookup::from_oidc_account(
+                            environment.google_issuer_url().to_string(),
+                            sub.to_string(),
+                        ))
+                    }
+                },
+            }
+        } else {
+            None
+        }
+    });
+    let Some(factor_to_delete) = factor_to_delete else {
+        tracing::info!(message = "Factor not found in backup metadata");
+        return Err(ErrorResponse::bad_request("factor_not_found"));
+    };
+    factor_lookup.delete(&factor_to_delete).await?;
+
     backup_storage
         .remove_factor(&backup_id, &request.factor_id)
         .await?;

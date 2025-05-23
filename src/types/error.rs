@@ -3,6 +3,7 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
 use crate::sync_factor_token::SyncFactorTokenError;
+use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
 use aws_sdk_dynamodb::error::SdkError;
@@ -182,7 +183,9 @@ impl From<FactorLookupError> for ErrorResponse {
                     ErrorResponse::internal_server_error()
                 }
             },
-            FactorLookupError::DynamoDbGetError(_) | FactorLookupError::ParseBackupIdError => {
+            FactorLookupError::DynamoDbGetError(_)
+            | FactorLookupError::DynamoDbDeleteError(_)
+            | FactorLookupError::ParseBackupIdError => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
@@ -241,5 +244,12 @@ impl From<SyncFactorTokenError> for ErrorResponse {
                 ErrorResponse::bad_request("sync_factor_token_expired")
             }
         }
+    }
+}
+
+impl From<TurnkeyActivityError> for ErrorResponse {
+    fn from(err: TurnkeyActivityError) -> Self {
+        tracing::info!(message = "Turnkey activity error", error = ?err);
+        ErrorResponse::bad_request("webauthn_error")
     }
 }

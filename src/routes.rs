@@ -5,6 +5,8 @@ use aide::axum::{
 };
 use axum::extract::DefaultBodyLimit;
 
+mod add_factor;
+mod add_factor_challenge;
 mod add_oidc_account;
 mod add_sync_factor;
 mod add_sync_factor_challenge_keypair;
@@ -65,6 +67,9 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(add_sync_factor_challenge_keypair::handler),
         )
         .api_route("/add-sync-factor", post(add_sync_factor::handler))
+        // Add factor to the backup - new OIDC account, new passkey, etc.
+        .api_route("/add-factor/challenge", post(add_factor_challenge::handler))
+        .api_route("/add-factor", post(add_factor::handler))
         // Backup sync
         .api_route(
             "/sync/challenge/keypair",
