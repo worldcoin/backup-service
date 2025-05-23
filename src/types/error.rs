@@ -3,6 +3,8 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::dynamo_cache::DynamoCacheError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::sync_factor_token::SyncFactorTokenError;
+use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
 use aws_sdk_dynamodb::error::SdkError;
@@ -120,6 +122,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             ChallengeManagerError::FailedToDecryptToken(_)
             | ChallengeManagerError::NoValidPayloadClaim
             | ChallengeManagerError::NoValidChallengeTypeClaim
+            | ChallengeManagerError::NoValidChallengeContextClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
                 tracing::info!(message = "Challenge manager error", error = ?err);
                 ErrorResponse::bad_request("jwt_error")
@@ -134,7 +137,8 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
-            | BackupManagerError::ByteStreamError(_) => {
+            | BackupManagerError::ByteStreamError(_)
+            | BackupManagerError::DeleteObjectError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
@@ -149,6 +153,10 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::FactorAlreadyExists => {
                 tracing::info!(message = "Factor already exists", error = ?err);
                 ErrorResponse::bad_request("factor_already_exists")
+            }
+            BackupManagerError::FactorNotFound => {
+                tracing::info!(message = "Factor not found", error = ?err);
+                ErrorResponse::bad_request("factor_not_found")
             }
         }
     }
@@ -176,7 +184,9 @@ impl From<FactorLookupError> for ErrorResponse {
                     ErrorResponse::internal_server_error()
                 }
             },
-            FactorLookupError::DynamoDbGetError(_) | FactorLookupError::ParseBackupIdError => {
+            FactorLookupError::DynamoDbGetError(_)
+            | FactorLookupError::DynamoDbDeleteError(_)
+            | FactorLookupError::ParseBackupIdError => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
@@ -235,5 +245,12 @@ impl From<DynamoCacheError> for ErrorResponse {
                 ErrorResponse::bad_request("already_used")
             }
         }
+    }
+}
+
+impl From<TurnkeyActivityError> for ErrorResponse {
+    fn from(err: TurnkeyActivityError) -> Self {
+        tracing::info!(message = "Turnkey activity error", error = ?err);
+        ErrorResponse::bad_request("webauthn_error")
     }
 }

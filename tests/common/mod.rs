@@ -198,9 +198,21 @@ pub async fn get_passkey_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
-// Get a keypair challenge response from the server that's used for OIDC and Keypair authentication
+// Get a keypair challenge response from the server that's used for OIDC and Keypair registration
 pub async fn get_keypair_challenge() -> serde_json::Value {
     let challenge_response = send_post_request("/create/challenge/keypair", json!({})).await;
+    let challenge_response: Bytes = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    serde_json::from_slice(&challenge_response).unwrap()
+}
+
+// Get a keypair challenge response from the server that's used for OIDC and Keypair authentication
+pub async fn get_keypair_retrieve_challenge() -> serde_json::Value {
+    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()

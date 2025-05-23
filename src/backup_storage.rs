@@ -1,4 +1,5 @@
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
+use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
@@ -168,11 +169,13 @@ impl BackupStorage {
     }
 
     /// Adds a regular factor to the backup metadata in S3.
+    /// Optionally adds a new backup encryption key.
     /// TODO/FIXME: Make this atomic.
     pub async fn add_factor(
         &self,
         backup_id: &str,
         factor: Factor,
+        new_encryption_key: Option<BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
         // Get the current metadata
         let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
@@ -188,6 +191,11 @@ impl BackupStorage {
 
         // Add the factor to the metadata
         metadata.factors.push(factor);
+
+        // Add the new encryption key if provided
+        if let Some(encryption_key) = new_encryption_key {
+            metadata.keys.push(encryption_key);
+        }
 
         // Save the updated metadata
         self.s3_client
@@ -245,6 +253,62 @@ impl BackupStorage {
 
         Ok(())
     }
+
+    /// Removes a regular factor from the backup metadata in S3 by factor ID.
+    /// This method will only remove factors from the regular factors list, not sync factors.
+    /// If this is the last regular factor, the entire backup will be deleted, even if sync factors exist.
+    /// TODO/FIXME: Make this atomic.
+    pub async fn remove_factor(
+        &self,
+        backup_id: &str,
+        factor_id: &str,
+    ) -> Result<(), BackupManagerError> {
+        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let factor_index = metadata.factors.iter().position(|f| f.id == factor_id);
+
+        let Some(index) = factor_index else {
+            return Err(BackupManagerError::FactorNotFound);
+        };
+
+        metadata.factors.remove(index);
+
+        // If there are no more regular factors, delete the backup
+        if metadata.factors.is_empty() {
+            return self.delete_backup(backup_id).await;
+        }
+
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Deletes a backup and its metadata from S3.
+    async fn delete_backup(&self, backup_id: &str) -> Result<(), BackupManagerError> {
+        self.s3_client
+            .delete_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_backup_key(backup_id))
+            .send()
+            .await?;
+
+        self.s3_client
+            .delete_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .send()
+            .await?;
+
+        Ok(())
+    }
 }
 
 pub struct FoundBackup {
@@ -276,6 +340,10 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
+    #[error("Factor not found")]
+    FactorNotFound,
+    #[error("Failed to delete object from S3: {0:?}")]
+    DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
 }
 
 #[cfg(test)]
@@ -474,7 +542,7 @@ mod tests {
 
         // Add the factor
         backup_storage
-            .add_factor(&test_backup_id, google_account.clone())
+            .add_factor(&test_backup_id, google_account.clone(), None)
             .await
             .unwrap();
 
@@ -490,7 +558,7 @@ mod tests {
 
         // Try to add the same factor again - should fail with FactorAlreadyExists
         let result = backup_storage
-            .add_factor(&test_backup_id, google_account.clone())
+            .add_factor(&test_backup_id, google_account.clone(), None)
             .await;
         assert!(result.is_err());
         match result {
@@ -500,12 +568,74 @@ mod tests {
 
         // Try to add a factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
-            .add_factor("non_existent_backup", google_account.clone())
+            .add_factor("non_existent_backup", google_account.clone(), None)
             .await;
         assert!(result.is_err());
         match result {
             Err(BackupManagerError::BackupNotFound) => {}
             _ => panic!("Expected BackupNotFound"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_factor_with_encryption_key() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        // Create a test backup with initial encryption key
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_key = BackupEncryptionKey::Prf {
+            encrypted_key: "INITIAL_KEY".to_string(),
+        };
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![initial_key],
+        };
+
+        // Create a backup
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Create a test factor and new encryption key
+        let new_factor = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "67890".to_string(),
+            email: "test2@example.com".to_string(),
+        });
+
+        let new_key = BackupEncryptionKey::Prf {
+            encrypted_key: "NEW_KEY".to_string(),
+        };
+
+        // Add the factor with the new encryption key
+        backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(new_key.clone()))
+            .await
+            .unwrap();
+
+        // Get the updated metadata and verify both the factor and key were added
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 1);
+        assert_eq!(updated_backup.metadata.factors[0].kind, new_factor.kind);
+
+        // Check that both keys are present
+        assert_eq!(updated_backup.metadata.keys.len(), 2);
+        match &updated_backup.metadata.keys[1] {
+            BackupEncryptionKey::Prf { encrypted_key } => {
+                assert_eq!(encrypted_key, "NEW_KEY");
+            }
+            _ => panic!("Expected Prf key"),
         }
     }
 
@@ -585,5 +715,74 @@ mod tests {
             Err(BackupManagerError::BackupNotFound) => {}
             _ => panic!("Expected BackupNotFound"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_remove_factor() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+
+        // Create a test backup with two factors
+        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let factor1 = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "12345".to_string(),
+            email: "test1@example.com".to_string(),
+        });
+        let factor2 = Factor::new_oidc_account(OidcAccountKind::Google {
+            sub: "67890".to_string(),
+            email: "test2@example.com".to_string(),
+        });
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![factor1.clone(), factor2.clone()],
+            sync_factors: vec![],
+            keys: vec![],
+        };
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Remove the first factor
+        backup_storage
+            .remove_factor(&test_backup_id, &factor1.id)
+            .await
+            .unwrap();
+
+        // Get the updated metadata and verify the factor was removed
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 1);
+        assert_eq!(updated_backup.metadata.factors[0].id, factor2.id);
+
+        // Try to remove a non-existent factor - should fail with FactorNotFound
+        let result = backup_storage
+            .remove_factor(&test_backup_id, "non_existent_factor")
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::FactorNotFound) => {}
+            _ => panic!("Expected FactorNotFound"),
+        }
+
+        // Remove the last factor - should delete the backup
+        backup_storage
+            .remove_factor(&test_backup_id, &factor2.id)
+            .await
+            .unwrap();
+
+        // Verify the backup was deleted
+        let result = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 }

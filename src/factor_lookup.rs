@@ -44,7 +44,7 @@ impl FactorLookup {
             )
             .item(
                 DocumentAttribute::BackupId.to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(backup_id),
+                aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
             )
             .item(
                 DocumentAttribute::CreatedAt.to_string(),
@@ -56,6 +56,12 @@ impl FactorLookup {
             .expression_attribute_names("#pk", DocumentAttribute::Pk.to_string())
             .send()
             .await?;
+
+        tracing::info!(
+            message = "Inserted factor into DynamoDB",
+            pk = factor.primary_key(),
+            backup_id = backup_id,
+        );
 
         Ok(())
     }
@@ -93,6 +99,29 @@ impl FactorLookup {
         // Return the backup ID as a string
         Ok(Some(backup_id.to_string()))
     }
+
+    /// Deletes a factor from the lookup table.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbDeleteError` - if the factor cannot be deleted from the DynamoDB table.
+    pub async fn delete(&self, factor: &FactorToLookup) -> Result<(), FactorLookupError> {
+        self.dynamodb_client
+            .delete_item()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .key(
+                DocumentAttribute::Pk.to_string(),
+                aws_sdk_dynamodb::types::AttributeValue::S(factor.primary_key()),
+            )
+            .send()
+            .await?;
+
+        tracing::info!(
+            message = "Deleted factor from DynamoDB",
+            pk = factor.primary_key(),
+        );
+
+        Ok(())
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -101,6 +130,10 @@ pub enum FactorLookupError {
     DynamoDbPutError(#[from] SdkError<PutItemError>),
     #[error("Failed to fetch factor from DynamoDB: {0}")]
     DynamoDbGetError(#[from] SdkError<GetItemError>),
+    #[error("Failed to delete factor from DynamoDB: {0}")]
+    DynamoDbDeleteError(
+        #[from] SdkError<aws_sdk_dynamodb::operation::delete_item::DeleteItemError>,
+    ),
     #[error("Failed to parse backup ID from DynamoDB row")]
     ParseBackupIdError,
 }
@@ -219,5 +252,33 @@ mod test {
             result.unwrap_err().to_string(),
             "Failed to insert factor into DynamoDB: service error"
         );
+    }
+
+    #[tokio::test]
+    async fn test_factor_delete() {
+        let dynamodb_client = get_test_dynamodb_client().await;
+        let environment = Environment::development(None);
+        let factor_lookup = FactorLookup::new(environment, dynamodb_client);
+
+        let mock_factor_id = uuid::Uuid::new_v4().to_string();
+
+        // Insert a factor
+        let factor = FactorToLookup::from_passkey(mock_factor_id);
+        let backup_id = "test_backup_id".to_string();
+        factor_lookup
+            .insert(&factor, backup_id.clone())
+            .await
+            .unwrap();
+
+        // Verify the factor exists
+        let result = factor_lookup.lookup(&factor).await.unwrap();
+        assert_eq!(result, Some(backup_id));
+
+        // Delete the factor
+        factor_lookup.delete(&factor).await.unwrap();
+
+        // Verify the factor no longer exists
+        let result = factor_lookup.lookup(&factor).await.unwrap();
+        assert_eq!(result, None);
     }
 }

@@ -1,6 +1,6 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::types::backup_metadata::FactorKind;
 use crate::types::{Authorization, Environment, ErrorResponse};
@@ -63,9 +63,12 @@ pub async fn handler(
             signature,
         } => {
             // Step 2.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Sync {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 2.2: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
@@ -88,7 +91,10 @@ pub async fn handler(
     // Step 3: Find the backup metadata using the factor to lookup
     let backup_id = factor_lookup.lookup(&factor_to_lookup).await?;
     let Some(backup_id) = backup_id else {
-        tracing::info!(message = "No backup ID found for the given sync keypair account");
+        tracing::info!(
+            message = "No backup ID found for the given sync keypair account",
+            sync_factor_public_key = sync_factor_public_key
+        );
         return Err(ErrorResponse::bad_request("backup_not_found"));
     };
     let found_backup = backup_storage.get_by_backup_id(&backup_id).await?;

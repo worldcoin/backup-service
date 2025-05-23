@@ -5,12 +5,16 @@ use aide::axum::{
 };
 use axum::extract::DefaultBodyLimit;
 
+mod add_factor;
+mod add_factor_challenge;
 mod add_oidc_account;
 mod add_sync_factor;
 mod add_sync_factor_challenge_keypair;
 mod create_backup;
 mod create_challenge_keypair;
 mod create_challenge_passkey;
+mod delete_factor;
+mod delete_factor_challenge_keypair;
 mod docs;
 mod health;
 mod retrieve_challenge_keypair;
@@ -63,16 +67,30 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(add_sync_factor_challenge_keypair::handler),
         )
         .api_route("/add-sync-factor", post(add_sync_factor::handler))
+        // Add factor to the backup - new OIDC account, new passkey, etc.
+        .api_route("/add-factor/challenge", post(add_factor_challenge::handler))
+        .api_route("/add-factor", post(add_factor::handler))
         // Backup sync
         .api_route(
             "/sync/challenge/keypair",
             post(sync_challenge_keypair::handler),
         )
-        .api_route("/sync", post(sync_backup::handler))
+        .api_route(
+            "/sync",
+            post(sync_backup::handler).layer(DefaultBodyLimit::max(
+                2 * environment.max_backup_file_size(),
+            )),
+        )
         // Metadata retrieval
         .api_route(
             "/retrieve-metadata/challenge/keypair",
             post(retrieve_metadata_challenge_keypair::handler),
         )
         .api_route("/retrieve-metadata", post(retrieve_metadata::handler))
+        // Delete factor
+        .api_route(
+            "/delete-factor/challenge/keypair",
+            post(delete_factor_challenge_keypair::handler),
+        )
+        .api_route("/delete-factor", post(delete_factor::handler))
 }

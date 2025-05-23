@@ -38,11 +38,11 @@ impl ChallengeManager {
         }
     }
 
-    // TODO/FIXME: add method context, e.g. create-backup / retrieve-backup / add-factor
     pub async fn create_challenge_token(
         &self,
         challenge_type: ChallengeType,
         payload: &[u8],
+        challenge_context: ChallengeContext,
     ) -> Result<ChallengeToken, ChallengeManagerError> {
         let encoded_payload = STANDARD.encode(payload);
 
@@ -56,6 +56,9 @@ impl ChallengeManager {
             .map_err(ChallengeManagerError::SetClaim)?;
         jwt_payload
             .set_claim("challenge_type", Some(json!(challenge_type.to_string())))
+            .map_err(ChallengeManagerError::SetClaim)?;
+        jwt_payload
+            .set_claim("challenge_context", Some(json!(challenge_context)))
             .map_err(ChallengeManagerError::SetClaim)?;
 
         jwt_payload.set_issued_at(&SystemTime::now());
@@ -78,7 +81,7 @@ impl ChallengeManager {
         &self,
         expected_challenge_type: ChallengeType,
         challenge_token: ChallengeToken,
-    ) -> Result<TokenPayload, ChallengeManagerError> {
+    ) -> Result<(TokenPayload, ChallengeContext), ChallengeManagerError> {
         let decrypter = self.kms_jwe.decrypter.clone();
         let (jwt_payload, _header) = tokio::task::spawn_blocking(move || {
             decode_with_decrypter(challenge_token, &*decrypter)
@@ -104,6 +107,11 @@ impl ChallengeManager {
         let payload = STANDARD
             .decode(encoded_payload.as_bytes())
             .map_err(|_| ChallengeManagerError::NoValidPayloadClaim)?;
+        let challenge_context = jwt_payload
+            .claim("challenge_context")
+            .ok_or(ChallengeManagerError::NoValidChallengeContextClaim)?;
+        let challenge_context: ChallengeContext = serde_json::from_value(challenge_context.clone())
+            .map_err(|_| ChallengeManagerError::NoValidChallengeContextClaim)?;
 
         // Check expiration
         let now = SystemTime::now();
@@ -117,7 +125,7 @@ impl ChallengeManager {
             return Err(ChallengeManagerError::TokenExpiredOrNoExpiration);
         }
 
-        Ok(payload)
+        Ok((payload, challenge_context))
     }
 }
 
@@ -135,6 +143,8 @@ pub enum ChallengeManagerError {
     NoValidPayloadClaim,
     #[error("No valid challenge type claim in token")]
     NoValidChallengeTypeClaim,
+    #[error("No valid challenge context claim in token")]
+    NoValidChallengeContextClaim,
     #[error("No expiration / not before claim in token or token expired")]
     TokenExpiredOrNoExpiration,
 }
@@ -145,6 +155,49 @@ pub enum ChallengeManagerError {
 pub enum ChallengeType {
     Passkey,
     Keypair,
+}
+
+/// Represents the specific method that the challenge is used for. It can also include some
+/// fields that user needs to commit. For instance, when deleting a factor challenge context
+/// will include the factor ID to delete. This way, a token stolen to delete one factor cannot
+/// be used to delete another factor (in addition to replay protection).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "UPPERCASE")]
+pub enum ChallengeContext {
+    /// Signed by new sync factor when adding it to the backup metadata.
+    #[serde(rename_all = "camelCase")]
+    AddSyncFactor {},
+    /// Signed by first factor of a new backup when creating it.
+    #[serde(rename_all = "camelCase")]
+    Create {},
+    /// Signed by the factor that's used to recover the backup.
+    #[serde(rename_all = "camelCase")]
+    Retrieve {},
+    /// Signed by sync factor when retrieving the backup metadata for rendering a page like settings.
+    #[serde(rename_all = "camelCase")]
+    RetrieveMetadata {},
+    /// Signed by sync factor when updating the ciphertext of the backup.
+    #[serde(rename_all = "camelCase")]
+    Sync {},
+    /// Signed by sync factor when removing an existing factor from backup metadata.
+    #[serde(rename_all = "camelCase")]
+    DeleteFactor { factor_id: String },
+    /// Challenge used as part of adding a new factor to the backup. This challenge has to be
+    /// signed by the existing factor and include reference to the new factor. It allows to verify
+    /// that new factor has been "authorized" by the existing factor.
+    #[serde(rename_all = "camelCase")]
+    AddFactor { new_factor_type: NewFactorType },
+    /// Challenge used as part of adding a new factor to the backup. This challenge has to be
+    /// signed by the new factor. It allows to verify that user has access to the new factor.
+    #[serde(rename_all = "camelCase")]
+    AddFactorByNewFactor {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NewFactorType {
+    #[serde(rename_all = "camelCase")]
+    OidcAccount { oidc_token: String },
 }
 
 pub type TokenPayload = Vec<u8>;
@@ -182,24 +235,34 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
+            .create_challenge_token(
+                ChallengeType::Passkey,
+                &[1, 2, 3],
+                ChallengeContext::AddSyncFactor {},
+            )
             .await
             .unwrap();
-        let payload = challenge_manager
+        let (payload, context) = challenge_manager
             .extract_token_payload(ChallengeType::Passkey, challenge_token.clone())
             .await
             .unwrap();
         assert_eq!(payload, vec![1, 2, 3]);
+        assert_eq!(context, ChallengeContext::AddSyncFactor {});
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Keypair, &[4, 5, 6])
+            .create_challenge_token(
+                ChallengeType::Keypair,
+                &[4, 5, 6],
+                ChallengeContext::Create {},
+            )
             .await
             .unwrap();
-        let payload = challenge_manager
+        let (payload, context) = challenge_manager
             .extract_token_payload(ChallengeType::Keypair, challenge_token.clone())
             .await
             .unwrap();
         assert_eq!(payload, vec![4, 5, 6]);
+        assert_eq!(context, ChallengeContext::Create {});
     }
 
     #[tokio::test]
@@ -208,7 +271,11 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
+            .create_challenge_token(
+                ChallengeType::Passkey,
+                &[1, 2, 3],
+                ChallengeContext::Retrieve {},
+            )
             .await
             .unwrap();
         let result = challenge_manager
@@ -226,7 +293,11 @@ mod tests {
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
 
         let mut challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
+            .create_challenge_token(
+                ChallengeType::Passkey,
+                &[1, 2, 3],
+                ChallengeContext::Create {},
+            )
             .await
             .unwrap();
         challenge_token.push_str("i");
@@ -244,7 +315,11 @@ mod tests {
         let kms_jwe = get_kms_jwe().await;
         let challenge_manager = ChallengeManager::new(Duration::from_secs(0), kms_jwe);
         let challenge_token = challenge_manager
-            .create_challenge_token(ChallengeType::Passkey, &[1, 2, 3])
+            .create_challenge_token(
+                ChallengeType::Passkey,
+                &[1, 2, 3],
+                ChallengeContext::RetrieveMetadata {},
+            )
             .await
             .unwrap();
         let result = challenge_manager

@@ -1,5 +1,5 @@
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
@@ -45,9 +45,12 @@ pub async fn handler(
     let (backup, metadata) = match &request.authorization {
         Authorization::Passkey { credential } => {
             // Step 1A.1: Decrypt passkey state from the token
-            let challenge_token_payload = challenge_manager
+            let (challenge_token_payload, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Passkey, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Retrieve {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
             let passkey_state: DiscoverableAuthentication =
                 serde_json::from_slice(&challenge_token_payload).map_err(|err| {
                     // If a valid token cannot be deserialized, it's an internal error
@@ -146,9 +149,12 @@ pub async fn handler(
             signature,
         } => {
             // Step 1B.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Retrieve {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 1B.2: Verify the OIDC token
             let claims = oidc_token_verifier
@@ -238,9 +244,12 @@ pub async fn handler(
             signature,
         } => {
             // Step 1C.1: Get the challenge payload from the challenge token
-            let trusted_challenge = challenge_manager
+            let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
                 .await?;
+            if challenge_context != (ChallengeContext::Retrieve {}) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
 
             // Step 1C.2: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
