@@ -13,19 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use strum_macros::{Display, EnumString};
 
-/// This struct is used as an extension in `axum` to manage the "coupon" token that
-/// should be generated during the `retrieve` process. This token is used to later add new sync
-/// factor to the backup.
+/// The `DynamoCacheManager` introduces a simple and generic cache layer on top of DynamoDB.
 ///
-/// The motivation for this two-step process are risks checks that should happen after backup is
-/// decrypted (and therefore retrieved). If we added the sync factor in the same step, users
-/// who haven't passed the risk checks (and therefore not let into the app) would have added a sync
-/// factor to their backup. Since users might make multiple attempts to retrieve their backup, this
-/// would lead to accumulation of sync factors in the backup that are not used and likely not even
-/// saved in the app.
-///
-/// The token is a random secret value that's stored hashed in the DynamoDB database. The token is
-/// issued at retrieval and removed when the sync factor is added.
+/// # Use Cases
+/// - It is used to store tokens that are used to add a sync factor to a backup.
+/// - It is also used to prevent replay attacks by storing used challenge tokens.
 #[derive(Clone, Debug)]
 pub struct DynamoCacheManager {
     environment: Environment,
@@ -102,6 +94,18 @@ impl DynamoCacheManager {
 
     /// Verifies the token and returns the backup ID, unless it was already used.
     /// The token is then marked as used. The corresponding backup ID is returned.
+    ///
+    /// The motivation for this two-step process is to prevent users from adding a sync factor to
+    /// their backup if they haven't passed the risk checks.
+    ///
+    /// If a sync factor was added in the same step, users who haven't passed the risk checks
+    /// (and therefore not let into the app) would have added a sync factor to their backup.
+    /// Since users might make multiple attempts to retrieve their backup, this would lead to
+    /// accumulation of sync factors in the backup that are not used and likely not even saved in the app.
+    ///
+    /// The token is a random secret value that's stored hashed in the cache table in Dynamo. The token is
+    /// issued at retrieval and removed when the sync factor is added. This method retrieves and marks the token as used
+    /// in a semi-atomic process.
     ///
     /// # Errors
     /// * `DynamoCacheError::DynamoDbGetError` - if the token cannot be fetched from the DynamoDB table
