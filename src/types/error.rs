@@ -3,7 +3,6 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::dynamo_cache::DynamoCacheError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
-use crate::sync_factor_token::SyncFactorTokenError;
 use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
