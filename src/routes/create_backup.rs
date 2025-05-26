@@ -1,7 +1,7 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::factor_lookup::{FactorLookup, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{BackupMetadata, Factor, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -244,10 +244,18 @@ pub async fn handler(
     // and sync. This should happen before the backup storage is updated, because
     // it might fail with a duplicate key error.
     factor_lookup
-        .insert(&factor_to_lookup, backup_metadata.id.clone())
+        .insert(
+            FactorScope::Main,
+            &factor_to_lookup,
+            backup_metadata.id.clone(),
+        )
         .await?;
     factor_lookup
-        .insert(&initial_sync_factor_to_lookup, backup_metadata.id.clone())
+        .insert(
+            FactorScope::Sync,
+            &initial_sync_factor_to_lookup,
+            backup_metadata.id.clone(),
+        )
         .await?;
 
     // Step 6: Save the backup to S3

@@ -1,6 +1,6 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::factor_lookup::{FactorLookup, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
 use crate::types::{Authorization, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -64,7 +64,9 @@ pub async fn handler(
     };
 
     // Step 2: Find the backup metadata using the factor to lookup
-    let backup_id = factor_lookup.lookup(&factor_to_lookup).await?;
+    let backup_id = factor_lookup
+        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .await?;
     let Some(backup_id) = backup_id else {
         tracing::info!(message = "No backup ID found for the given sync keypair account");
         return Err(ErrorResponse::bad_request("backup_not_found"));
