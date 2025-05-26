@@ -21,8 +21,6 @@ pub struct MockOidcServer {
     pub jwk_set_mock: mockito::Mock,
 }
 
-// TODO/FIXME: DRY with other implementation
-
 impl MockOidcServer {
     pub async fn new() -> Self {
         // Initialize signing key

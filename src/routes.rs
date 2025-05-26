@@ -7,7 +7,6 @@ use axum::extract::DefaultBodyLimit;
 
 mod add_factor;
 mod add_factor_challenge;
-mod add_oidc_account;
 mod add_sync_factor;
 mod add_sync_factor_challenge_keypair;
 mod create_backup;
@@ -46,8 +45,6 @@ pub fn handler(environment: Environment) -> ApiRouter {
                 2 * environment.max_backup_file_size(),
             )),
         )
-        // TODO/FIXME: remove this endpoint and replace it with factor update
-        .api_route("/add-oidc-account", post(add_oidc_account::handler))
         // Recovery
         .api_route(
             "/retrieve/challenge/passkey",
