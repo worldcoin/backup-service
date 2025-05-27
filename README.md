@@ -20,7 +20,7 @@ A typical backup lifecycle:
 
 * **Sealed Backup**: Binary blob from user device with backup ciphertext.
 * **Backup Metadata**: Information about a backup including its ID, authentication factors, sync factors, and encrypted keys
-* **Factor**: Authentication method that can access a backup (passkey, OIDC account, or EC keypair)
+* **Factor**: Authentication method that can access a backup and **manage the backup** (add new factors, and perform recovery). It is a passkey, OIDC account, or EC keypair.
 * **Sync Factor**: Special factor (EC keypair) that can update backup content, delete factors and read metadata, but cannot add new factors or perform recovery
 * **Encrypted Backup Key**: Encryption key for the backup data, encrypted separately for each factor kind. The encrypted key is coming from user's device and is stored in the backup metadata.
 * **Turnkey Shared Passkey Challenge**: A passkey challenge that is a valid [Webauthn Turnkey stamp](https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn) and can be used to add a new factor to backup-service. Allows to add new factor with authorization to Turnkey & backup-service in a single passkey prompt.
