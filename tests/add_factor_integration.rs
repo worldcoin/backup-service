@@ -1,14 +1,19 @@
 mod common;
 
-use crate::common::{create_test_backup, verify_s3_metadata_exists, MockPasskeyClient};
+use crate::common::{
+    create_test_backup, get_keypair_retrieve_challenge, send_post_request_with_environment,
+    verify_s3_metadata_exists, MockPasskeyClient,
+};
 use axum::http::StatusCode;
 use axum::response::Response;
 use backup_service::mock_oidc_server::MockOidcServer;
 use backup_service::types::Environment;
+use base64::engine::general_purpose::STANDARD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
 use http_body_util::BodyExt;
+use openidconnect::SubjectIdentifier;
 use p256::SecretKey;
 use passkey::types::webauthn::CredentialRequestOptions;
 use serde_json::{json, Value};
@@ -116,8 +121,12 @@ async fn test_add_factor_happy_path() {
     // Setup test environment
     let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
 
-    // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    // Generate subject ID and OIDC token with consistent subject
+    let subject = format!("test-subject-{}", uuid::Uuid::new_v4());
+    let oidc_token = oidc_server.generate_token(
+        environment.clone(),
+        Some(SubjectIdentifier::new(subject.clone())),
+    );
 
     // Get challenges for both existing passkey and new factor
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -177,6 +186,63 @@ async fn test_add_factor_happy_path() {
         .find(|f| f["id"].as_str().unwrap() == add_factor_response["factorId"].as_str().unwrap())
         .unwrap();
     assert_eq!(new_factor["kind"]["kind"], "OIDC_ACCOUNT");
+
+    // Now try to retrieve the backup using the newly added OIDC factor
+    // Get a challenge for retrieving the backup
+    let retrieve_challenge = get_keypair_retrieve_challenge().await;
+
+    // Generate a new OIDC token with the same subject ID
+    let new_oidc_token =
+        oidc_server.generate_token(environment.clone(), Some(SubjectIdentifier::new(subject)));
+
+    // Sign the retrieval challenge with a new keypair
+
+    let (retrieval_public_key, _, retrieval_signature) =
+        create_keypair_and_sign(retrieve_challenge["challenge"].as_str().unwrap());
+
+    // Attempt to retrieve the backup using the OIDC factor
+    let retrieve_response = send_post_request_with_environment(
+        "/retrieve/from-challenge",
+        json!({
+            "authorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": new_oidc_token,
+                },
+                "publicKey": retrieval_public_key,
+                "signature": retrieval_signature,
+            },
+            "challengeToken": retrieve_challenge["token"],
+        }),
+        Some(environment),
+    )
+    .await;
+
+    // Verify the retrieval was successful
+    assert_eq!(retrieve_response.status(), StatusCode::OK);
+
+    // Parse the response body
+    let body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retrieve_response: Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify we got back a backup and metadata
+    assert!(retrieve_response["backup"].is_string());
+    assert!(retrieve_response["metadata"].is_object());
+
+    // Decode and verify the backup data (we used "BACKUP DATA" when creating the test backup)
+    let backup_base64 = retrieve_response["backup"].as_str().unwrap();
+    let backup_bytes = STANDARD.decode(backup_base64).unwrap();
+    assert_eq!(backup_bytes, b"BACKUP DATA");
+
+    // Verify the metadata contains expected fields
+    let metadata = &retrieve_response["metadata"];
+    assert_eq!(metadata["id"].as_str().unwrap(), backup_id);
 }
 
 // Mismatch between OIDC token when getting the challenge and when adding the factor

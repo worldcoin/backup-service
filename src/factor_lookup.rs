@@ -70,6 +70,7 @@ impl FactorLookup {
 
         tracing::info!(
             message = "Inserted factor into DynamoDB",
+            scope = scope.to_string(),
             pk = factor.primary_key(),
             backup_id = backup_id,
         );

@@ -291,7 +291,7 @@ pub async fn handler(
 
     // Step 3.1: Update the factor lookup with the new factor
     factor_lookup
-        .insert(FactorScope::Sync, &factor_to_lookup, backup_id.clone())
+        .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
         .await?;
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
