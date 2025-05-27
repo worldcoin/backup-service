@@ -21,7 +21,12 @@ pub struct FactorLookup {
 #[derive(Debug, Clone, Copy, Display, EnumString)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum FactorScope {
+    /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup
+    /// or add new factors.
     Main,
+    /// Sync factors (e.g. EC keypairs stored on enclaves) are used to update the backup with
+    /// new data, view metadata and delete factors. Sync factors cannot be used to recover the backup
+    /// or add new factors.
     Sync,
 }
 
