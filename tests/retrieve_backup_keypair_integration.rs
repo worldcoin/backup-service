@@ -214,8 +214,8 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "keypair_error",
-                "message": "keypair_error",
+                "code": "backup_not_found",
+                "message": "backup_not_found",
             }
         })
     );
