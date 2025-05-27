@@ -1,6 +1,7 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{BackupMetadata, Factor, OidcAccountKind};
@@ -37,6 +38,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
     Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
+    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -97,7 +99,9 @@ pub async fn handler(
                 .finish_passkey_registration(&user_provided_credential, &passkey_state)?;
 
             // Step 2A.3: Track used challenge to prevent replay attacks
-            // TODO/FIXME: Track used challenges to prevent replay attacks
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             let credential_id = verified_passkey.cred_id().clone();
             (
@@ -140,7 +144,9 @@ pub async fn handler(
             // TODO/FIXME: Implement check
 
             // Step 2B.5: Track used challenges to prevent replay attacks
-            // TODO/FIXME
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             // Step 2B.6: Create a factor and factor lookup
             let oidc_account = match &oidc_token {
@@ -184,7 +190,9 @@ pub async fn handler(
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
             // Step 2C.3: Track used challenges to prevent replay attacks
-            // TODO/FIXME
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             // Step 2C.4: Create a factor and factor lookup
             (

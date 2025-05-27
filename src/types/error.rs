@@ -1,8 +1,8 @@
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
+use crate::dynamo_cache::DynamoCacheError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
-use crate::sync_factor_token::SyncFactorTokenError;
 use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
@@ -219,29 +219,29 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
     }
 }
 
-impl From<SyncFactorTokenError> for ErrorResponse {
-    fn from(err: SyncFactorTokenError) -> Self {
+impl From<DynamoCacheError> for ErrorResponse {
+    fn from(err: DynamoCacheError) -> Self {
         match &err {
-            SyncFactorTokenError::DynamoDbPutError(_)
-            | SyncFactorTokenError::DynamoDbGetError(_)
-            | SyncFactorTokenError::DynamoDbUpdateError(_)
-            | SyncFactorTokenError::MalformedToken
-            | SyncFactorTokenError::ParseBackupIdError
-            | SyncFactorTokenError::ParseExpirationError => {
+            DynamoCacheError::DynamoDbPutError(_)
+            | DynamoCacheError::DynamoDbGetError(_)
+            | DynamoCacheError::DynamoDbUpdateError(_)
+            | DynamoCacheError::MalformedToken
+            | DynamoCacheError::ParseBackupIdError
+            | DynamoCacheError::ParseExpirationError => {
                 tracing::error!(message = "Sync factor token error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
-            SyncFactorTokenError::TokenNotFound => {
+            DynamoCacheError::TokenNotFound => {
                 tracing::info!(message = "Sync factor token not found", error = ?err);
                 ErrorResponse::bad_request("sync_factor_token_not_found")
             }
-            SyncFactorTokenError::TokenAlreadyUsed => {
-                tracing::info!(message = "Sync factor token already used", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_already_used")
-            }
-            SyncFactorTokenError::TokenExpired => {
+            DynamoCacheError::TokenExpired => {
                 tracing::info!(message = "Sync factor token expired", error = ?err);
                 ErrorResponse::bad_request("sync_factor_token_expired")
+            }
+            DynamoCacheError::AlreadyUsed => {
+                tracing::info!(message = "The token or challenge has already been used", error = ?err);
+                ErrorResponse::bad_request("already_used")
             }
         }
     }

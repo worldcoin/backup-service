@@ -1,11 +1,11 @@
 use aws_sdk_s3::Client as S3Client;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
+use backup_service::dynamo_cache::DynamoCacheManager;
 use backup_service::factor_lookup::FactorLookup;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::oidc_token_verifier::OidcTokenVerifier;
 use backup_service::server;
-use backup_service::sync_factor_token::SyncFactorTokenManager;
 use backup_service::types::Environment;
 use dotenvy::dotenv;
 use std::sync::Arc;
@@ -31,9 +31,9 @@ async fn main() -> anyhow::Result<()> {
     let backup_storage = BackupStorage::new(environment, s3_client.clone());
     let factor_lookup = FactorLookup::new(environment, dynamodb_client.clone());
     let oidc_token_verifier = OidcTokenVerifier::new(environment);
-    let sync_factor_token_manager = SyncFactorTokenManager::new(
+    let dynamo_cache_manager = DynamoCacheManager::new(
         environment,
-        environment.sync_factor_token_ttl(),
+        environment.cache_default_ttl(),
         dynamodb_client.clone(),
     );
 
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         backup_storage,
         factor_lookup,
         oidc_token_verifier,
-        sync_factor_token_manager,
+        dynamo_cache_manager,
     )
     .await
 }

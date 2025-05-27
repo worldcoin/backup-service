@@ -158,7 +158,7 @@ async fn test_add_sync_factor_happy_path() {
     let error_response: serde_json::Value = serde_json::from_slice(&error_body).unwrap();
     assert_eq!(
         error_response["error"]["code"].as_str().unwrap(),
-        "sync_factor_token_already_used"
+        "already_used"
     );
 
     // Now verify we can use the newly added sync factor to sync a backup

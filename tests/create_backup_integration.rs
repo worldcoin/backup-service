@@ -64,8 +64,44 @@ async fn test_create_backup_with_passkey() {
         metadata["factors"][0]["kind"]["webauthnCredential"]["cred"]["cred_id"],
         credential["id"]
     );
-}
 
+    // check challenge_token cannot be reused
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "authorization": {
+                "kind": "PASSKEY",
+                "credential": credential,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "already_used",
+                "message": "already_used",
+            },
+        })
+    );
+}
 // Happy path - OIDC
 #[tokio::test]
 async fn test_create_backup_with_oidc_token() {
@@ -89,27 +125,29 @@ async fn test_create_backup_with_oidc_token() {
     // Create a sync factor
     let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
 
+    let request_body = json!({
+        "authorization": {
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": {
+                "kind": "GOOGLE",
+                "token": oidc_token,
+            },
+            "publicKey": public_key,
+            "signature": signature,
+        },
+        "challengeToken": challenge_response["token"],
+        "initialEncryptionKey": {
+            "kind": "PRF",
+            "encryptedKey": "ENCRYPTED_KEY",
+        },
+        "initialSyncFactor": sync_factor,
+        "initialSyncChallengeToken": sync_challenge_token,
+    });
+
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
         "/create",
-        json!({
-            "authorization": {
-                "kind": "OIDC_ACCOUNT",
-                "oidcToken": {
-                    "kind": "GOOGLE",
-                    "token": oidc_token,
-                },
-                "publicKey": public_key,
-                "signature": signature,
-            },
-            "challengeToken": challenge_response["token"],
-            "initialEncryptionKey": {
-                "kind": "PRF",
-                "encryptedKey": "ENCRYPTED_KEY",
-            },
-            "initialSyncFactor": sync_factor,
-            "initialSyncChallengeToken": sync_challenge_token,
-        }),
+        request_body,
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
     )
