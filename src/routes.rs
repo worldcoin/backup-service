@@ -1,3 +1,9 @@
+use crate::routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest;
+use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
+use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
+use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
+use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
+use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
 use crate::types::Environment;
 use aide::axum::{
     routing::{get, post},
@@ -16,6 +22,7 @@ mod delete_factor;
 mod delete_factor_challenge_keypair;
 mod docs;
 mod health;
+mod keypair_challenge;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
@@ -35,7 +42,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/create/challenge/keypair",
-            post(create_challenge_keypair::handler),
+            post(keypair_challenge::handler::<CreateChallengeKeypairRequest>),
         )
         .api_route(
             "/create",
@@ -52,7 +59,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/retrieve/challenge/keypair",
-            post(retrieve_challenge_keypair::handler),
+            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
         )
         .api_route(
             "/retrieve/from-challenge",
@@ -61,7 +68,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         // Add new factor for future sync after recovery
         .api_route(
             "/add-sync-factor/challenge/keypair",
-            post(add_sync_factor_challenge_keypair::handler),
+            post(keypair_challenge::handler::<AddSyncFactorChallengeKeypairRequest>),
         )
         .api_route("/add-sync-factor", post(add_sync_factor::handler))
         // Add factor to the backup - new OIDC account, new passkey, etc.
@@ -70,7 +77,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         // Backup sync
         .api_route(
             "/sync/challenge/keypair",
-            post(sync_challenge_keypair::handler),
+            post(keypair_challenge::handler::<SyncChallengeKeypairRequest>),
         )
         .api_route(
             "/sync",
@@ -81,13 +88,13 @@ pub fn handler(environment: Environment) -> ApiRouter {
         // Metadata retrieval
         .api_route(
             "/retrieve-metadata/challenge/keypair",
-            post(retrieve_metadata_challenge_keypair::handler),
+            post(keypair_challenge::handler::<RetrieveMetadataChallengeKeypairRequest>),
         )
         .api_route("/retrieve-metadata", post(retrieve_metadata::handler))
         // Delete factor
         .api_route(
             "/delete-factor/challenge/keypair",
-            post(delete_factor_challenge_keypair::handler),
+            post(keypair_challenge::handler::<DeleteFactorChallengeKeypairRequest>),
         )
         .api_route("/delete-factor", post(delete_factor::handler))
 }
