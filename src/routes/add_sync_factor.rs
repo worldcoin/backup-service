@@ -1,7 +1,7 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::sync_factor_token::SyncFactorTokenManager;
 use crate::types::backup_metadata::Factor;
 use crate::types::{Authorization, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -33,7 +33,7 @@ pub async fn handler(
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(sync_factor_token_manager): Extension<SyncFactorTokenManager>,
+    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
     // Step 1: Verify the sync factor is a valid EC keypair and transform it to a factor object
@@ -69,8 +69,8 @@ pub async fn handler(
     };
 
     // Step 2: Verify the sync factor token and extract the backup ID
-    let backup_id = sync_factor_token_manager
-        .use_token(request.sync_factor_token.to_string())
+    let backup_id = dynamo_cache_manager
+        .use_sync_factor_token(request.sync_factor_token.to_string())
         .await?;
 
     // Step 3: Add the sync factor to backup lookup

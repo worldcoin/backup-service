@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod oidc_server;
 mod passkey_client;
 
 use aws_sdk_s3::Client as S3Client;
@@ -15,8 +14,6 @@ use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
-#[allow(unused_imports)]
-pub use oidc_server::*;
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
@@ -60,9 +57,9 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
     let oidc_token_verifier =
         backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment);
-    let sync_factor_token_manager = backup_service::sync_factor_token::SyncFactorTokenManager::new(
+    let sync_factor_token_manager = backup_service::dynamo_cache::DynamoCacheManager::new(
         environment,
-        environment.sync_factor_token_ttl(),
+        environment.cache_default_ttl(),
         dynamodb_client.clone(),
     );
 
