@@ -1,8 +1,8 @@
 mod common;
 
 use crate::common::{
-    create_test_backup_with_keypair, get_keypair_retrieval_challenge, send_post_request,
-    sign_keypair_challenge,
+    create_test_backup_with_keypair, create_test_backup_with_sync_keypair,
+    get_keypair_retrieval_challenge, send_post_request, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
@@ -216,6 +216,63 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
             "error": {
                 "code": "keypair_error",
                 "message": "keypair_error",
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_retrieve_backup_with_sync_keypair() {
+    // Create a backup with EC keypair and get the sync keypair's secret key
+    let ((_, _), create_response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"TEST BACKUP DATA").await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+
+    // Get a new challenge for retrieving the backup
+    let retrieve_challenge = get_keypair_retrieval_challenge().await;
+
+    // Sign the retrieval challenge with the sync keypair
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        retrieve_challenge["challenge"].as_str().unwrap(),
+    );
+
+    // Get the sync keypair's public key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+
+    // Attempt to retrieve the backup using the sync factor
+    let retrieve_response = send_post_request(
+        "/retrieve/from-challenge",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": retrieve_challenge["token"],
+        }),
+    )
+    .await;
+
+    // This should fail because sync factors cannot be used to retrieve backups
+    assert_eq!(retrieve_response.status(), StatusCode::BAD_REQUEST);
+
+    let body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // The service should respond with backup_not_found error
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_not_found",
+                "message": "backup_not_found",
             }
         })
     );

@@ -268,7 +268,7 @@ pub async fn handler(
                 .await?;
             let Some(not_verified_backup_id) = not_verified_backup_id else {
                 tracing::info!(message = "No backup ID found for the given EC keypair");
-                return Err(ErrorResponse::bad_request("keypair_error"));
+                return Err(ErrorResponse::bad_request("backup_not_found"));
             };
 
             // Step 1C.4: Fetch the backup from the storage to get the reference keypair
@@ -279,7 +279,7 @@ pub async fn handler(
                 Some(backup_metadata) => backup_metadata,
                 None => {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
-                    return Err(ErrorResponse::bad_request("keypair_error"));
+                    return Err(ErrorResponse::bad_request("backup_not_found"));
                 }
             };
 
