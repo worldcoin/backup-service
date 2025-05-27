@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod oidc_server;
 mod passkey_client;
 
 use aws_sdk_s3::Client as S3Client;
@@ -15,8 +14,6 @@ use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
-#[allow(unused_imports)]
-pub use oidc_server::*;
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
