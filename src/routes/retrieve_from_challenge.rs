@@ -161,7 +161,7 @@ pub async fn handler(
 
             // Step 1B.2: Verify the OIDC token
             let claims = oidc_token_verifier
-                .verify_token(oidc_token)
+                .verify_token(oidc_token, public_key.clone())
                 .await
                 .map_err(|_| ErrorResponse::bad_request("oidc_token_verification_error"))?;
 

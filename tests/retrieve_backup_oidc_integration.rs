@@ -27,6 +27,7 @@ async fn test_retrieve_backup_with_oidc_account() {
     let new_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
         Some(SubjectIdentifier::new(subject.clone())),
+        &test_backup.public_key,
     );
 
     // Sign the retrieval challenge with the same keypair
@@ -95,6 +96,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     let different_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
         Some(SubjectIdentifier::new(different_subject)),
+        &test_backup.public_key,
     );
 
     // Sign the retrieval challenge with the same keypair
@@ -162,6 +164,7 @@ async fn test_retrieve_backup_with_different_keypair() {
     let new_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
         Some(SubjectIdentifier::new(subject.clone())),
+        &test_backup.public_key,
     );
 
     // Generate a different keypair for signing
@@ -212,6 +215,74 @@ async fn test_retrieve_backup_with_different_keypair() {
             "error": {
                 "code": "signature_verification_error",
                 "message": "signature_verification_error",
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_retrieve_backup_with_incorrect_nonce() {
+    let subject = Uuid::new_v4().to_string();
+
+    // Create a backup with OIDC account
+    let test_backup = create_test_backup_with_oidc_account(&subject, b"TEST BACKUP DATA").await;
+    assert_eq!(test_backup.response.status(), StatusCode::OK);
+
+    // Get a new challenge for retrieving the backup
+    let retrieve_challenge = get_keypair_retrieve_challenge().await;
+
+    // Generate new OIDC token for the same user with an incorrect nonce
+    let token_with_incorrect_nonce = test_backup.oidc_server.generate_token(
+        test_backup.environment,
+        Some(SubjectIdentifier::new(subject.clone())),
+        &generate_keypair().0,
+    );
+
+    // Sign the retrieval challenge with the correct keypair
+    let signature = sign_keypair_challenge(
+        &test_backup.secret_key,
+        retrieve_challenge["challenge"].as_str().unwrap(),
+    );
+
+    // Retrieve the backup using the solved challenge but with incorrect nonce in token
+    let retrieve_response = send_post_request_with_environment(
+        "/retrieve/from-challenge",
+        json!({
+            "authorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": token_with_incorrect_nonce,
+                },
+                "publicKey": test_backup.public_key,
+                "signature": signature,
+            },
+            "challengeToken": retrieve_challenge["token"],
+        }),
+        // Must be sent to the same JWT issuer as the one used to create the backup
+        Some(test_backup.environment),
+    )
+    .await;
+
+    // Should fail with bad request because the nonce verification will fail
+    assert_eq!(retrieve_response.status(), StatusCode::BAD_REQUEST);
+
+    let body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify error message - it's returned as a token verification error
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "oidc_token_verification_error",
+                "message": "oidc_token_verification_error",
             }
         })
     );
