@@ -488,6 +488,7 @@ pub async fn create_test_backup_with_oidc_account(
             },
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Bytes::from(backup_data.to_vec()),
         Some(environment),

@@ -66,12 +66,16 @@ impl Factor {
                 FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
                     registration: registration.clone(),
                 },
-                FactorKind::OidcAccount { account } => ExportedFactorKind::OidcAccount {
+                FactorKind::OidcAccount {
+                    account,
+                    turnkey_provider_id,
+                } => ExportedFactorKind::OidcAccount {
                     account: match account {
                         OidcAccountKind::Google { email, .. } => ExportedOidcAccountKind::Google {
                             masked_email: mask_email(email).unwrap_or_default(),
                         },
                     },
+                    turnkey_provider_id: turnkey_provider_id.clone(),
                 },
                 FactorKind::EcKeypair { public_key } => ExportedFactorKind::EcKeypair {
                     public_key: public_key.clone(),
@@ -93,7 +97,14 @@ pub enum FactorKind {
         registration: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
-    OidcAccount { account: OidcAccountKind },
+    OidcAccount {
+        account: OidcAccountKind,
+        /// The ID of the Turnkey OIDC provider. Returned from Turnkey API when creating account
+        /// or adding new factor. This is used to be able to delete this factor from Turnkey
+        /// if needed.
+        /// https://docs.turnkey.com/api-reference/activities/create-oauth-providers
+        turnkey_provider_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     EcKeypair { public_key: String },
 }
@@ -110,10 +121,13 @@ impl Factor {
         }
     }
 
-    pub fn new_oidc_account(account: OidcAccountKind) -> Self {
+    pub fn new_oidc_account(account: OidcAccountKind, turnkey_provider_id: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            kind: FactorKind::OidcAccount { account },
+            kind: FactorKind::OidcAccount {
+                account,
+                turnkey_provider_id,
+            },
             created_at: Utc::now(),
         }
     }
@@ -183,7 +197,10 @@ pub enum ExportedFactorKind {
         registration: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
-    OidcAccount { account: ExportedOidcAccountKind },
+    OidcAccount {
+        account: ExportedOidcAccountKind,
+        turnkey_provider_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     EcKeypair { public_key: String },
 }

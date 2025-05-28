@@ -535,10 +535,13 @@ mod tests {
             .unwrap();
 
         // Create a test factor
-        let google_account = Factor::new_oidc_account(OidcAccountKind::Google {
-            sub: "12345".to_string(),
-            email: "test@example.com".to_string(),
-        });
+        let google_account = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
 
         // Add the factor
         backup_storage
@@ -604,10 +607,13 @@ mod tests {
             .unwrap();
 
         // Create a test factor and new encryption key
-        let new_factor = Factor::new_oidc_account(OidcAccountKind::Google {
-            sub: "67890".to_string(),
-            email: "test2@example.com".to_string(),
-        });
+        let new_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "67890".to_string(),
+                email: "test2@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
 
         let new_key = BackupEncryptionKey::Prf {
             encrypted_key: "NEW_KEY".to_string(),
@@ -693,10 +699,13 @@ mod tests {
         }
 
         // Try to add an invalid factor type (OIDC account) as a sync factor - should fail
-        let oidc_factor = Factor::new_oidc_account(OidcAccountKind::Google {
-            sub: "12345".to_string(),
-            email: "test@example.com".to_string(),
-        });
+        let oidc_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
         let result = backup_storage
             .add_sync_factor(&test_backup_id, oidc_factor)
             .await;
@@ -727,14 +736,20 @@ mod tests {
         // Create a test backup with two factors
         let test_backup_id = Uuid::new_v4().to_string();
         let test_backup_data = vec![1, 2, 3, 4, 5];
-        let factor1 = Factor::new_oidc_account(OidcAccountKind::Google {
-            sub: "12345".to_string(),
-            email: "test1@example.com".to_string(),
-        });
-        let factor2 = Factor::new_oidc_account(OidcAccountKind::Google {
-            sub: "67890".to_string(),
-            email: "test2@example.com".to_string(),
-        });
+        let factor1 = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                email: "test1@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let factor2 = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "67890".to_string(),
+                email: "test2@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
         let initial_metadata = BackupMetadata {
             id: test_backup_id.clone(),
             factors: vec![factor1.clone(), factor2.clone()],

@@ -142,6 +142,7 @@ async fn test_create_backup_with_oidc_token() {
         },
         "initialSyncFactor": sync_factor,
         "initialSyncChallengeToken": sync_challenge_token,
+        "turnkeyProviderId": "turnkey_provider_id",
     });
 
     // Send the OIDC token to the server to create a backup
@@ -470,6 +471,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
             },
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),

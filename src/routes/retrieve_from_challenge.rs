@@ -212,7 +212,11 @@ pub async fn handler(
                 })?
                 .to_string();
             let is_oidc_account_in_factors = backup_metadata.factors.iter().any(|factor| {
-                if let FactorKind::OidcAccount { account } = &factor.kind {
+                if let FactorKind::OidcAccount {
+                    account,
+                    turnkey_provider_id: _,
+                } = &factor.kind
+                {
                     match account {
                         OidcAccountKind::Google {
                             sub,
