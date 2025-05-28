@@ -3,6 +3,7 @@ use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
 use std::sync::Arc;
+use strum_macros::{Display, EnumString};
 
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,
 /// keypair public key, iss + sub for OIDC) and the backup ID.
@@ -12,6 +13,21 @@ use std::sync::Arc;
 pub struct FactorLookup {
     environment: Environment,
     dynamodb_client: Arc<aws_sdk_dynamodb::Client>,
+}
+
+/// Some factors are used as main factors for recovery, while others are used for just syncing.
+/// This enum is used to distinguish between the two types of factors and only query the specific
+/// type of factor.
+#[derive(Debug, Clone, Copy, Display, EnumString)]
+#[strum(serialize_all = "UPPERCASE")]
+pub enum FactorScope {
+    /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup
+    /// or add new factors.
+    Main,
+    /// Sync factors (e.g. EC keypairs stored on enclaves) are used to update the backup with
+    /// new data, view metadata and delete factors. Sync factors cannot be used to recover the backup
+    /// or add new factors.
+    Sync,
 }
 
 impl FactorLookup {
@@ -31,16 +47,16 @@ impl FactorLookup {
     ///   or if the factor already exists in the table.
     pub async fn insert(
         &self,
+        scope: FactorScope,
         factor: &FactorToLookup,
         backup_id: String,
     ) -> Result<(), FactorLookupError> {
-        // TODO/FIXME: Add scope for factor lookups, e.g. main / sync factors
         self.dynamodb_client
             .put_item()
             .table_name(self.environment.factor_lookup_dynamodb_table_name())
             .item(
                 DocumentAttribute::Pk.to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(factor.primary_key()),
+                factor_primary_key(scope, factor),
             )
             .item(
                 DocumentAttribute::BackupId.to_string(),
@@ -59,6 +75,7 @@ impl FactorLookup {
 
         tracing::info!(
             message = "Inserted factor into DynamoDB",
+            scope = scope.to_string(),
             pk = factor.primary_key(),
             backup_id = backup_id,
         );
@@ -69,6 +86,7 @@ impl FactorLookup {
     /// Looks up the backup ID for the given factor.
     pub async fn lookup(
         &self,
+        scope: FactorScope,
         factor: &FactorToLookup,
     ) -> Result<Option<String>, FactorLookupError> {
         let result = self
@@ -77,7 +95,7 @@ impl FactorLookup {
             .table_name(self.environment.factor_lookup_dynamodb_table_name())
             .key(
                 DocumentAttribute::Pk.to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(factor.primary_key()),
+                factor_primary_key(scope, factor),
             )
             .send()
             .await?;
@@ -104,13 +122,17 @@ impl FactorLookup {
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbDeleteError` - if the factor cannot be deleted from the DynamoDB table.
-    pub async fn delete(&self, factor: &FactorToLookup) -> Result<(), FactorLookupError> {
+    pub async fn delete(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) -> Result<(), FactorLookupError> {
         self.dynamodb_client
             .delete_item()
             .table_name(self.environment.factor_lookup_dynamodb_table_name())
             .key(
                 DocumentAttribute::Pk.to_string(),
-                aws_sdk_dynamodb::types::AttributeValue::S(factor.primary_key()),
+                factor_primary_key(scope, factor),
             )
             .send()
             .await?;
@@ -122,6 +144,13 @@ impl FactorLookup {
 
         Ok(())
     }
+}
+
+fn factor_primary_key(
+    scope: FactorScope,
+    factor: &FactorToLookup,
+) -> aws_sdk_dynamodb::types::AttributeValue {
+    aws_sdk_dynamodb::types::AttributeValue::S(format!("{scope}#{}", factor.primary_key()))
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -207,13 +236,23 @@ mod test {
         let factor = FactorToLookup::from_passkey(mock_factor_id);
         let backup_id = "test_backup_id".to_string();
         factor_lookup
-            .insert(&factor, backup_id.clone())
+            .insert(FactorScope::Main, &factor, backup_id.clone())
             .await
             .unwrap();
 
         // Lookup the factor
-        let result = factor_lookup.lookup(&factor).await.unwrap();
+        let result = factor_lookup
+            .lookup(FactorScope::Main, &factor)
+            .await
+            .unwrap();
         assert_eq!(result, Some(backup_id));
+
+        // Should not find the factor in sync scope
+        let result = factor_lookup
+            .lookup(FactorScope::Sync, &factor)
+            .await
+            .unwrap();
+        assert_eq!(result, None);
     }
 
     #[tokio::test]
@@ -224,7 +263,10 @@ mod test {
 
         // Lookup a non-existent factor
         let factor = FactorToLookup::from_passkey("non_existent_credential_id".to_string());
-        let result = factor_lookup.lookup(&factor).await.unwrap();
+        let result = factor_lookup
+            .lookup(FactorScope::Main, &factor)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -240,13 +282,13 @@ mod test {
         let factor = FactorToLookup::from_passkey(mock_factor_id);
         let backup_id = "test_backup_id".to_string();
         factor_lookup
-            .insert(&factor, backup_id.clone())
+            .insert(FactorScope::Sync, &factor, backup_id.clone())
             .await
             .unwrap();
 
         // Attempt to insert the same factor again
         let result = factor_lookup
-            .insert(&factor, "test_backup_id_2".to_string())
+            .insert(FactorScope::Sync, &factor, "test_backup_id_2".to_string())
             .await;
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -266,19 +308,28 @@ mod test {
         let factor = FactorToLookup::from_passkey(mock_factor_id);
         let backup_id = "test_backup_id".to_string();
         factor_lookup
-            .insert(&factor, backup_id.clone())
+            .insert(FactorScope::Sync, &factor, backup_id.clone())
             .await
             .unwrap();
 
         // Verify the factor exists
-        let result = factor_lookup.lookup(&factor).await.unwrap();
+        let result = factor_lookup
+            .lookup(FactorScope::Sync, &factor)
+            .await
+            .unwrap();
         assert_eq!(result, Some(backup_id));
 
         // Delete the factor
-        factor_lookup.delete(&factor).await.unwrap();
+        factor_lookup
+            .delete(FactorScope::Sync, &factor)
+            .await
+            .unwrap();
 
         // Verify the factor no longer exists
-        let result = factor_lookup.lookup(&factor).await.unwrap();
+        let result = factor_lookup
+            .lookup(FactorScope::Sync, &factor)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 }

@@ -1,6 +1,6 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::factor_lookup::{FactorLookup, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
@@ -81,9 +81,10 @@ pub async fn handler(
             // At this point, the user has not verified that they correctly signed the challenge.
             let provided_credential_id = user_provided_credential.get_credential_id();
             let backup_id = factor_lookup
-                .lookup(&FactorToLookup::from_passkey(
-                    URL_SAFE_NO_PAD.encode(provided_credential_id),
-                ))
+                .lookup(
+                    FactorScope::Main,
+                    &FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(provided_credential_id)),
+                )
                 .await?;
             let Some(backup_id) = backup_id else {
                 return Err(ErrorResponse::bad_request("backup_not_found"));
@@ -290,7 +291,7 @@ pub async fn handler(
 
     // Step 3.1: Update the factor lookup with the new factor
     factor_lookup
-        .insert(&factor_to_lookup, backup_id.clone())
+        .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
         .await?;
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata

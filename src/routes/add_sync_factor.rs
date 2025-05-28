@@ -1,7 +1,7 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::dynamo_cache::DynamoCacheManager;
-use crate::factor_lookup::{FactorLookup, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::Factor;
 use crate::types::{Authorization, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -75,7 +75,7 @@ pub async fn handler(
 
     // Step 3: Add the sync factor to backup lookup
     factor_lookup
-        .insert(&sync_factor_to_lookup, backup_id.clone())
+        .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
         .await?;
 
     // Step 4: Add the sync factor to the backup metadata

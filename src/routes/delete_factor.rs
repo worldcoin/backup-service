@@ -1,6 +1,6 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::factor_lookup::{FactorLookup, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::{FactorKind, OidcAccountKind};
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::verify_signature::verify_signature;
@@ -71,7 +71,9 @@ pub async fn handler(
     };
 
     // Step 2: Find the backup metadata using the factor to lookup
-    let backup_id = factor_lookup.lookup(&factor_to_lookup).await?;
+    let backup_id = factor_lookup
+        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .await?;
     let Some(backup_id) = backup_id else {
         tracing::info!(message = "No backup ID found for the given keypair");
         return Err(ErrorResponse::bad_request("backup_not_found"));
@@ -134,7 +136,9 @@ pub async fn handler(
         tracing::info!(message = "Factor not found in backup metadata");
         return Err(ErrorResponse::bad_request("factor_not_found"));
     };
-    factor_lookup.delete(&factor_to_delete).await?;
+    factor_lookup
+        .delete(FactorScope::Main, &factor_to_delete)
+        .await?;
 
     backup_storage
         .remove_factor(&backup_id, &request.factor_id)
