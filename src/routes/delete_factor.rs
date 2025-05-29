@@ -119,7 +119,10 @@ pub async fn handler(
                 } => Some(FactorToLookup::from_passkey(
                     BASE64_URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
                 )),
-                FactorKind::OidcAccount { account } => match account {
+                FactorKind::OidcAccount {
+                    account,
+                    turnkey_provider_id: _,
+                } => match account {
                     OidcAccountKind::Google { sub, email: _ } => {
                         Some(FactorToLookup::from_oidc_account(
                             environment.google_issuer_url().to_string(),

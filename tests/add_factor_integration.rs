@@ -167,6 +167,7 @@ async fn test_add_factor_happy_path() {
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
             },
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -298,7 +299,8 @@ async fn test_add_factor_with_mismatched_oidc_token() {
                 "turnkeyAccountId": "org123",
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            }
+            },
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -442,6 +444,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": null,
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -505,6 +508,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
             },
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -585,6 +589,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
             },
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -654,6 +659,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
             },
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )

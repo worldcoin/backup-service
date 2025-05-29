@@ -40,6 +40,9 @@ pub struct AddFactorRequest {
 
     /// Optional encrypted backup keypair
     encrypted_backup_key: Option<BackupEncryptionKey>,
+
+    /// Provider ID from Turnkey ID. Only applicable if `new_factor_authorization` is `Authorization::OidcAccount`.
+    turnkey_provider_id: Option<String>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -209,6 +212,13 @@ pub async fn handler(
             public_key,
             signature,
         } => {
+            // Step 2A.0: Get the Turnkey API OIDC provider ID from the request. We should save it
+            // to metadata and allow client to look it up later.
+            let turnkey_provider_id = request
+                .turnkey_provider_id
+                .clone()
+                .ok_or_else(|| ErrorResponse::bad_request("missing_turnkey_provider_id"))?;
+
             // Step 2A.1: Verify the OIDC token is the same as in the verified challenge context
             // for existing factor. It asserts that the existing factor signed this particular
             // OIDC token.
@@ -274,7 +284,7 @@ pub async fn handler(
                 }
             };
             (
-                Factor::new_oidc_account(oidc_account),
+                Factor::new_oidc_account(oidc_account, turnkey_provider_id),
                 FactorToLookup::from_oidc_account(
                     claims.issuer().to_string(),
                     claims.subject().to_string(),

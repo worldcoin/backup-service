@@ -24,6 +24,8 @@ pub struct CreateBackupRequest {
     initial_encryption_key: BackupEncryptionKey,
     initial_sync_factor: Authorization,
     initial_sync_challenge_token: String,
+    /// Provider ID from Turnkey ID. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
+    turnkey_provider_id: Option<String>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -122,6 +124,14 @@ pub async fn handler(
         } => {
             // Step 2B: Verify the OIDC token and signature by keypair that's mentioned in the token
 
+            // Step 2B.0: Get the Turnkey API OIDC provider ID from the request, if provided.
+            // We should save it to metadata and allow client to look it up later.
+            let turnkey_provider_id = request
+                .turnkey_provider_id
+                .as_ref()
+                .ok_or_else(|| ErrorResponse::bad_request("missing_turnkey_provider_id"))?
+                .to_string();
+
             // Step 2B.1: Get the challenge payload from the challenge token
             let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
@@ -165,7 +175,7 @@ pub async fn handler(
                 }
             };
             (
-                Factor::new_oidc_account(oidc_account),
+                Factor::new_oidc_account(oidc_account, turnkey_provider_id),
                 FactorToLookup::from_oidc_account(
                     claims.issuer().to_string(),
                     claims.subject().to_string(),
