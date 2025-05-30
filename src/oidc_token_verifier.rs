@@ -27,6 +27,7 @@ impl OidcTokenVerifier {
     pub async fn verify_token(
         &self,
         token: &OidcToken,
+        expected_public_key_sec1_base64: String,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
         // Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
@@ -59,7 +60,10 @@ impl OidcTokenVerifier {
         })?;
 
         let claims = oidc_token
-            .claims(&token_verifier, OidcNonceVerifier::default())
+            .claims(
+                &token_verifier,
+                OidcNonceVerifier::new(expected_public_key_sec1_base64),
+            )
             .map_err(|err| {
                 tracing::error!(message = "Token verification error", err = ?err);
                 OidcTokenVerifierError::TokenVerificationError
@@ -96,20 +100,28 @@ fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::mock_oidc_server::MockOidcServer;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::SecretKey;
 
     #[tokio::test]
     async fn test_verify_valid_token() {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
         // Generate a valid token
-        let token = oidc_server.generate_token(environment, None);
+        let token = oidc_server.generate_token(environment, None, &public_key);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should pass with a valid token
         assert!(result.is_ok());
@@ -120,6 +132,8 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
@@ -127,7 +141,9 @@ mod tests {
         let token = oidc_server.generate_expired_token(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should fail with an expired token
         assert!(result.is_err());
@@ -142,6 +158,8 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
@@ -149,7 +167,9 @@ mod tests {
         let token = oidc_server.generate_incorrectly_signed_token(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should fail with an incorrectly signed token
         assert!(result.is_err());
@@ -164,6 +184,8 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
@@ -171,7 +193,9 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_issuer(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should fail with an incorrect issuer
         assert!(result.is_err());
@@ -186,6 +210,8 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
@@ -193,7 +219,9 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_audience(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should fail with an incorrect audience
         assert!(result.is_err());
@@ -208,6 +236,8 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment);
 
@@ -215,9 +245,44 @@ mod tests {
         let token = oidc_server.generate_token_with_incorrect_issued_at(environment);
 
         // Verify the token
-        let result = verifier.verify_token(&OidcToken::Google { token }).await;
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key)
+            .await;
 
         // The test should fail with an incorrect issued_at
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::TokenVerificationError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_with_incorrect_public_key() {
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+
+        // Generate a correct key pair for token generation
+        let correct_secret_key = SecretKey::random(&mut OsRng);
+        let correct_public_key = STANDARD.encode(correct_secret_key.public_key().to_sec1_bytes());
+
+        // Generate a different key pair for verification
+        let incorrect_secret_key = SecretKey::random(&mut OsRng);
+        let incorrect_public_key =
+            STANDARD.encode(incorrect_secret_key.public_key().to_sec1_bytes());
+
+        let verifier = OidcTokenVerifier::new(environment);
+
+        // Generate a token with the correct public key
+        let token = oidc_server.generate_token(environment, None, &correct_public_key);
+
+        // Verify the token but pass a different public key
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, incorrect_public_key)
+            .await;
+
+        // The test should fail with an incorrect public key
         assert!(result.is_err());
         assert!(matches!(
             result,

@@ -112,11 +112,11 @@ async fn test_create_backup_with_oidc_token() {
     // Get a challenge from the server
     let challenge_response = get_keypair_challenge().await;
 
-    // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment, None);
-
-    // Generate temporary keypair for OIDC authentication and sign the challenge
+    // Generate temporary keypair for OIDC authentication
     let (public_key, secret_key) = generate_keypair();
+
+    // Generate OIDC token
+    let oidc_token = oidc_server.generate_token(environment, None, &public_key);
     let signature = sign_keypair_challenge(
         &secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -472,6 +472,73 @@ async fn test_create_backup_with_invalid_oidc_token() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "turnkeyProviderId": "turnkey_provider_id",
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        Some(environment),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "oidc_token_verification_error",
+                "message": "oidc_token_verification_error",
+            },
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
+    let oidc_server = MockOidcServer::new().await;
+    let environment =
+        Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate temporary keypair for OIDC authentication
+    let (public_key, secret_key) = generate_keypair();
+
+    // Generate OIDC token with incorrect nonce
+    let incorrect_nonce_token =
+        oidc_server.generate_token(environment, None, &generate_keypair().0);
+
+    // Sign the challenge correctly
+    let signature = sign_keypair_challenge(
+        &secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
+    // Send the OIDC token to the server to create a backup
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "authorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": incorrect_nonce_token,
+                },
+                "publicKey": public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),

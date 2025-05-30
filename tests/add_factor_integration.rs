@@ -1,8 +1,9 @@
 mod common;
 
 use crate::common::{
-    create_test_backup, get_keypair_retrieve_challenge, send_post_request_with_environment,
-    verify_s3_metadata_exists, MockPasskeyClient,
+    create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
+    send_post_request_with_environment, sign_keypair_challenge, verify_s3_metadata_exists,
+    MockPasskeyClient,
 };
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -121,19 +122,25 @@ async fn test_add_factor_happy_path() {
     // Setup test environment
     let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
 
+    // Generate keypair for new factor
+    let (new_public_key, new_secret_key) = common::generate_keypair();
+
     // Generate subject ID and OIDC token with consistent subject
     let subject = format!("test-subject-{}", uuid::Uuid::new_v4());
     let oidc_token = oidc_server.generate_token(
         environment.clone(),
         Some(SubjectIdentifier::new(subject.clone())),
+        &new_public_key,
     );
 
     // Get challenges for both existing passkey and new factor
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair and sign the new factor challenge
-    let (new_public_key, _, new_factor_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the new factor challenge with new factor keypair
+    let new_factor_signature = common::sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
@@ -192,14 +199,16 @@ async fn test_add_factor_happy_path() {
     // Get a challenge for retrieving the backup
     let retrieve_challenge = get_keypair_retrieve_challenge().await;
 
-    // Generate a new OIDC token with the same subject ID
-    let new_oidc_token =
-        oidc_server.generate_token(environment.clone(), Some(SubjectIdentifier::new(subject)));
-
     // Sign the retrieval challenge with a new keypair
-
     let (retrieval_public_key, _, retrieval_signature) =
         create_keypair_and_sign(retrieve_challenge["challenge"].as_str().unwrap());
+
+    // Generate a new OIDC token with the same subject ID
+    let new_oidc_token = oidc_server.generate_token(
+        environment.clone(),
+        Some(SubjectIdentifier::new(subject)),
+        &retrieval_public_key,
+    );
 
     // Attempt to retrieve the backup using the OIDC factor
     let retrieve_response = send_post_request_with_environment(
@@ -252,21 +261,28 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
+    // Create keypair for new factor
+    let (new_public_key, new_secret_key) = common::generate_keypair();
+
     // Generate two different OIDC tokens
-    let original_oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let original_oidc_token =
+        oidc_server.generate_token(environment.clone(), None, &new_public_key);
     let different_oidc_token = oidc_server.generate_token(
         environment.clone(),
         Some(openidconnect::SubjectIdentifier::new(
             "different-subject".to_string(),
         )),
+        &new_public_key,
     );
 
     // Get challenges with the original token
     let challenges = get_add_factor_challenges(&original_oidc_token).await;
 
-    // Create keypair and sign the challenge
-    let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the new factor challenge with the new factor keypair
+    let new_signature = common::sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =
@@ -327,15 +343,20 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
+    // Create keypair for the new factor
+    let (new_public_key, new_secret_key) = generate_keypair();
+
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair and sign the challenge
-    let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the challenge with the new keypair
+    let new_signature = sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create Turnkey activity WITHOUT the challenge
     let turnkey_activity = json!({
@@ -402,15 +423,20 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
+    // Create keypair for the new factor
+    let (new_public_key, new_secret_key) = generate_keypair();
+
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair and sign the challenge
-    let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the challenge with the new keypair
+    let new_signature = sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create valid Turnkey activity with the challenge
     let (_turnkey_activity, challenge_hash) =
@@ -462,17 +488,16 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
+    // Create keypair for new factor
+    let (new_public_key, _) = common::generate_keypair();
+
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair for new factor...
-    let (new_public_key, _, _) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
-
-    // ... but sign the challenge with a different keypair
+    // Sign the challenge with a different keypair
     let (_, _, new_incorrect_signature) =
         create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
@@ -543,15 +568,20 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
         create_test_backup(&mut passkey_client_2, b"BACKUP DATA").await;
     assert_eq!(response.status(), StatusCode::OK);
 
+    // Create keypair for the new factor
+    let (new_public_key, new_secret_key) = generate_keypair();
+
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair and sign the challenge
-    let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the challenge with the new keypair
+    let new_signature = sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create Turnkey activity and get passkey assertion from user 1
     let (turnkey_activity, challenge_hash) =
@@ -616,15 +646,20 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
+    // Create keypair for new factor
+    let (new_public_key, new_secret_key) = common::generate_keypair();
+
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None);
+    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
 
-    // Create keypair and sign the challenge
-    let (new_public_key, _, new_signature) =
-        create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
+    // Sign the new factor challenge with new factor keypair
+    let new_signature = common::sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
     // Create Turnkey activity and get passkey assertion
     let (turnkey_activity, challenge_hash) =

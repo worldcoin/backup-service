@@ -452,14 +452,16 @@ pub async fn create_test_backup_with_oidc_account(
     // Get a challenge from the server
     let challenge_response = get_keypair_challenge().await;
 
+    // Generate temporary keypair for OIDC authentication and sign the challenge
+    let (public_key, secret_key) = generate_keypair();
+
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(
         environment,
         Some(SubjectIdentifier::new(subject.to_string())),
+        &public_key,
     );
 
-    // Generate temporary keypair for OIDC authentication and sign the challenge
-    let (public_key, secret_key) = generate_keypair();
     let signature = sign_keypair_challenge(
         &secret_key,
         challenge_response["challenge"].as_str().unwrap(),

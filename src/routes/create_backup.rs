@@ -141,24 +141,19 @@ pub async fn handler(
             }
 
             // Step 2B.2: Verify the OIDC token
-            let claims = oidc_token_verifier.verify_token(oidc_token).await?;
+            let claims = oidc_token_verifier
+                .verify_token(oidc_token, public_key.clone())
+                .await?;
 
             // Step 2B.3: Verify the signature by the public key of the challenge
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
-            // Step 2B.4: Verify the nonce in the OIDC token matches the public key
-            let _nonce = claims.nonce().ok_or_else(|| {
-                tracing::info!(message = "Missing nonce in OIDC token");
-                ErrorResponse::bad_request("missing_nonce")
-            })?;
-            // TODO/FIXME: Implement check
-
-            // Step 2B.5: Track used challenges to prevent replay attacks
+            // Step 2B.4: Track used challenges to prevent replay attacks
             dynamo_cache_manager
                 .use_challenge_token(request.challenge_token.to_string())
                 .await?;
 
-            // Step 2B.6: Create a factor and factor lookup
+            // Step 2B.5: Create a factor and factor lookup
             let oidc_account = match &oidc_token {
                 OidcToken::Google { .. } => {
                     let email = claims

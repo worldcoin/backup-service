@@ -250,24 +250,17 @@ pub async fn handler(
 
             // Step 2A.3: Verify the signature of the challenge using the public key
             let claims = oidc_token_verifier
-                .verify_token(oidc_token)
+                .verify_token(oidc_token, public_key.clone())
                 .await
                 .map_err(|_| ErrorResponse::bad_request("oidc_token_verification_error"))?;
 
             // Step 2A.4: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
-            // Step 2A.5: Verify the nonce in the OIDC token matches the public key
-            let _nonce = claims.nonce().ok_or_else(|| {
-                tracing::info!(message = "Missing nonce in OIDC token");
-                ErrorResponse::bad_request("missing_nonce")
-            })?;
-            // TODO/FIXME: Implement check
-
-            // Step 2A.6: Track used challenges to prevent replay attacks
+            // Step 2A.5: Track used challenges to prevent replay attacks
             // TODO/FIXME
 
-            // Step 2A.7: Create a new factor and factor lookup
+            // Step 2A.6: Create a new factor and factor lookup
             let oidc_account = match &oidc_token {
                 OidcToken::Google { .. } => {
                     let email = claims

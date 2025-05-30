@@ -1,3 +1,4 @@
+use crate::oidc_nonce_verifier::public_key_sec1_base64_to_expected_turnkey_nonce;
 use crate::types::Environment;
 use chrono::{Duration, Utc};
 use mockito::ServerOpts;
@@ -65,6 +66,7 @@ impl MockOidcServer {
         &self,
         environment: Environment,
         subject: Option<SubjectIdentifier>,
+        public_key_sec1_base64: &str,
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
         // Initialize claims with subject and standard OIDC fields
@@ -76,7 +78,9 @@ impl MockOidcServer {
             StandardClaims::new(subject),
             EmptyAdditionalClaims {},
         )
-        .set_nonce(Some(Nonce::new("test-nonce".to_string())))
+        .set_nonce(Some(Nonce::new(
+            public_key_sec1_base64_to_expected_turnkey_nonce(public_key_sec1_base64).unwrap(),
+        )))
         .set_email(Some(EndUserEmail::new("hello@example.com".to_string())));
 
         // Sign the claims with the private key

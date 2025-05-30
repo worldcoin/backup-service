@@ -765,6 +765,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures",
+ "hex",
  "http 0.2.12",
  "http-body-util",
  "josekit",
