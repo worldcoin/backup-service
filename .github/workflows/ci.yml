@@ -11,7 +11,7 @@ env:
 jobs:
   lint:
     name: Format & Clippy
-    runs-on: ubuntu-latest
+    runs-on: arc-large-amd64-runner
 
     steps:
       - name: Checkout code
@@ -19,6 +19,19 @@ jobs:
 
       - name: Set up Rust
         run: rustup update
+
+      - name: Get Rust version
+        id: rust_version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Restore and cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check code formatting
         run: cargo fmt -- --check
@@ -26,12 +39,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-features -- -D warnings
 
-      - name: Build the project
-        run: cargo build --release
-
   build-release:
     name: Build Release
-    runs-on: ubuntu-latest
+    runs-on: arc-large-amd64-runner
 
     steps:
       - name: Checkout code
@@ -40,12 +50,25 @@ jobs:
       - name: Set up Rust
         run: rustup update
 
+      - name: Get Rust version
+        id: rust_version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Restore and cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build the project
         run: cargo build --release
 
   test:
     name: Tests
-    runs-on: ubuntu-latest
+    runs-on: arc-4xlarge-amd64-runner
 
     steps:
       - name: Checkout code
@@ -71,7 +94,7 @@ jobs:
 
   docker:
     name: Test Docker build
-    runs-on: ubuntu-latest
+    runs-on: arc-4xlarge-amd64-runner
 
     steps:
       - name: Checkout code
@@ -116,7 +139,7 @@ jobs:
 
   deny:
     name: Cargo deny
-    runs-on: ubuntu-latest
+    runs-on: arc-large-amd64-runner
 
     steps:
       - name: Checkout code
@@ -125,8 +148,7 @@ jobs:
       - name: Set up Rust
         run: rustup update
 
-      - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
-
-      - name: Check
-        run: cargo deny check
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
