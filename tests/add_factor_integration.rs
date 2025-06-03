@@ -128,7 +128,7 @@ async fn test_add_factor_happy_path() {
     // Generate subject ID and OIDC token with consistent subject
     let subject = format!("test-subject-{}", uuid::Uuid::new_v4());
     let oidc_token = oidc_server.generate_token(
-        environment.clone(),
+        environment,
         Some(SubjectIdentifier::new(subject.clone())),
         &new_public_key,
     );

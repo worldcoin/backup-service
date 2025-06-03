@@ -60,7 +60,7 @@ pub async fn handler(
             &challenge_manager,
             &environment,
             &factor_lookup,
-            &oidc_token_verifier,
+            Some(&oidc_token_verifier),
         )
         .await?;
 
