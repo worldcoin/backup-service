@@ -1,11 +1,10 @@
+use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager};
 use crate::dynamo_cache::DynamoCacheManager;
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::types::backup_metadata::FactorKind;
+use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::{Authorization, Environment, ErrorResponse};
-use crate::verify_signature::verify_signature;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
@@ -16,6 +15,17 @@ use serde::{Deserialize, Serialize};
 pub struct SyncBackupRequest {
     authorization: Authorization,
     challenge_token: String,
+}
+
+impl From<SyncBackupRequest> for AuthHandler {
+    fn from(request: SyncBackupRequest) -> Self {
+        AuthHandler::new(
+            request.authorization,
+            FactorScope::Sync,
+            ChallengeContext::Sync {},
+            request.challenge_token,
+        )
+    }
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -58,76 +68,20 @@ pub async fn handler(
         return Err(ErrorResponse::bad_request("backup_file_too_large"));
     }
 
-    // Step 2: Verify the solved challenge in the authorization parameter
-    let (factor_to_lookup, sync_factor_public_key) = match &request.authorization {
-        Authorization::EcKeypair {
-            public_key,
-            signature,
-        } => {
-            // Step 2.1: Get the challenge payload from the challenge token
-            let (trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
-                .await?;
-            if challenge_context != (ChallengeContext::Sync {}) {
-                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
-            }
-
-            // Step 2.2: Verify the signature using the public key
-            verify_signature(public_key, signature, trusted_challenge.as_ref())?;
-
-            // Step 2.3: Track used challenges to prevent replay attacks
-            dynamo_cache_manager
-                .use_challenge_token(request.challenge_token.to_string())
-                .await?;
-
-            // Step 2.4: Create a factor to lookup for updatabale backup and save the verified public key
-            (
-                FactorToLookup::from_ec_keypair(public_key.to_string()),
-                public_key.to_string(),
-            )
-        }
-        Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
-            tracing::info!(message = "Invalid sync factor type");
-            return Err(ErrorResponse::bad_request("invalid_sync_factor"));
-        }
-    };
-
-    // Step 3: Find the backup metadata using the factor to lookup
-    let backup_id = factor_lookup
-        .lookup(FactorScope::Sync, &factor_to_lookup)
+    // Step 2: Auth. Verify the solved challenge in the authorization parameter
+    let auth_handler: AuthHandler = request.into();
+    let (backup_id, _) = auth_handler
+        .verify(
+            &backup_storage,
+            &dynamo_cache_manager,
+            &challenge_manager,
+            &environment,
+            &factor_lookup,
+            None,
+        )
         .await?;
-    let Some(backup_id) = backup_id else {
-        tracing::info!(
-            message = "No backup ID found for the given sync keypair account",
-            sync_factor_public_key = sync_factor_public_key
-        );
-        return Err(ErrorResponse::bad_request("backup_not_found"));
-    };
-    let found_backup = backup_storage.get_by_backup_id(&backup_id).await?;
-    let Some(found_backup) = found_backup else {
-        tracing::info!(message = "No backup metadata found for the given backup ID");
-        return Err(ErrorResponse::bad_request("backup_not_found"));
-    };
 
-    // Step 4: Verify the backup metadata contains the factor as a sync factor
-    let metadata_contains_sync_factor_from_signature =
-        found_backup.metadata.sync_factors.iter().any(|factor| {
-            if let FactorKind::EcKeypair { public_key } = &factor.kind {
-                public_key == &sync_factor_public_key
-            } else {
-                false
-            }
-        });
-    if !metadata_contains_sync_factor_from_signature {
-        tracing::info!(
-            message = "Backup metadata does not contain the sync factor",
-            backup_id = backup_id,
-            sync_factor_public_key = sync_factor_public_key
-        );
-        return Err(ErrorResponse::internal_server_error());
-    }
-
-    // Step 5: Update the backup metadata with the new backup file
+    // Step 3: Update the backup with the new backup file
     backup_storage
         .update_backup(&backup_id, backup.to_vec())
         .await?;
