@@ -205,7 +205,7 @@ async fn test_add_factor_happy_path() {
 
     // Generate a new OIDC token with the same subject ID
     let new_oidc_token = oidc_server.generate_token(
-        environment.clone(),
+        environment,
         Some(SubjectIdentifier::new(subject)),
         &retrieval_public_key,
     );

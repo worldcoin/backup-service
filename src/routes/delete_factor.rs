@@ -23,7 +23,7 @@ impl From<DeleteFactorRequest> for AuthHandler {
     fn from(request: DeleteFactorRequest) -> Self {
         AuthHandler::new(
             request.authorization,
-            vec![FactorScope::Sync],
+            FactorScope::Sync,
             ChallengeContext::DeleteFactor {
                 factor_id: request.factor_id,
             },

@@ -23,7 +23,7 @@ impl From<RetrieveBackupFromChallengeRequest> for AuthHandler {
     fn from(request: RetrieveBackupFromChallengeRequest) -> Self {
         AuthHandler::new(
             request.authorization,
-            vec![FactorScope::Main],
+            FactorScope::Sync,
             ChallengeContext::Retrieve {},
             request.challenge_token,
         )

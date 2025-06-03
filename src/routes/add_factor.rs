@@ -197,9 +197,9 @@ pub async fn handler(
             // in the previous steps.
 
             // Step 1A.6: Track the used challenge to prevent replay attacks
-            dynamo_cache_manager
-                .use_challenge_token(request.existing_factor_challenge_token.to_string())
-                .await?;
+            // dynamo_cache_manager
+            //     .use_challenge_token(request.existing_factor_challenge_token.to_string())
+            //     .await?;
 
             // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)

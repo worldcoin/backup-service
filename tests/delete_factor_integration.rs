@@ -46,6 +46,7 @@ async fn test_delete_last_factor_happy_path() {
 
     // Sign the challenge with the sync factor secret key
     let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+
     let signature = sign_keypair_challenge(
         &sync_secret_key,
         challenge_response["challenge"].as_str().unwrap(),

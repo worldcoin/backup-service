@@ -17,7 +17,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
 pub struct AuthHandler {
     authorization: Authorization,
-    allowed_factor_scopes: Vec<FactorScope>,
+    expected_factor_scope: FactorScope,
     pub challenge_context: ChallengeContext,
     challenge_token: String,
 }
@@ -25,13 +25,13 @@ pub struct AuthHandler {
 impl AuthHandler {
     pub fn new(
         authorization: Authorization,
-        allowed_factor_scopes: Vec<FactorScope>,
+        expected_factor_scope: FactorScope,
         challenge_context: ChallengeContext,
         challenge_token: String,
     ) -> Self {
         Self {
             authorization,
-            allowed_factor_scopes,
+            expected_factor_scope,
             challenge_context,
             challenge_token,
         }
@@ -49,7 +49,7 @@ impl AuthHandler {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope. When
         //  only `Sync` factors are allowed, other factors are rejected.
-        if !self.allowed_factor_scopes.contains(&FactorScope::Main) {
+        if self.expected_factor_scope == FactorScope::Sync {
             match &self.authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
                     return Err(ErrorResponse::bad_request("invalid_authorization_type"));
@@ -108,7 +108,7 @@ impl AuthHandler {
                 // backup ID
                 let not_verified_backup_id = factor_lookup
                     .lookup(
-                        FactorScope::Main, // note how `Passkey` factors are only `Main` scope
+                        self.expected_factor_scope,
                         &FactorToLookup::from_passkey(
                             URL_SAFE_NO_PAD.encode(not_verified_credential_id),
                         ),
@@ -205,7 +205,7 @@ impl AuthHandler {
                 };
 
                 let not_verified_backup_id = factor_lookup
-                    .lookup(FactorScope::Main, &oidc_factor) // note how `OidcAccount` factors are only `Main` scope
+                    .lookup(self.expected_factor_scope, &oidc_factor)
                     .await?;
                 let Some(not_verified_backup_id) = not_verified_backup_id else {
                     tracing::info!(message = "No backup ID found for the given OIDC account");
@@ -273,7 +273,7 @@ impl AuthHandler {
                 // Step 5C.2: Lookup the public key in the factor lookup table and get potential backup ID
                 let not_verified_backup_id = factor_lookup
                     .lookup(
-                        FactorScope::Main,
+                        self.expected_factor_scope,
                         &FactorToLookup::from_ec_keypair(public_key.to_string()),
                     )
                     .await?;
@@ -296,8 +296,14 @@ impl AuthHandler {
                     }
                 };
 
-                // Step 5C.4: Verify that the public key exists in the backup's factors
-                let is_public_key_in_factors = backup_metadata.factors.iter().any(|factor| {
+                // Step 5C.4: Verify that the public key exists in the backup's `Sync` or `Main` factors
+                let factors = if self.expected_factor_scope == FactorScope::Sync {
+                    &backup_metadata.sync_factors
+                } else {
+                    &backup_metadata.factors
+                };
+
+                let is_public_key_in_factors = factors.iter().any(|factor| {
                     if let FactorKind::EcKeypair {
                         public_key: factor_public_key,
                     } = &factor.kind
