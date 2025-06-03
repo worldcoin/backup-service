@@ -153,7 +153,8 @@ async fn test_delete_factor_with_incorrect_factor_id() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(error_response["error"]["code"], "factor_id_mismatch");
+    // the ChallengeContext from the JWE won't match the one in the request
+    assert_eq!(error_response["error"]["code"], "invalid_challenge_context");
 
     // Verify the factor was not deleted
     let metadata = verify_s3_metadata_exists(backup_id).await;

@@ -1,6 +1,5 @@
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::turnkey_activity::{
@@ -60,7 +59,6 @@ pub async fn handler(
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
     Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
@@ -197,9 +195,7 @@ pub async fn handler(
             // in the previous steps.
 
             // Step 1A.6: Track the used challenge to prevent replay attacks
-            // dynamo_cache_manager
-            //     .use_challenge_token(request.existing_factor_challenge_token.to_string())
-            //     .await?;
+            // TODO / FIXME
 
             // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)

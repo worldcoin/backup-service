@@ -363,7 +363,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         let test_backup_id = Uuid::new_v4().to_string();
         let test_primary_factor_id = Uuid::new_v4().to_string();
@@ -476,7 +476,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         let test_backup_id = Uuid::new_v4().to_string();
         let test_backup_data = vec![1, 2, 3, 4, 5];
@@ -516,7 +516,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup
         let test_backup_id = Uuid::new_v4().to_string();
@@ -585,7 +585,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup with initial encryption key
         let test_backup_id = Uuid::new_v4().to_string();
@@ -650,7 +650,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup
         let test_backup_id = Uuid::new_v4().to_string();
@@ -731,7 +731,7 @@ mod tests {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment.clone(), s3_client.clone());
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup with two factors
         let test_backup_id = Uuid::new_v4().to_string();

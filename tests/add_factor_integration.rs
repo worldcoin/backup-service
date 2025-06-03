@@ -72,7 +72,7 @@ fn create_turnkey_activity(challenge: &str) -> (String, String) {
         let mut hasher = Sha256::new();
         hasher.update(turnkey_activity.as_bytes());
         let hash = format!("{:x}", hasher.finalize());
-        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes().to_vec())
+        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes())
     };
 
     (turnkey_activity, turnkey_activity_challenge)
@@ -265,10 +265,9 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     let (new_public_key, new_secret_key) = common::generate_keypair();
 
     // Generate two different OIDC tokens
-    let original_oidc_token =
-        oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let original_oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
     let different_oidc_token = oidc_server.generate_token(
-        environment.clone(),
+        environment,
         Some(openidconnect::SubjectIdentifier::new(
             "different-subject".to_string(),
         )),
@@ -347,7 +346,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -372,7 +371,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
         let mut hasher = Sha256::new();
         hasher.update(turnkey_activity.as_bytes());
         let hash = format!("{:x}", hasher.finalize());
-        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes().to_vec())
+        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes())
     };
 
     // Sign the invalid activity with the passkey
@@ -427,7 +426,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -492,7 +491,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     let (new_public_key, _) = common::generate_keypair();
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -572,7 +571,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -650,7 +649,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
     let (new_public_key, new_secret_key) = common::generate_keypair();
 
     // Generate OIDC token
-    let oidc_token = oidc_server.generate_token(environment.clone(), None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(environment, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;

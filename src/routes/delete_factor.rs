@@ -24,6 +24,9 @@ impl From<DeleteFactorRequest> for AuthHandler {
         AuthHandler::new(
             request.authorization,
             FactorScope::Sync,
+            // this will be compared in the `AuthHandler::verify()` function.
+            // if the ChallengeContext is not the same between the request and the challenge token,
+            // the request will be rejected.
             ChallengeContext::DeleteFactor {
                 factor_id: request.factor_id,
             },
@@ -49,14 +52,6 @@ pub async fn handler(
     let factor_id = request.factor_id.clone();
 
     let auth_handler: AuthHandler = request.0.into();
-    let ChallengeContext::DeleteFactor {
-        factor_id: challenge_factor_id,
-    } = &auth_handler.challenge_context
-    else {
-        tracing::error!(message = "Invalid challenge context");
-        return Err(ErrorResponse::internal_server_error());
-    };
-    let challenge_factor_id = challenge_factor_id.clone();
 
     // Step 2: Auth. Verify the solved challenge
     let (backup_id, backup_metadata) = auth_handler
@@ -70,17 +65,7 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Verify the factor_id in the challenge context matches the one in the request
-    if factor_id != *challenge_factor_id {
-        tracing::info!(
-            message = "Factor ID in request doesn't match token",
-            request_factor_id = factor_id,
-            token_factor_id = challenge_factor_id
-        );
-        return Err(ErrorResponse::bad_request("factor_id_mismatch"));
-    }
-
-    // Step 5: Delete the factor from the backup and factor lookup
+    // Step 3: Delete the factor from the backup and factor lookup
     let factor_to_delete = backup_metadata.factors.iter().find_map(|factor| {
         // Match on factor ID provided in the request
         if factor.id == factor_id {
@@ -115,6 +100,8 @@ pub async fn handler(
         tracing::info!(message = "Factor not found in backup metadata");
         return Err(ErrorResponse::bad_request("factor_not_found"));
     };
+
+    // Step 4: Delete the factor from the factor lookup & backup storage
     factor_lookup
         .delete(FactorScope::Main, &factor_to_delete)
         .await?;
