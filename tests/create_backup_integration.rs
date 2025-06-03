@@ -539,6 +539,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
             },
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),

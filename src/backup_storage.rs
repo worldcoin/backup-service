@@ -257,11 +257,17 @@ impl BackupStorage {
     /// Removes a regular factor from the backup metadata in S3 by factor ID.
     /// This method will only remove factors from the regular factors list, not sync factors.
     /// If this is the last regular factor, the entire backup will be deleted, even if sync factors exist.
+    ///
+    /// `backup_encryption_key_to_delete` is optionally used to delete the provided backup encryption key from
+    /// metadata if it is no longer needed. For example, if last OIDC factor is removed, the Turnkey
+    /// account can no longer be used to decrypt the backup, so the key and reference to Turnkey IDs
+    /// should be deleted.
     /// TODO/FIXME: Make this atomic.
     pub async fn remove_factor(
         &self,
         backup_id: &str,
         factor_id: &str,
+        backup_encryption_key_to_delete: Option<&BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
         let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -278,6 +284,16 @@ impl BackupStorage {
         // If there are no more regular factors, delete the backup
         if metadata.factors.is_empty() {
             return self.delete_backup(backup_id).await;
+        }
+
+        // If a backup encryption key is provided, remove it from the metadata
+        if let Some(encryption_key) = backup_encryption_key_to_delete {
+            if let Some(key_index) = metadata.keys.iter().position(|k| k == encryption_key) {
+                metadata.keys.remove(key_index);
+            } else {
+                // return Err if the key is not found
+                return Err(BackupManagerError::EncryptionKeyNotFound);
+            }
         }
 
         self.s3_client
@@ -342,6 +358,8 @@ pub enum BackupManagerError {
     FactorAlreadyExists,
     #[error("Factor not found")]
     FactorNotFound,
+    #[error("Encryption key not found in metadata")]
+    EncryptionKeyNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
 }
@@ -763,7 +781,7 @@ mod tests {
 
         // Remove the first factor
         backup_storage
-            .remove_factor(&test_backup_id, &factor1.id)
+            .remove_factor(&test_backup_id, &factor1.id, None)
             .await
             .unwrap();
 
@@ -779,7 +797,7 @@ mod tests {
 
         // Try to remove a non-existent factor - should fail with FactorNotFound
         let result = backup_storage
-            .remove_factor(&test_backup_id, "non_existent_factor")
+            .remove_factor(&test_backup_id, "non_existent_factor", None)
             .await;
         assert!(result.is_err());
         match result {
@@ -789,7 +807,7 @@ mod tests {
 
         // Remove the last factor - should delete the backup
         backup_storage
-            .remove_factor(&test_backup_id, &factor2.id)
+            .remove_factor(&test_backup_id, &factor2.id, None)
             .await
             .unwrap();
 
