@@ -1,6 +1,7 @@
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::FactorKind;
 use crate::types::{Authorization, Environment, ErrorResponse};
@@ -28,6 +29,7 @@ pub async fn handler(
     Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
+    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -74,7 +76,9 @@ pub async fn handler(
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
             // Step 2.3: Track used challenges to prevent replay attacks
-            // TODO/FIXME
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             // Step 2.4: Create a factor to lookup for updatabale backup and save the verified public key
             (

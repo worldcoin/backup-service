@@ -18,7 +18,7 @@ pub struct FactorLookup {
 /// Some factors are used as main factors for recovery, while others are used for just syncing.
 /// This enum is used to distinguish between the two types of factors and only query the specific
 /// type of factor.
-#[derive(Debug, Clone, Copy, Display, EnumString)]
+#[derive(Debug, Clone, Copy, Display, EnumString, PartialEq, Eq)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum FactorScope {
     /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup

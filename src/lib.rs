@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod axum_utils;
 pub mod backup_storage;
 pub mod challenge_manager;
