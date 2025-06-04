@@ -157,6 +157,10 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Factor not found", error = ?err);
                 ErrorResponse::bad_request("factor_not_found")
             }
+            BackupManagerError::EncryptionKeyNotFound => {
+                tracing::info!(message = "Encryption key not found", error = ?err);
+                ErrorResponse::bad_request("encryption_key_not_found")
+            }
         }
     }
 }

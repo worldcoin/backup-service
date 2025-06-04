@@ -4,6 +4,7 @@ use crate::challenge_manager::{ChallengeContext, ChallengeManager};
 use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::{FactorKind, OidcAccountKind};
+use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::{Extension, Json};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -17,6 +18,8 @@ pub struct DeleteFactorRequest {
     authorization: Authorization,
     challenge_token: String,
     factor_id: String,
+    /// Key that should be deleted from encryption key list in the metadata as part of this request
+    encryption_key: Option<BackupEncryptionKey>,
 }
 
 impl From<DeleteFactorRequest> for AuthHandler {
@@ -106,7 +109,9 @@ pub async fn handler(
         .delete(FactorScope::Main, &factor_to_delete)
         .await?;
 
-    backup_storage.remove_factor(&backup_id, &factor_id).await?;
+    backup_storage
+        .remove_factor(&backup_id, &factor_id, request.encryption_key.as_ref())
+        .await?;
 
     Ok(Json(DeleteFactorResponse {}))
 }
