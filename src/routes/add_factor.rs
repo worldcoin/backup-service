@@ -194,9 +194,10 @@ pub async fn handler(
             // We do not need to check signature here, because whole activity is signed and verified
             // in the previous steps.
 
-            // todo/fixme: add used challenge tracking
+            // Step 1A.6: Track the used challenge to prevent replay attacks
+            // TODO / FIXME
 
-            // Step 1A.6: Return the backup ID and the new factor type
+            // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)
         }
         Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {

@@ -1,4 +1,4 @@
-use crate::types::OidcToken;
+use crate::{challenge_manager::ChallengeType, types::OidcToken};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -31,4 +31,15 @@ pub enum Authorization {
         // the local P256 keypair.
         signature: String,
     },
+}
+
+impl From<&Authorization> for ChallengeType {
+    fn from(value: &Authorization) -> Self {
+        match value {
+            Authorization::Passkey { .. } => ChallengeType::Passkey,
+            Authorization::EcKeypair { .. } => ChallengeType::Keypair,
+            // NOTE: OIDC Accounts also sign a `Keypair` challenge. The keypair is part of the OIDC nonce.
+            Authorization::OidcAccount { .. } => ChallengeType::Keypair,
+        }
+    }
 }

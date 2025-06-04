@@ -300,7 +300,7 @@ mod tests {
             )
             .await
             .unwrap();
-        challenge_token.push_str("i");
+        challenge_token.push('i');
         let result = challenge_manager
             .extract_token_payload(ChallengeType::Passkey, challenge_token)
             .await;
