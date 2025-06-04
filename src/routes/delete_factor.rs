@@ -53,6 +53,7 @@ pub async fn handler(
 ) -> Result<Json<DeleteFactorResponse>, ErrorResponse> {
     // Step 1: Extract the factor IDs from the request
     let factor_id = request.factor_id.clone();
+    let encryption_key = request.encryption_key.clone();
 
     let auth_handler: AuthHandler = request.0.into();
 
@@ -68,7 +69,7 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Delete the factor from the backup and factor lookup
+    // Step 3: Find the factor to delete from the backup
     let factor_to_delete = backup_metadata.factors.iter().find_map(|factor| {
         // Match on factor ID provided in the request
         if factor.id == factor_id {
@@ -110,7 +111,7 @@ pub async fn handler(
         .await?;
 
     backup_storage
-        .remove_factor(&backup_id, &factor_id, request.encryption_key.as_ref())
+        .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
         .await?;
 
     Ok(Json(DeleteFactorResponse {}))

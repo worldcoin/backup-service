@@ -38,7 +38,8 @@ impl From<&Authorization> for ChallengeType {
         match value {
             Authorization::Passkey { .. } => ChallengeType::Passkey,
             Authorization::EcKeypair { .. } => ChallengeType::Keypair,
-            Authorization::OidcAccount { .. } => ChallengeType::Keypair, // REVIEW: should a new ChallengeType be introduced?
+            // NOTE: OIDC Accounts also sign a `Keypair` challenge. The keypair is part of the OIDC nonce.
+            Authorization::OidcAccount { .. } => ChallengeType::Keypair,
         }
     }
 }
