@@ -1,11 +1,12 @@
+use std::sync::Arc;
+
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeContext, ChallengeManager};
+use crate::challenge_manager::ChallengeContext;
 use crate::dynamo_cache::DynamoCacheManager;
-use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::oidc_token_verifier::OidcTokenVerifier;
+use crate::factor_lookup::FactorScope;
 use crate::types::backup_metadata::ExportedBackupMetadata;
-use crate::types::{Authorization, Environment, ErrorResponse};
+use crate::types::{Authorization, ErrorResponse};
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -17,17 +18,6 @@ use serde::{Deserialize, Serialize};
 pub struct RetrieveBackupFromChallengeRequest {
     authorization: Authorization,
     challenge_token: String,
-}
-
-impl From<RetrieveBackupFromChallengeRequest> for AuthHandler {
-    fn from(request: RetrieveBackupFromChallengeRequest) -> Self {
-        AuthHandler::new(
-            request.authorization,
-            FactorScope::Main,
-            ChallengeContext::Retrieve {},
-            request.challenge_token,
-        )
-    }
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -43,24 +33,19 @@ pub struct RetrieveBackupFromChallengeResponse {
 
 /// Request to retrieve a backup using a solved challenge.
 pub async fn handler(
-    Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
+    Extension(auth_handler): Extension<AuthHandler>,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    let auth_handler: AuthHandler = request.0.into();
+    // let auth_handler: AuthHandler = request.0.into();
     let (backup_id, backup_metadata) = auth_handler
         .verify(
-            &backup_storage,
-            &dynamo_cache_manager,
-            &challenge_manager,
-            &environment,
-            &factor_lookup,
-            Some(&oidc_token_verifier),
+            &request.authorization,
+            FactorScope::Main,
+            ChallengeContext::Retrieve {},
+            request.challenge_token.clone(),
         )
         .await?;
 

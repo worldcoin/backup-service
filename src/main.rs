@@ -1,4 +1,5 @@
 use aws_sdk_s3::Client as S3Client;
+use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::dynamo_cache::DynamoCacheManager;
@@ -26,15 +27,27 @@ async fn main() -> anyhow::Result<()> {
     // Initialize challenge manager
     let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
     let kms_jwe = KmsJwe::new(environment.challenge_token_kms_key(), kms_client);
-    let challenge_manager = ChallengeManager::new(environment.challenge_token_ttl(), kms_jwe);
+    let challenge_manager = Arc::new(ChallengeManager::new(
+        environment.challenge_token_ttl(),
+        kms_jwe,
+    ));
 
-    let backup_storage = BackupStorage::new(environment, s3_client.clone());
-    let factor_lookup = FactorLookup::new(environment, dynamodb_client.clone());
-    let oidc_token_verifier = OidcTokenVerifier::new(environment);
-    let dynamo_cache_manager = DynamoCacheManager::new(
+    let backup_storage = Arc::new(BackupStorage::new(environment, s3_client.clone()));
+    let factor_lookup = Arc::new(FactorLookup::new(environment, dynamodb_client.clone()));
+    let oidc_token_verifier = Arc::new(OidcTokenVerifier::new(environment));
+    let dynamo_cache_manager = Arc::new(DynamoCacheManager::new(
         environment,
         environment.cache_default_ttl(),
         dynamodb_client.clone(),
+    ));
+
+    let auth_handler = AuthHandler::new(
+        backup_storage.clone(),
+        dynamo_cache_manager.clone(),
+        challenge_manager.clone(),
+        environment,
+        factor_lookup.clone(),
+        oidc_token_verifier.clone(),
     );
 
     server::start(
@@ -45,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         factor_lookup,
         oidc_token_verifier,
         dynamo_cache_manager,
+        auth_handler,
     )
     .await
 }

@@ -6,6 +6,7 @@ use base64::Engine;
 use rand::RngCore;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -42,7 +43,7 @@ pub struct AddFactorChallengeResponse {
 ///
 /// Both challenges are required to add a factor in the /add-factor endpoint.
 pub async fn handler(
-    Extension(challenge_manager): Extension<ChallengeManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<AddFactorChallengeRequest>,
 ) -> Result<Json<AddFactorChallengeResponse>, ErrorResponse> {
     // Create token for the existing passkey factor

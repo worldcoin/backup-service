@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
@@ -15,42 +17,47 @@ use crate::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
+#[derive(Clone)]
 pub struct AuthHandler {
-    authorization: Authorization,
-    expected_factor_scope: FactorScope,
-    pub expected_challenge_context: ChallengeContext,
-    challenge_token: String,
+    backup_storage: Arc<BackupStorage>,
+    dynamo_cache_manager: Arc<DynamoCacheManager>,
+    challenge_manager: Arc<ChallengeManager>,
+    environment: Environment,
+    factor_lookup: Arc<FactorLookup>,
+    oidc_token_verifier: Arc<OidcTokenVerifier>,
 }
 
 impl AuthHandler {
     pub fn new(
-        authorization: Authorization,
-        expected_factor_scope: FactorScope,
-        expected_challenge_context: ChallengeContext,
-        challenge_token: String,
+        backup_storage: Arc<BackupStorage>,
+        dynamo_cache_manager: Arc<DynamoCacheManager>,
+        challenge_manager: Arc<ChallengeManager>,
+        environment: Environment,
+        factor_lookup: Arc<FactorLookup>,
+        oidc_token_verifier: Arc<OidcTokenVerifier>,
     ) -> Self {
         Self {
-            authorization,
-            expected_factor_scope,
-            expected_challenge_context,
-            challenge_token,
+            backup_storage,
+            dynamo_cache_manager,
+            challenge_manager,
+            environment,
+            factor_lookup,
+            oidc_token_verifier,
         }
     }
 
     pub async fn verify(
         self,
-        backup_storage: &BackupStorage,
-        dynamo_cache_manager: &DynamoCacheManager,
-        challenge_manager: &ChallengeManager,
-        environment: &Environment,
-        factor_lookup: &FactorLookup,
-        oidc_token_verifier: Option<&OidcTokenVerifier>,
+        authorization: &Authorization,
+        expected_factor_scope: FactorScope,
+        expected_challenge_context: ChallengeContext,
+        challenge_token: String,
     ) -> Result<(String, BackupMetadata), ErrorResponse> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope. When
         //  only `Sync` factors are allowed, other factors are rejected.
-        if self.expected_factor_scope == FactorScope::Sync {
-            match &self.authorization {
+        if expected_factor_scope == FactorScope::Sync {
+            match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
                     return Err(ErrorResponse::bad_request("invalid_authorization_type"));
                 }
@@ -59,20 +66,18 @@ impl AuthHandler {
         }
 
         // Step 2: Extract challenge token
-        let (challenge_token_payload, challenge_context) = challenge_manager
-            .extract_token_payload(
-                (&self.authorization).into(),
-                self.challenge_token.to_string(),
-            )
+        let (challenge_token_payload, challenge_context) = self
+            .challenge_manager
+            .extract_token_payload(authorization.into(), challenge_token.clone())
             .await?;
 
         // Step 3: Verify the challenge context
-        if challenge_context != self.expected_challenge_context {
+        if challenge_context != expected_challenge_context {
             return Err(ErrorResponse::bad_request("invalid_challenge_context"));
         }
 
         // Step 4: Verify specific `Authorization` type
-        let (backup_id, backup_metadata) = match &self.authorization {
+        let (backup_id, backup_metadata) = match authorization {
             Authorization::Passkey { credential } => {
                 // Step 4A.1: Extract the passkey credential
                 let passkey_state: DiscoverableAuthentication = serde_json::from_slice(
@@ -95,15 +100,17 @@ impl AuthHandler {
 
                 // Step 4A.3: Identify which user is referenced by the credential. Note that at
                 // this point, the credential is not verified yet.
-                let (_not_verified_user_id, not_verified_credential_id) = environment
+                let (_not_verified_user_id, not_verified_credential_id) = self
+                    .environment
                     .webauthn_config()
                     .identify_discoverable_authentication(&user_provided_credential)?;
 
                 // Step 4A.4: Lookup the credential ID in the factor lookup table and get potential
                 // backup ID
-                let not_verified_backup_id = factor_lookup
+                let not_verified_backup_id = self
+                    .factor_lookup
                     .lookup(
-                        self.expected_factor_scope,
+                        expected_factor_scope,
                         &FactorToLookup::from_passkey(
                             URL_SAFE_NO_PAD.encode(not_verified_credential_id),
                         ),
@@ -117,7 +124,8 @@ impl AuthHandler {
 
                 // Step 4A.5: Fetch the backup metadata from the storage to get the reference
                 // credential objects from all passkey factors associated with the backup
-                let backup_metadata = backup_storage
+                let backup_metadata = self
+                    .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
                 let backup_metadata = match backup_metadata {
@@ -151,7 +159,8 @@ impl AuthHandler {
                 }
 
                 // Step 4A.6: Verify the credential using the reference credential object
-                let _authentication_result = environment
+                let _authentication_result = self
+                    .environment
                     .webauthn_config()
                     .finish_discoverable_authentication(
                         &user_provided_credential,
@@ -170,13 +179,9 @@ impl AuthHandler {
                 public_key,
                 signature,
             } => {
-                let Some(oidc_token_verifier) = oidc_token_verifier else {
-                    tracing::error!(message = "OIDC token verifier is not configured");
-                    return Err(ErrorResponse::internal_server_error());
-                };
-
                 // Step 4B.1: Verify the OIDC token
-                let claims = oidc_token_verifier
+                let claims = self
+                    .oidc_token_verifier
                     .verify_token(oidc_token, public_key.clone())
                     .await
                     .map_err(|_| ErrorResponse::bad_request("oidc_token_verification_error"))?;
@@ -192,8 +197,9 @@ impl AuthHandler {
                     ),
                 };
 
-                let not_verified_backup_id = factor_lookup
-                    .lookup(self.expected_factor_scope, &oidc_factor)
+                let not_verified_backup_id = self
+                    .factor_lookup
+                    .lookup(expected_factor_scope, &oidc_factor)
                     .await?;
                 let Some(not_verified_backup_id) = not_verified_backup_id else {
                     tracing::info!(message = "No backup ID found for the given OIDC account");
@@ -201,7 +207,8 @@ impl AuthHandler {
                 };
 
                 // Step 4B.4: Fetch the backup metadata to verify the OIDC account exists in the factors
-                let backup_metadata = backup_storage
+                let backup_metadata = self
+                    .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
                 let backup_metadata = match backup_metadata {
@@ -258,9 +265,10 @@ impl AuthHandler {
                 verify_signature(public_key, signature, challenge_token_payload.as_ref())?;
 
                 // Step 4C.2: Lookup the public key in the factor lookup table and get potential backup ID
-                let not_verified_backup_id = factor_lookup
+                let not_verified_backup_id = self
+                    .factor_lookup
                     .lookup(
-                        self.expected_factor_scope,
+                        expected_factor_scope,
                         &FactorToLookup::from_ec_keypair(public_key.to_string()),
                     )
                     .await?;
@@ -270,7 +278,8 @@ impl AuthHandler {
                 };
 
                 // Step 4C.3: Fetch the backup from the storage to get the reference keypair
-                let backup_metadata = backup_storage
+                let backup_metadata = self
+                    .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
                 let backup_metadata = match backup_metadata {
@@ -284,7 +293,7 @@ impl AuthHandler {
                 };
 
                 // Step 4C.4: Verify that the public key exists in the backup's `Sync` or `Main` factors
-                let factors = if self.expected_factor_scope == FactorScope::Sync {
+                let factors = if expected_factor_scope == FactorScope::Sync {
                     &backup_metadata.sync_factors
                 } else {
                     &backup_metadata.factors
@@ -315,8 +324,8 @@ impl AuthHandler {
         };
 
         // Step 5: Track the used challenge to prevent replay attacks
-        dynamo_cache_manager
-            .use_challenge_token(self.challenge_token.to_string())
+        self.dynamo_cache_manager
+            .use_challenge_token(challenge_token)
             .await?;
 
         Ok((backup_id, backup_metadata))

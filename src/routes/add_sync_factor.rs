@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::dynamo_cache::DynamoCacheManager;
@@ -30,10 +32,10 @@ pub struct AddSyncFactorResponse {
 
 /// Request to retrieve a backup using a solved challenge.
 pub async fn handler(
-    Extension(challenge_manager): Extension<ChallengeManager>,
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
     // Step 1: Verify the sync factor is a valid EC keypair and transform it to a factor object

@@ -1,9 +1,10 @@
+use std::sync::Arc;
+
 use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeContext, ChallengeManager};
-use crate::dynamo_cache::DynamoCacheManager;
-use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::challenge_manager::ChallengeContext;
+use crate::factor_lookup::FactorScope;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
@@ -17,17 +18,6 @@ pub struct SyncBackupRequest {
     challenge_token: String,
 }
 
-impl From<SyncBackupRequest> for AuthHandler {
-    fn from(request: SyncBackupRequest) -> Self {
-        AuthHandler::new(
-            request.authorization,
-            FactorScope::Sync,
-            ChallengeContext::Sync {},
-            request.challenge_token,
-        )
-    }
-}
-
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncBackupResponse {
@@ -36,10 +26,8 @@ pub struct SyncBackupResponse {
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(auth_handler): Extension<AuthHandler>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -69,15 +57,12 @@ pub async fn handler(
     }
 
     // Step 2: Auth. Verify the solved challenge in the authorization parameter
-    let auth_handler: AuthHandler = request.into();
-    let (backup_id, _) = auth_handler
+    let (backup_id, _backup_metadata) = auth_handler
         .verify(
-            &backup_storage,
-            &dynamo_cache_manager,
-            &challenge_manager,
-            &environment,
-            &factor_lookup,
-            None,
+            &request.authorization,
+            FactorScope::Sync,
+            ChallengeContext::Sync {},
+            request.challenge_token,
         )
         .await?;
 
