@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
@@ -28,8 +30,8 @@ pub struct DeleteFactorResponse {}
 /// Request to delete a factor from backup metadata using a solved challenge.
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(factor_lookup): Extension<FactorLookup>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<DeleteFactorRequest>,
 ) -> Result<Json<DeleteFactorResponse>, ErrorResponse> {

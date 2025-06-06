@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
@@ -36,11 +38,11 @@ pub struct CreateBackupResponse {
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(oidc_token_verifier): Extension<Arc<OidcTokenVerifier>>,
+    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters

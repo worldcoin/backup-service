@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
@@ -31,8 +33,8 @@ pub struct RetrieveBackupFromChallengeResponse {
 
 /// Request to retrieve a backup using a solved challenge.
 pub async fn handler(
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {

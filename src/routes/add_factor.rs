@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
@@ -56,10 +58,10 @@ pub struct AddFactorResponse {
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
 /// and the new factor (to prove ownership of the new factor).
 pub async fn handler(
-    Extension(backup_storage): Extension<BackupStorage>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
-    Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(oidc_token_verifier): Extension<OidcTokenVerifier>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
+    Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(oidc_token_verifier): Extension<Arc<OidcTokenVerifier>>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     // Step 1: Check authorization for the existing factor and get the backup ID

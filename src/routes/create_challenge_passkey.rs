@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
 use axum::{Extension, Json};
@@ -30,7 +32,7 @@ pub struct CreateChallengePasskeyResponse {
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     request: Json<CreateChallengePasskeyRequest>,
 ) -> Result<Json<CreateChallengePasskeyResponse>, ErrorResponse> {
     // Step 1: Create a new challenge using WebAuthn implementation

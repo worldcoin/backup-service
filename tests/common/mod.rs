@@ -7,6 +7,7 @@ use axum::body::{Body, Bytes};
 use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
+use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
@@ -32,11 +33,14 @@ pub async fn get_test_s3_client() -> S3Client {
     S3Client::from_conf(environment.s3_client_config().await)
 }
 
-pub async fn get_challenge_manager() -> ChallengeManager {
+pub async fn get_challenge_manager() -> Arc<ChallengeManager> {
     let environment = Environment::development(None);
     let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
     let kms_jwe = KmsJwe::new(environment.challenge_token_kms_key(), kms_client);
-    ChallengeManager::new(environment.challenge_token_ttl(), kms_jwe)
+    Arc::new(ChallengeManager::new(
+        environment.challenge_token_ttl(),
+        kms_jwe,
+    ))
 }
 
 pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
@@ -52,15 +56,27 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         &environment.aws_config().await,
     ));
     let challenge_manager = get_challenge_manager().await;
-    let backup_storage = BackupStorage::new(environment, s3_client.clone());
-    let factor_lookup =
-        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
-    let oidc_token_verifier =
-        backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment);
-    let sync_factor_token_manager = backup_service::dynamo_cache::DynamoCacheManager::new(
+    let backup_storage = Arc::new(BackupStorage::new(environment, s3_client.clone()));
+    let factor_lookup = Arc::new(backup_service::factor_lookup::FactorLookup::new(
+        environment,
+        dynamodb_client.clone(),
+    ));
+    let oidc_token_verifier = Arc::new(
+        backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment),
+    );
+    let dynamo_cache_manager = Arc::new(backup_service::dynamo_cache::DynamoCacheManager::new(
         environment,
         environment.cache_default_ttl(),
         dynamodb_client.clone(),
+    ));
+
+    let auth_handler = AuthHandler::new(
+        backup_storage.clone(),
+        dynamo_cache_manager.clone(),
+        challenge_manager.clone(),
+        environment,
+        factor_lookup.clone(),
+        oidc_token_verifier.clone(),
     );
 
     backup_service::handler(environment)
@@ -71,7 +87,8 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
-        .layer(Extension(sync_factor_token_manager))
+        .layer(Extension(dynamo_cache_manager))
+        .layer(Extension(auth_handler))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {

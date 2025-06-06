@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
 use axum::{Extension, Json};
@@ -15,7 +17,7 @@ pub struct RetrieveChallengePasskeyResponse {
 /// for a backup.
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
 ) -> Result<Json<RetrieveChallengePasskeyResponse>, ErrorResponse> {
     // Step 1: Create a new challenge using WebAuthn implementation
     let (challenge, authentication) = environment

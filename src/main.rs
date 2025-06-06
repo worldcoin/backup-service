@@ -42,12 +42,12 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let auth_handler = AuthHandler::new(
-        backup_storage,
-        dynamo_cache_manager,
-        challenge_manager,
+        backup_storage.clone(),
+        dynamo_cache_manager.clone(),
+        challenge_manager.clone(),
         environment,
-        factor_lookup,
-        oidc_token_verifier,
+        factor_lookup.clone(),
+        oidc_token_verifier.clone(),
     );
 
     server::start(

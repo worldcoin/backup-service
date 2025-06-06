@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
@@ -24,7 +26,7 @@ pub struct SyncBackupResponse {
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(backup_storage): Extension<BackupStorage>,
+    Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {

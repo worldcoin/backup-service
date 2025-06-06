@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::ErrorResponse;
 use axum::{Extension, Json};
@@ -24,7 +26,7 @@ pub struct ChallengeKeypairResponse {
 /// Optionally, the request can contain additional context that is used to create the challenge token.
 /// This context should be validated alongside the challenge token when receiving the signed challenge.
 pub async fn handler<T: DeserializeOwned + Into<ChallengeContext>>(
-    Extension(challenge_manager): Extension<ChallengeManager>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<T>,
 ) -> Result<Json<ChallengeKeypairResponse>, ErrorResponse> {
     // Step 1: Create a new challenge as 32 bytes of random data
