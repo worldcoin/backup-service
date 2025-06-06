@@ -1,7 +1,6 @@
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeContext, ChallengeManager};
-use crate::dynamo_cache::DynamoCacheManager;
+use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::types::backup_metadata::{FactorKind, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -22,22 +21,6 @@ pub struct DeleteFactorRequest {
     encryption_key: Option<BackupEncryptionKey>,
 }
 
-impl From<DeleteFactorRequest> for AuthHandler {
-    fn from(request: DeleteFactorRequest) -> Self {
-        AuthHandler::new(
-            request.authorization,
-            FactorScope::Sync,
-            // this will be compared in the `AuthHandler::verify()` function.
-            // if the ChallengeContext is not the same between the request and the challenge token,
-            // the request will be rejected.
-            ChallengeContext::DeleteFactor {
-                factor_id: request.factor_id,
-            },
-            request.challenge_token,
-        )
-    }
-}
-
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFactorResponse {}
@@ -45,27 +28,27 @@ pub struct DeleteFactorResponse {}
 /// Request to delete a factor from backup metadata using a solved challenge.
 pub async fn handler(
     Extension(environment): Extension<Environment>,
-    Extension(challenge_manager): Extension<ChallengeManager>,
     Extension(backup_storage): Extension<BackupStorage>,
     Extension(factor_lookup): Extension<FactorLookup>,
-    Extension(dynamo_cache_manager): Extension<DynamoCacheManager>,
+    Extension(auth_handler): Extension<AuthHandler>,
     request: Json<DeleteFactorRequest>,
 ) -> Result<Json<DeleteFactorResponse>, ErrorResponse> {
     // Step 1: Extract the factor IDs from the request
     let factor_id = request.factor_id.clone();
     let encryption_key = request.encryption_key.clone();
 
-    let auth_handler: AuthHandler = request.0.into();
-
     // Step 2: Auth. Verify the solved challenge
     let (backup_id, backup_metadata) = auth_handler
         .verify(
-            &backup_storage,
-            &dynamo_cache_manager,
-            &challenge_manager,
-            &environment,
-            &factor_lookup,
-            None,
+            &request.authorization,
+            FactorScope::Sync,
+            // this will be compared in the `AuthHandler::verify()` function.
+            // if the ChallengeContext is not the same between the request and the challenge token,
+            // the request will be rejected.
+            ChallengeContext::DeleteFactor {
+                factor_id: request.factor_id.clone(),
+            },
+            request.challenge_token.clone(),
         )
         .await?;
 

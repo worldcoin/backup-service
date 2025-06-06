@@ -1,10 +1,10 @@
-use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeManager;
 use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::routes;
 use crate::types::Environment;
+use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{Info, OpenApi};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
@@ -12,14 +12,16 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::Level;
 
+#[allow(clippy::too_many_arguments)] // logical module separation is preferred
 pub async fn start(
     environment: Environment,
     s3_client: Arc<S3Client>,
-    challenge_manager: ChallengeManager,
-    backup_storage: BackupStorage,
-    factor_lookup: FactorLookup,
-    oidc_token_verifier: OidcTokenVerifier,
-    dynamo_cache_manager: DynamoCacheManager,
+    challenge_manager: Arc<ChallengeManager>,
+    backup_storage: Arc<BackupStorage>,
+    factor_lookup: Arc<FactorLookup>,
+    oidc_token_verifier: Arc<OidcTokenVerifier>,
+    dynamo_cache_manager: Arc<DynamoCacheManager>,
+    auth_handler: AuthHandler,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -39,6 +41,7 @@ pub async fn start(
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
         .layer(Extension(dynamo_cache_manager))
+        .layer(Extension(auth_handler))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
