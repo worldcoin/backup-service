@@ -56,7 +56,9 @@ pub async fn handler(
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
             // Step 1.3: Track used challenges to prevent replay attacks
-            // TODO/FIXME
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             // Step 1.4: Create a factor that's going to be saved in the metadata and a factor to lookup
             (
@@ -81,12 +83,28 @@ pub async fn handler(
         .await?;
 
     // Step 4: Add the sync factor to the backup metadata
-    backup_storage
+    let result = backup_storage
         .add_sync_factor(&backup_id, sync_factor)
-        .await?;
+        .await;
 
-    // TODO/FIXME: Remove factor to lookup if `add_sync_factor` fails
-    // TODO/FIXME: Remove the usage field of the token if `add_sync_factor` or `insert` fails
+    // Step 4.1: If `add_sync_factor` into the S3 metadata fails, remove sync factor from lookup and allow the token to be reused for retries
+    if let Err(e) = result {
+        if let Err(e) = factor_lookup
+            .delete(FactorScope::Sync, &sync_factor_to_lookup)
+            .await
+        {
+            tracing::error!(message = "Failed to delete factor from lookup table after failed sync factor addition.", error = ?e, sync_factor_pk = sync_factor_to_lookup.primary_key());
+        }
+
+        if let Err(e) = dynamo_cache_manager
+            .unuse_sync_factor_token(request.sync_factor_token.to_string())
+            .await
+        {
+            tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);
+        }
+
+        return Err(e.into());
+    }
 
     Ok(Json(AddSyncFactorResponse { backup_id }))
 }

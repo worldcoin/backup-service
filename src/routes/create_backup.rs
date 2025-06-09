@@ -274,11 +274,26 @@ pub async fn handler(
         .await?;
 
     // Step 6: Save the backup to S3
-    backup_storage
+    let result = backup_storage
         .create(backup.to_vec(), &backup_metadata)
-        .await?;
+        .await;
 
-    // TODO/FIXME: remove factor from factor lookup if backup storage create fails
+    // Step 6.1: If the backup storage create fails, remove the factor from the lookup table
+    if let Err(e) = result {
+        if let Err(e) = factor_lookup
+            .delete(FactorScope::Main, &factor_to_lookup)
+            .await
+        {
+            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?e);
+        }
+        if let Err(e) = factor_lookup
+            .delete(FactorScope::Sync, &initial_sync_factor_to_lookup)
+            .await
+        {
+            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?e);
+        }
+        return Err(e.into());
+    }
 
     Ok(Json(CreateBackupResponse {
         backup_id: backup_metadata.id,
