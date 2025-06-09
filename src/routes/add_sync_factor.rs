@@ -56,7 +56,9 @@ pub async fn handler(
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
 
             // Step 1.3: Track used challenges to prevent replay attacks
-            // TODO/FIXME
+            dynamo_cache_manager
+                .use_challenge_token(request.challenge_token.to_string())
+                .await?;
 
             // Step 1.4: Create a factor that's going to be saved in the metadata and a factor to lookup
             (
