@@ -190,6 +190,31 @@ impl DynamoCacheManager {
         Ok(backup_id)
     }
 
+    /// Unmarks a sync factor token as used. This is used to ensure atomicity in the process to add a sync factor.
+    ///
+    /// If the process of adding the factor to the backup metadata in S3 fails, the token is unmarked as used
+    /// to allow the user to try again.
+    ///
+    /// # Errors
+    /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be unmarked as used in the DynamoDB table
+    pub async fn unuse_sync_factor_token(&self, token: String) -> Result<(), DynamoCacheError> {
+        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
+        self.dynamodb_client
+            .update_item()
+            .table_name(self.environment.cache_table_name())
+            .key(
+                SyncFactorTokenAttribute::Pk.to_string(),
+                AttributeValue::S(token_hash),
+            )
+            .update_expression("SET #is_used = :false")
+            .expression_attribute_names("#is_used", SyncFactorTokenAttribute::IsUsed.to_string())
+            .expression_attribute_values(":false", AttributeValue::Bool(false))
+            .send()
+            .await
+            .map_err(|err| DynamoCacheError::DynamoDbUpdateError(err.into_service_error()))?;
+        Ok(())
+    }
+
     /// Records a hashed challenge token as used in DynamoDB to prevent replay attacks.
     ///
     /// # Errors

@@ -279,7 +279,7 @@ pub async fn handler(
         .await;
 
     // Step 6.1: If the backup storage create fails, remove the factor from the lookup table
-    if result.is_err() {
+    if let Err(e) = result {
         if let Err(e) = factor_lookup
             .delete(FactorScope::Main, &factor_to_lookup)
             .await
@@ -292,7 +292,7 @@ pub async fn handler(
         {
             tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?e);
         }
-        return Err(result.err().unwrap().into());
+        return Err(e.into());
     }
 
     Ok(Json(CreateBackupResponse {
