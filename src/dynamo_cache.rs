@@ -292,7 +292,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    pub async fn get_test_dynamodb_client() -> Arc<aws_sdk_dynamodb::Client> {
+    async fn get_test_dynamodb_client() -> Arc<aws_sdk_dynamodb::Client> {
         let environment = Environment::development(None);
         let aws_config = environment.aws_config().await;
         Arc::new(aws_sdk_dynamodb::Client::new(&aws_config))
