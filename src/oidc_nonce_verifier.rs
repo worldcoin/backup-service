@@ -1,11 +1,7 @@
-use std::sync::Arc;
-
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use openidconnect::{Nonce, NonceVerifier};
 use sha2::Digest;
-
-use crate::dynamo_cache::DynamoCacheManager;
 
 /// OIDC tokens that users are passing to the backup-service should have `nonce` field equal
 /// to hash of a public key that signs a `backup-service` challenge. In addition to that, the same
@@ -15,26 +11,19 @@ use crate::dynamo_cache::DynamoCacheManager;
 ///
 /// This verifier checks the nonce in the token against the expected public key. Caller is expected
 /// to verify the ownership of `expected_public_key_base64` before / after using this verifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OidcNonceVerifier {
     /// Key that should be hashed in the nonce according to Turnkey specification:
     /// https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens.
     /// Public keys are usually represented in base64 format in our API.
     pub expected_public_key_sec1_base64: String,
-
-    /// `DynamoCacheManager` module to track used nonces.
-    dynamo_cache_manager: Arc<DynamoCacheManager>,
 }
 
 impl OidcNonceVerifier {
     /// Creates a new `OidcNonceVerifier` with the expected public key.
-    pub fn new(
-        expected_public_key_sec1_base64: String,
-        dynamo_cache_manager: Arc<DynamoCacheManager>,
-    ) -> Self {
+    pub fn new(expected_public_key_sec1_base64: String) -> Self {
         OidcNonceVerifier {
             expected_public_key_sec1_base64,
-            dynamo_cache_manager,
         }
     }
 }
@@ -90,26 +79,11 @@ pub fn public_key_sec1_base64_to_expected_turnkey_nonce(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use crate::types::Environment;
-
     use super::*;
 
-    async fn get_dynamo_cache_manager() -> Arc<DynamoCacheManager> {
-        let environment = Environment::development(None);
-        let aws_config = environment.aws_config().await;
-        let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(&aws_config));
-        Arc::new(DynamoCacheManager::new(
-            environment,
-            Duration::from_secs(60 * 60 * 24),
-            dynamodb_client,
-        ))
-    }
-
     // Ref: https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens
-    #[tokio::test]
-    async fn test_oidc_nonce_verifier_docs_example() {
+    #[test]
+    fn test_oidc_nonce_verifier_docs_example() {
         // Usually specified as base64 in our API, but here keeping it consistent with the example in the docs.
         let public_key_as_hex = "04bb76f9a8aaafbb0722fa184f66642ae425e2a032bde8ffa0479ff5a93157b204c7848701cf246d81fd58f6c4c47a437d9f81e6a183042f2f1aa2f6aa28e4ab65";
         let correct_nonce = Nonce::new(
@@ -123,7 +97,6 @@ mod tests {
         let public_key_base64 = STANDARD.encode(&public_key_bytes);
         let verifier = OidcNonceVerifier {
             expected_public_key_sec1_base64: public_key_base64,
-            dynamo_cache_manager: get_dynamo_cache_manager().await,
         };
         assert!(verifier.clone().verify(Some(&correct_nonce)).is_ok());
         assert_eq!(verifier.clone().verify(Some(&incorrect_nonce)).unwrap_err().to_string(), "Nonce mismatch: expected 1f9570d976946c0cb72f0e853eea0fb648b5e9e9a2266d25f971817e187c9b18, got 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
@@ -134,8 +107,8 @@ mod tests {
     }
 
     // Taken from a real OIDC token and target public key ID that was successfully verified by Turnkey.
-    #[tokio::test]
-    async fn test_oidc_nonce_verifier_activity_example() {
+    #[test]
+    fn test_oidc_nonce_verifier_activity_example() {
         let public_key_as_hex = "043ab1087a4529f6a364bf619be1d6e6f32a92984752ba22d2dfccd86cd2b6f0abfbbfdc9c5a8bf33dc59172f59284e6e3796ed667ee8982702bc983a152831ea6";
         let correct_nonce = Nonce::new(
             "9552cf92411acd86e99ee85ff4f6c6ffb157b94cbf7ec38d19593179ec82f2a8".to_string(),
@@ -145,7 +118,6 @@ mod tests {
         let public_key_base64 = STANDARD.encode(&public_key_bytes);
         let verifier = OidcNonceVerifier {
             expected_public_key_sec1_base64: public_key_base64,
-            dynamo_cache_manager: get_dynamo_cache_manager().await,
         };
         assert!(verifier.verify(Some(&correct_nonce)).is_ok());
     }
