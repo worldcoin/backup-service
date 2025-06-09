@@ -183,8 +183,7 @@ impl AuthHandler {
                 let claims = self
                     .oidc_token_verifier
                     .verify_token(oidc_token, public_key.clone())
-                    .await
-                    .map_err(|_| ErrorResponse::bad_request("oidc_token_verification_error"))?;
+                    .await?;
 
                 // Step 4B.2: Verify the signature by the public key of the challenge
                 verify_signature(public_key, signature, challenge_token_payload.as_ref())?;

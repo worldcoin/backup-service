@@ -161,10 +161,11 @@ async fn test_retrieve_backup_with_different_keypair() {
     let retrieve_challenge = get_keypair_retrieve_challenge().await;
 
     // Generate new OIDC token for the same user
+    let (public_key, _) = generate_keypair(); // a new keypair for the OIDC nonce is used on each request
     let new_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
         Some(SubjectIdentifier::new(subject.clone())),
-        &test_backup.public_key,
+        &public_key,
     );
 
     // Generate a different keypair for signing
@@ -186,7 +187,7 @@ async fn test_retrieve_backup_with_different_keypair() {
                     "kind": "GOOGLE",
                     "token": new_oidc_token,
                 },
-                "publicKey": test_backup.public_key,
+                "publicKey": public_key,
                 "signature": signature,
             },
             "challengeToken": retrieve_challenge["token"],

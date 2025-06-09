@@ -206,7 +206,7 @@ impl From<VerifySignatureError> for ErrorResponse {
 
 impl From<OidcTokenVerifierError> for ErrorResponse {
     fn from(err: OidcTokenVerifierError) -> Self {
-        match &err {
+        match err {
             OidcTokenVerifierError::JwkSetFetchError => {
                 tracing::error!(message = "Failed to fetch JWK set from OIDC provider", error = ?err);
                 ErrorResponse::internal_server_error()
@@ -219,6 +219,11 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 tracing::info!(message = "Failed to verify OIDC token", error = ?err);
                 ErrorResponse::bad_request("oidc_token_verification_error")
             }
+            OidcTokenVerifierError::MissingNonce => {
+                tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);
+                ErrorResponse::bad_request("oidc_token_parse_error")
+            }
+            OidcTokenVerifierError::DynamoCacheError(e) => e.into(),
         }
     }
 }

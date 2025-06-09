@@ -254,8 +254,7 @@ pub async fn handler(
             // Step 2A.3: Verify the signature of the challenge using the public key
             let claims = oidc_token_verifier
                 .verify_token(oidc_token, public_key.clone())
-                .await
-                .map_err(|_| ErrorResponse::bad_request("oidc_token_verification_error"))?;
+                .await?;
 
             // Step 2A.4: Verify the signature using the public key
             verify_signature(public_key, signature, trusted_challenge.as_ref())?;
