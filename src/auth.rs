@@ -4,6 +4,7 @@ use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKe
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::OidcAccountKind;
+use crate::utils::webauthn::safe_deserialize_passkey_credential;
 use crate::verify_signature::verify_signature;
 use crate::{
     backup_storage::BackupStorage,
@@ -90,13 +91,8 @@ impl AuthHandler {
                 })?;
 
                 // Step 4A.2: Deserialize the credential
-                let user_provided_credential: PublicKeyCredential = serde_json::from_value(
-                    credential.clone(),
-                )
-                .map_err(|err| {
-                    tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                    ErrorResponse::bad_request("webauthn_error")
-                })?;
+                let user_provided_credential: PublicKeyCredential =
+                    safe_deserialize_passkey_credential(credential)?;
 
                 // Step 4A.3: Identify which user is referenced by the credential. Note that at
                 // this point, the credential is not verified yet.
