@@ -3,9 +3,18 @@ use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
-use openidconnect::reqwest;
+use openidconnect::{reqwest, JsonWebKeySetUrl};
 use openidconnect::{EmptyAdditionalClaims, IdTokenClaims};
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+use tokio::time::Instant;
+
+// TODO make this a config?
+const TTL: Duration = Duration::from_secs(60 * 60); // 1h
+const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
 
 /// Verifier for OIDC tokens.
 ///
@@ -14,6 +23,7 @@ use std::str::FromStr;
 pub struct OidcTokenVerifier {
     environment: Environment,
     reqwest_client: reqwest::Client,
+    cached_keys: Arc<RwLock<HashMap<JsonWebKeySetUrl, (Arc<CoreJsonWebKeySet>, Instant)>>>,
 }
 
 impl OidcTokenVerifier {
@@ -21,7 +31,62 @@ impl OidcTokenVerifier {
         OidcTokenVerifier {
             environment,
             reqwest_client: reqwest::Client::new(),
+            cached_keys: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    // TODO Add a guard if this service becomes heavily used. This implementation does not protect against cache stampedes under high loads.
+    async fn _get_jwk_set(
+        &self,
+        jwk_set_url: &JsonWebKeySetUrl,
+    ) -> Result<Arc<CoreJsonWebKeySet>, OidcTokenVerifierError> {
+        let fetched = CoreJsonWebKeySet::fetch_async(jwk_set_url, &self.reqwest_client)
+            .await
+            .map_err(|err| {
+                tracing::error!(message = "Failed to fetch JWK set", err = ?err);
+                OidcTokenVerifierError::JwkSetFetchError
+            })?;
+
+        let arc = Arc::new(fetched);
+        // Store value
+        {
+            let mut cache = self.cached_keys.write().await;
+            cache.insert(jwk_set_url.to_owned(), (arc.clone(), Instant::now()));
+        }
+        Ok(arc)
+    }
+
+    /// Retrieves the JWK Set for the given URL.
+    ///
+    /// First checks the in-memory cache. If the cached value exists and is within
+    /// the TTL, it is returned immediately. If the cached value is
+    /// stale but not expired, it is returned and a background task is spawned to
+    /// revalidate and refresh it. If the cache is missing or expired, the key set
+    /// is fetched synchronously from the source.
+    async fn get_jwk_set(
+        &self,
+        jwk_set_url: &JsonWebKeySetUrl,
+    ) -> Result<Arc<CoreJsonWebKeySet>, OidcTokenVerifierError> {
+        // Try cached value
+        if let Some((keys, fetched_at)) = {
+            let cache = self.cached_keys.read().await;
+            cache.get(jwk_set_url).cloned()
+        } {
+            let age = fetched_at.elapsed();
+            if age < TTL {
+                // if keys are stale revalidate in a background process
+                if age >= STALE_AFTER {
+                    let url = jwk_set_url.clone();
+                    let this = self.clone();
+                    tokio::spawn(async move {
+                        let _ = this._get_jwk_set(&url).await;
+                    });
+                }
+                return Ok(keys);
+            }
+        }
+        // Cache miss
+        Ok(self._get_jwk_set(jwk_set_url).await?)
     }
 
     pub async fn verify_token(
@@ -40,13 +105,7 @@ impl OidcTokenVerifier {
         };
 
         // Load the public keys from the OIDC provider
-        // TODO/FIXME: Cache the keys
-        let signature_keys = CoreJsonWebKeySet::fetch_async(&jwk_set_url, &self.reqwest_client)
-            .await
-            .map_err(|err| {
-                tracing::error!(message = "Failed to fetch JWK set", err = ?err);
-                OidcTokenVerifierError::JwkSetFetchError
-            })?;
+        let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
 
         // Create the token verifier
         let token_verifier =
