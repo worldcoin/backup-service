@@ -16,6 +16,9 @@ use tokio::time::Instant;
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
 
+type JwkCacheEntry = (Arc<CoreJsonWebKeySet>, Instant);
+type JwkCache = Arc<RwLock<HashMap<JsonWebKeySetUrl, JwkCacheEntry>>>;
+
 /// Verifier for OIDC tokens.
 ///
 /// Downloads the public keys from the OIDC provider and verifies the token, returning the claims.
@@ -23,7 +26,7 @@ const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
 pub struct OidcTokenVerifier {
     environment: Environment,
     reqwest_client: reqwest::Client,
-    cached_keys: Arc<RwLock<HashMap<JsonWebKeySetUrl, (Arc<CoreJsonWebKeySet>, Instant)>>>,
+    cached_keys: JwkCache,
 }
 
 impl OidcTokenVerifier {
@@ -86,7 +89,7 @@ impl OidcTokenVerifier {
             }
         }
         // Cache miss
-        Ok(self._get_jwk_set(jwk_set_url).await?)
+        self._get_jwk_set(jwk_set_url).await
     }
 
     pub async fn verify_token(
