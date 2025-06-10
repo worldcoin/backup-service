@@ -18,18 +18,6 @@ pub fn safe_deserialize_passkey_credential(
         return Err(ErrorResponse::bad_request("webauthn_error"));
     }
 
-    // The Prf extension leverages the hmac-secret extension.
-    // Optional check: We don't expect clients to ever return a secret either through the hmac-secret extension.
-    // https://fidoalliance.org/specs/fido-v2.1-rd-20210309/fido-client-to-authenticator-protocol-v2.1-rd-20210309.html#sctn-hmac-secret-extension
-    if raw_credential
-        .get("clientExtensionResults")
-        .and_then(|ext| ext.get("hmacGetSecret"))
-        .is_some()
-    {
-        tracing::info!(message = "hmacGetSecret is not allowed in clientExtensionResults");
-        return Err(ErrorResponse::bad_request("webauthn_error"));
-    }
-
     //  Deserialize credential
     let user_provided_credential: PublicKeyCredential =
         serde_json::from_value(raw_credential.clone()).map_err(|err| {
@@ -83,14 +71,6 @@ mod tests {
     #[test]
     fn test_invalid_json_should_fail() {
         let raw = json!({ "some": "invalid" });
-        let result = safe_deserialize_passkey_credential(&raw);
-        assert!(matches!(result, Err(ErrorResponse { .. })));
-    }
-
-    #[test]
-    fn test_hmac_get_secret_present_should_fail() {
-        let mut raw = base_credential_json();
-        raw["clientExtensionResults"] = json!({"hmacGetSecret": {"output1": "very secret"}});
         let result = safe_deserialize_passkey_credential(&raw);
         assert!(matches!(result, Err(ErrorResponse { .. })));
     }
