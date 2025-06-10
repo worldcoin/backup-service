@@ -18,7 +18,6 @@ use base64::Engine;
 use chrono::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use webauthn_rs::prelude::PublicKeyCredential;
 
 /// Sanity check on what kind of activity is being signed alongside the backup service challenge.
 /// It should be an activity to create a new API key, because client uses it to a start a session
@@ -75,8 +74,7 @@ pub async fn handler(
                 return Err(ErrorResponse::bad_request("missing_turnkey_activity"));
             };
             // Parse credential per the WebAuthn spec
-            let user_provided_credential: PublicKeyCredential =
-                safe_deserialize_passkey_credential(credential)?;
+            let user_provided_credential = safe_deserialize_passkey_credential(credential)?;
 
             // Step 1A.2: Retrieve the potential backup using credential ID in the passkey.
             // At this point, the user has not verified that they correctly signed the challenge.
