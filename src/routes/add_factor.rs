@@ -10,7 +10,7 @@ use crate::turnkey_activity::{
 use crate::types::backup_metadata::{Factor, FactorKind, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse, OidcToken};
-use crate::utils::webauthn::safe_deserialize_passkey_credential;
+use crate::utils::webauthn::TryFromValue;
 use crate::verify_signature::verify_signature;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -18,6 +18,7 @@ use base64::Engine;
 use chrono::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use webauthn_rs::prelude::PublicKeyCredential;
 
 /// Sanity check on what kind of activity is being signed alongside the backup service challenge.
 /// It should be an activity to create a new API key, because client uses it to a start a session
@@ -74,7 +75,7 @@ pub async fn handler(
                 return Err(ErrorResponse::bad_request("missing_turnkey_activity"));
             };
             // Parse credential per the WebAuthn spec
-            let user_provided_credential = safe_deserialize_passkey_credential(credential)?;
+            let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
 
             // Step 1A.2: Retrieve the potential backup using credential ID in the passkey.
             // At this point, the user has not verified that they correctly signed the challenge.

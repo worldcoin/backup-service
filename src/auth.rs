@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey};
+use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::OidcAccountKind;
-use crate::utils::webauthn::safe_deserialize_passkey_credential;
+use crate::utils::webauthn::TryFromValue;
 use crate::verify_signature::verify_signature;
 use crate::{
     backup_storage::BackupStorage,
@@ -91,7 +91,7 @@ impl AuthHandler {
                 })?;
 
                 // Step 4A.2: Deserialize the credential
-                let user_provided_credential = safe_deserialize_passkey_credential(credential)?;
+                let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
 
                 // Step 4A.3: Identify which user is referenced by the credential. Note that at
                 // this point, the credential is not verified yet.

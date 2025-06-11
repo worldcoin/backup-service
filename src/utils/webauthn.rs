@@ -2,32 +2,33 @@ use crate::types::ErrorResponse;
 use serde_json::Value;
 use webauthn_rs::prelude::PublicKeyCredential;
 
-/// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
-pub fn safe_deserialize_passkey_credential(
-    raw_credential: &Value,
-) -> Result<PublicKeyCredential, ErrorResponse> {
-    // https://w3c.github.io/webauthn/#prf-extension
-    // Check for PRF extension misuse
-    if raw_credential
-        .get("clientExtensionResults")
-        .and_then(|ext| ext.get("prf"))
-        .and_then(|prf| prf.get("results")) // this field must be removed by the clients and never sent to the server
-        .is_some()
-    {
-        tracing::info!(message = "PRF `results` are not allowed in clientExtensionResults");
-        return Err(ErrorResponse::bad_request(
-            "webauthn_prf_results_not_allowed",
-        ));
-    }
+pub trait TryFromValue: Sized {
+    fn try_from_value(value: &Value) -> Result<Self, ErrorResponse>;
+}
 
-    //  Deserialize credential
-    let user_provided_credential: PublicKeyCredential =
-        serde_json::from_value(raw_credential.clone()).map_err(|err| {
+impl TryFromValue for PublicKeyCredential {
+    /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
+    fn try_from_value(value: &Value) -> Result<Self, ErrorResponse> {
+        // https://w3c.github.io/webauthn/#prf-extension
+        // Check for PRF extension misuse
+        if value
+            .get("clientExtensionResults")
+            .and_then(|ext| ext.get("prf"))
+            .and_then(|prf| prf.get("results")) // this field must be removed by the clients and never sent to the server
+            .is_some()
+        {
+            tracing::info!(message = "PRF `results` are not allowed in clientExtensionResults");
+            return Err(ErrorResponse::bad_request(
+                "webauthn_prf_results_not_allowed",
+            ));
+        }
+
+        //  Deserialize credential
+        serde_json::from_value(value.clone()).map_err(|err| {
             tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
             ErrorResponse::bad_request("webauthn_error")
-        })?;
-
-    Ok(user_provided_credential)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -53,7 +54,7 @@ mod tests {
     #[test]
     fn test_valid_credential() {
         let raw = base_credential_json();
-        let result = safe_deserialize_passkey_credential(&raw);
+        let result = PublicKeyCredential::try_from_value(&raw);
         assert!(result.is_ok());
     }
 
@@ -65,14 +66,14 @@ mod tests {
             "enabled": true,
             "results": { "first": "something" }
         }});
-        let result = safe_deserialize_passkey_credential(&raw);
+        let result = PublicKeyCredential::try_from_value(&raw);
         assert!(matches!(result, Err(ErrorResponse { .. })));
     }
 
     #[test]
     fn test_invalid_json_should_fail() {
         let raw = json!({ "some": "invalid" });
-        let result = safe_deserialize_passkey_credential(&raw);
+        let result = PublicKeyCredential::try_from_value(&raw);
         assert!(matches!(result, Err(ErrorResponse { .. })));
     }
 }
