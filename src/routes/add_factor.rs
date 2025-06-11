@@ -10,8 +10,8 @@ use crate::turnkey_activity::{
 use crate::types::backup_metadata::{Factor, FactorKind, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse, OidcToken};
-use crate::utils::webauthn::TryFromValue;
 use crate::verify_signature::verify_signature;
+use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;

@@ -4,8 +4,8 @@ use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKe
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::OidcAccountKind;
-use crate::utils::webauthn::TryFromValue;
 use crate::verify_signature::verify_signature;
+use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
