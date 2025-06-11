@@ -15,7 +15,9 @@ pub fn safe_deserialize_passkey_credential(
         .is_some()
     {
         tracing::info!(message = "PRF `results` are not allowed in clientExtensionResults");
-        return Err(ErrorResponse::bad_request("webauthn_error"));
+        return Err(ErrorResponse::bad_request(
+            "webauthn_prf_results_not_allowed",
+        ));
     }
 
     //  Deserialize credential
