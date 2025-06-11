@@ -21,7 +21,6 @@ pub fn safe_deserialize_passkey_credential(
     //  Deserialize credential
     let user_provided_credential: PublicKeyCredential =
         serde_json::from_value(raw_credential.clone()).map_err(|err| {
-            println!("{:?}", err);
             tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
             ErrorResponse::bad_request("webauthn_error")
         })?;
