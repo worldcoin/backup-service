@@ -184,4 +184,11 @@ impl Environment {
             Self::Production | Self::Staging | Self::Development { .. } => "backup-service-cache",
         }
     }
+
+    pub const fn attestation_gateway_host(&self) -> &str {
+        match self {
+            Self::Production => "https://attestation.worldcoin.org",
+            Self::Staging | Self::Development { .. } => "https://attestation.worldcoin.dev",
+        }
+    }
 }

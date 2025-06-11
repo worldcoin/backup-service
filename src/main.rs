@@ -1,4 +1,5 @@
 use aws_sdk_s3::Client as S3Client;
+use backup_service::attestation_gateway::{AttestationGateway, AttestationGatewayConfig};
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
@@ -23,6 +24,10 @@ async fn main() -> anyhow::Result<()> {
     let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
         &environment.aws_config().await,
     ));
+    let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
+        base_url: environment.attestation_gateway_host().to_string(),
+        env: environment,
+    }));
 
     // Initialize challenge manager
     let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
@@ -59,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         oidc_token_verifier,
         dynamo_cache_manager,
         auth_handler,
+        attestation_gateway,
     )
     .await
 }
