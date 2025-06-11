@@ -1,3 +1,4 @@
+pub mod attestation_gateway;
 pub mod auth;
 pub mod axum_utils;
 pub mod backup_storage;
