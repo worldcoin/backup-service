@@ -261,7 +261,19 @@ impl From<TurnkeyActivityError> for ErrorResponse {
 
 impl From<AttestationGatewayError> for ErrorResponse {
     fn from(err: AttestationGatewayError) -> Self {
-        tracing::info!(message = "Attestation gateway error", error = ?err);
-        ErrorResponse::bad_request("invalid_attestation_token_header")
+        match &err {
+            AttestationGatewayError::FetchJwkSet(_)
+            | AttestationGatewayError::JwkSetIsNotObject
+            | AttestationGatewayError::ParseJwkSet(_)
+            | AttestationGatewayError::CreateVerifier(_)
+            | AttestationGatewayError::SerializeRequestPayload(_) => {
+                tracing::error!(message = "Attestation Gateway error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            _ => {
+                tracing::info!(message = "Invalid attestation token", error = ?err);
+                ErrorResponse::bad_request("invalid_attestation_token")
+            }
+        }
     }
 }
