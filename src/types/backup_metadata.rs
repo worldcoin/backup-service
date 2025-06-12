@@ -74,6 +74,9 @@ impl Factor {
                         OidcAccountKind::Google { email, .. } => ExportedOidcAccountKind::Google {
                             masked_email: mask_email(email).unwrap_or_default(),
                         },
+                        OidcAccountKind::Apple { email, .. } => ExportedOidcAccountKind::Apple {
+                            masked_email: mask_email(email).unwrap_or_default(),
+                        },
                     },
                     turnkey_provider_id: turnkey_provider_id.clone(),
                 },

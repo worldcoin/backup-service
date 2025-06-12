@@ -190,6 +190,10 @@ impl AuthHandler {
                         claims.issuer().to_string(),
                         claims.subject().to_string(),
                     ),
+                    crate::types::OidcToken::Apple { .. } => FactorToLookup::from_oidc_account(
+                        claims.issuer().to_string(),
+                        claims.subject().to_string(),
+                    ),
                 };
 
                 let not_verified_backup_id = self
@@ -232,6 +236,10 @@ impl AuthHandler {
                     {
                         match account {
                             OidcAccountKind::Google {
+                                sub,
+                                email: factor_email,
+                            } => sub == &claims.subject().to_string() && factor_email == &email,
+                            OidcAccountKind::Apple {
                                 sub,
                                 email: factor_email,
                             } => sub == &claims.subject().to_string() && factor_email == &email,
