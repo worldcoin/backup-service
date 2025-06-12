@@ -374,6 +374,10 @@ pub fn sort_json(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Extension trait for extracting the attestation token from HTTP headers.
+///
+/// Provides a convenience method to retrieve and validate the attestation gateway token
+/// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
     fn attestation_token(&self) -> Result<&str, ErrorResponse>;
 }
@@ -397,6 +401,22 @@ impl AttestationHeaderExt for HeaderMap {
     }
 }
 
+/// Middleware that validates attestation tokens using the `AttestationGateway`.
+///
+/// This middleware extracts the attestation token from the request headers and
+/// verifies it against the attestation gateway. It computes the request hash
+/// based on the request path, method, and JSON body, and ensures the token's
+/// `jti` claim matches the computed hash.
+///
+/// # Behavior
+/// - Rejects the request with an appropriate `ErrorResponse` if:
+///   - The token is missing or malformed
+///   - The token fails verification (e.g., expired, invalid signature, wrong audience, etc.)
+///   - The request hash does not match the token's `jti`
+/// - If the token is valid, the request is forwarded to the next middleware or handler.
+///
+/// # Errors
+/// Returns `ErrorResponse::unauthorized` or `ErrorResponse::bad_request` depending on the failure mode.
 pub async fn attestation_validation(
     Extension(gateway): Extension<Arc<AttestationGateway>>,
     req: Request<Body>,
