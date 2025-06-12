@@ -1,3 +1,4 @@
+use crate::attestation_gateway::AttestationGateway;
 use crate::challenge_manager::ChallengeManager;
 use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::FactorLookup;
@@ -22,6 +23,7 @@ pub async fn start(
     oidc_token_verifier: Arc<OidcTokenVerifier>,
     dynamo_cache_manager: Arc<DynamoCacheManager>,
     auth_handler: AuthHandler,
+    attestation_gateway: Arc<AttestationGateway>,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -42,6 +44,7 @@ pub async fn start(
         .layer(Extension(oidc_token_verifier))
         .layer(Extension(dynamo_cache_manager))
         .layer(Extension(auth_handler))
+        .layer(Extension(attestation_gateway))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(
             tower_http::trace::TraceLayer::new_for_http()

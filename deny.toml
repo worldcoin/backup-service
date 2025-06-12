@@ -8,7 +8,7 @@ unknown-registry = "deny"
 [advisories]
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "transitive unmaintained dependency through webauthn-rs, https://github.com/kanidm/webauthn-rs/issues/480" },
-    { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed."}
+    { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed." },
 ]
 
 [licenses]
@@ -35,6 +35,7 @@ allow = [
     "Unicode-DFS-2016",
     "Unlicense",
     "Zlib",
+    "CDLA-Permissive-2.0",
 ]
 
 # See https://github.com/briansmith/ring/blob/95948b3977013aed16db92ae32e6b8384496a740/deny.toml#L12

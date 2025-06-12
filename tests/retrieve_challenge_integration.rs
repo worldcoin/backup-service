@@ -1,13 +1,19 @@
 mod common;
 
-use crate::common::send_post_request;
-use axum::http::StatusCode;
+use crate::common::{
+    get_test_router, send_post_request, send_post_request_with_bypass_attestation_token,
+};
+use axum::{extract::Request, http::StatusCode};
+use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
 use http_body_util::BodyExt;
 use serde_json::json;
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_challenge_passkey() {
-    let response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -43,7 +49,9 @@ async fn test_retrieve_challenge_passkey() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_keypair() {
-    let response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -58,4 +66,76 @@ async fn test_retrieve_challenge_keypair() {
     // Check that token is present
     assert!(response["token"].is_string());
     assert!(response["token"].as_str().unwrap().len() > 10);
+}
+
+#[tokio::test]
+async fn test_retrieve_challenge_without_attestation() {
+    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+
+    for endpoint in endpoints {
+        let response = send_post_request(endpoint, json!({})).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Expected BAD_REQUEST from {}",
+            endpoint
+        );
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            response["error"]["code"], "missing_attestation_token_header",
+            "error.code mismatch on {}",
+            endpoint
+        );
+        assert_eq!(
+            response["error"]["message"], "missing_attestation_token_header",
+            "error.message mismatch on {}",
+            endpoint
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_retrieve_challenge_with_incorrect_attestation() {
+    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+
+    for endpoint in endpoints {
+        let app = get_test_router(None).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(endpoint)
+                    .method("POST")
+                    .header("Content-Type", "application/json")
+                    .header(ATTESTATION_GATEWAY_HEADER, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30")
+                    .body(json!({}).to_string())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Expected BAD_REQUEST from {}",
+            endpoint
+        );
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            response["error"]["code"], "invalid_attestation_token",
+            "error.code mismatch on {}",
+            endpoint
+        );
+        assert_eq!(
+            response["error"]["message"], "invalid_attestation_token",
+            "error.message mismatch on {}",
+            endpoint
+        );
+    }
 }
