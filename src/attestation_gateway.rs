@@ -424,19 +424,23 @@ pub async fn attestation_validation(
 ) -> Result<Response<Body>, ErrorResponse> {
     let (parts, body) = req.into_parts();
 
-    let bytes = to_bytes(body, 1_048_576) // 1MB limit
+    let body_bytes = to_bytes(body, 1_048_576) // 1MB limit
         .await
-        .map_err(|_| ErrorResponse::bad_request("Could not read request body"))?;
+        .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
 
-    let body_str = String::from_utf8(bytes.to_vec())
-        .map_err(|_| ErrorResponse::bad_request("Request body is not valid UTF-8"))?;
+    let body_str = String::from_utf8(body_bytes.to_vec())
+        .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
 
     let attestation_token = parts.headers.attestation_token()?;
 
     let hash_input = GenerateRequestHashInput {
         path_uri: parts.uri.path().to_string(),
         method: parts.method.to_string(),
-        body: Some(body_str),
+        body: if body_bytes.is_empty() {
+            None
+        } else {
+            Some(body_str)
+        },
         public_key_id: None,
         client_build: None,
         client_name: None,
@@ -445,7 +449,7 @@ pub async fn attestation_validation(
         .validate_token(attestation_token.to_string(), &hash_input)
         .await?;
 
-    let req = Request::from_parts(parts, Body::from(bytes));
+    let req = Request::from_parts(parts, Body::from(body_bytes));
     Ok(next.run(req).await)
 }
 
