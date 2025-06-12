@@ -1,13 +1,15 @@
 mod common;
 
-use crate::common::send_post_request;
+use crate::common::send_post_request_with_bypass_attestation_token;
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
 async fn test_retrieve_challenge_passkey() {
-    let response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -43,7 +45,9 @@ async fn test_retrieve_challenge_passkey() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_keypair() {
-    let response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
+            .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 

@@ -105,11 +105,6 @@ pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Respo
             .uri(route)
             .method("POST")
             .header("Content-Type", "application/json")
-            .header(
-                ATTESTATION_GATEWAY_HEADER,
-                std::env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN")
-                    .expect("ATTESTATION_GATEWAY_BYPASS_TOKEN must be set"),
-            )
             .body(payload.to_string())
             .unwrap(),
     )
@@ -316,7 +311,9 @@ pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
 
 /// Get a passkey retrieval challenge response from the server.
 pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let challenge_response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
+            .await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -328,7 +325,9 @@ pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
 
 /// Get a keypair retrieval challenge response from the server.
 pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let challenge_response =
+        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
+            .await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
