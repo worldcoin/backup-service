@@ -1,4 +1,4 @@
-use axum::http::{HeaderMap, Method};
+use axum::http::HeaderMap;
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -397,6 +397,7 @@ impl AttestationHeaderExt for HeaderMap {
 mod tests {
     use super::*;
     use dotenvy::dotenv;
+    use http::Method;
     use josekit::{
         jwk::{
             alg::ec::{EcCurve, EcKeyPair},
