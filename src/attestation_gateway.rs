@@ -437,6 +437,7 @@ impl AttestationHeaderExt for HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use dotenvy::dotenv;
     use http::Method;
     use josekit::{
@@ -514,13 +515,54 @@ mod tests {
         });
     }
 
+    // testing the hash function by using the test payload and result hash from the nfc uniqueness service tests, assuming those have been proven correct already
     #[test]
     fn test_compute_request_hash() {
-        let hash =
-            AttestationGateway::compute_request_hash(&test_generate_request_hash_input()).unwrap();
+        #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+        #[serde(rename_all = "lowercase")]
+        enum DocumentType {
+            Passport,
+            Eid,
+            Mnc,
+        }
+        #[derive(Debug, Deserialize, Serialize, Clone)]
+        #[serde(rename_all = "camelCase")]
+        struct RegisterPayload {
+            sod: String,
+            session_key: Option<String>,
+            command_responses: Option<Vec<String>>,
+            batch_index: Option<u8>,
+            signed_nonce: Option<String>,
+            document_type: Option<DocumentType>,
+            expiry_date: NaiveDate,
+            identity_commitment: String,
+            timestamp: i64,
+            risk_meta: Map<String, Value>,
+        }
+        let payload = RegisterPayload {
+            sod: String::new(),
+            session_key: Some(String::new()),
+            command_responses: Some(vec![]),
+            signed_nonce: None,
+            batch_index: Some(0),
+            expiry_date: NaiveDate::default(),
+            identity_commitment: String::new(),
+            timestamp: 0,
+            risk_meta: serde_json::Map::new(),
+            document_type: None,
+        };
+        let v1_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
+            path_uri: "/v1/register".to_string(),
+            method: Method::POST.to_string(),
+            body: Some(serde_json::to_string(&payload).unwrap()),
+            public_key_id: None,
+            client_build: None,
+            client_name: None,
+        })
+        .unwrap();
         assert_eq!(
-            hash,
-            "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82"
+            v1_hash,
+            "d1de628336fe9198b1f5ea2469512050c340abd0230ed9cf540eb0406da0bfb2"
         );
     }
 
