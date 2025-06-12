@@ -5,7 +5,7 @@ mod environment;
 mod error;
 mod oidc_token;
 
-pub use authorization::Authorization;
+pub use authorization::{Authorization, ATTESTATION_GATEWAY_HEADER};
 pub use environment::Environment;
 pub use error::ErrorResponse;
 pub use oidc_token::OidcToken;

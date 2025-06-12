@@ -2,6 +2,8 @@ use crate::{challenge_manager::ChallengeType, types::OidcToken};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-gateway-token";
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum Authorization {

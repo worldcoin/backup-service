@@ -1,3 +1,4 @@
+use crate::attestation_gateway::AttestationGatewayError;
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::dynamo_cache::DynamoCacheError;
@@ -255,5 +256,12 @@ impl From<TurnkeyActivityError> for ErrorResponse {
     fn from(err: TurnkeyActivityError) -> Self {
         tracing::info!(message = "Turnkey activity error", error = ?err);
         ErrorResponse::bad_request("webauthn_error")
+    }
+}
+
+impl From<AttestationGatewayError> for ErrorResponse {
+    fn from(err: AttestationGatewayError) -> Self {
+        tracing::info!(message = "Attestation gateway error", error = ?err);
+        ErrorResponse::bad_request("invalid_attestation_token_header")
     }
 }
