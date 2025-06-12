@@ -1,4 +1,10 @@
-use axum::http::HeaderMap;
+use crate::types::{Environment, ErrorResponse, ATTESTATION_GATEWAY_HEADER};
+use axum::{
+    body::{to_bytes, Body},
+    http::{HeaderMap, Request, Response},
+    middleware::Next,
+    Extension,
+};
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,8 +15,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{sync::RwLock, time::Instant};
-
-use crate::types::{Environment, ErrorResponse, ATTESTATION_GATEWAY_HEADER};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
@@ -391,6 +395,38 @@ impl AttestationHeaderExt for HeaderMap {
 
         Ok(value)
     }
+}
+
+pub async fn attestation_validation(
+    Extension(gateway): Extension<Arc<AttestationGateway>>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response<Body>, ErrorResponse> {
+    let (parts, body) = req.into_parts();
+
+    let bytes = to_bytes(body, 1_048_576) // 1MB limit
+        .await
+        .map_err(|_| ErrorResponse::bad_request("Could not read request body"))?;
+
+    let body_str = String::from_utf8(bytes.to_vec())
+        .map_err(|_| ErrorResponse::bad_request("Request body is not valid UTF-8"))?;
+
+    let attestation_token = parts.headers.attestation_token()?;
+
+    let hash_input = GenerateRequestHashInput {
+        path_uri: parts.uri.path().to_string(),
+        method: parts.method.to_string(),
+        body: Some(body_str),
+        public_key_id: None,
+        client_build: None,
+        client_name: None,
+    };
+    gateway
+        .validate_token(attestation_token.to_string(), &hash_input)
+        .await?;
+
+    let req = Request::from_parts(parts, Body::from(bytes));
+    Ok(next.run(req).await)
 }
 
 #[cfg(test)]

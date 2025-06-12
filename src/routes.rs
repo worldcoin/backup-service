@@ -1,15 +1,18 @@
-use crate::routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest;
 use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
 use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
 use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
 use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
 use crate::types::Environment;
+use crate::{
+    attestation_gateway::attestation_validation,
+    routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest,
+};
 use aide::axum::{
     routing::{get, post},
     ApiRouter,
 };
-use axum::extract::DefaultBodyLimit;
+use axum::{extract::DefaultBodyLimit, middleware};
 
 mod add_factor;
 mod add_factor_challenge;
@@ -55,11 +58,13 @@ pub fn handler(environment: Environment) -> ApiRouter {
         // Recovery
         .api_route(
             "/retrieve/challenge/passkey",
-            post(retrieve_challenge_passkey::handler),
+            post(retrieve_challenge_passkey::handler)
+                .route_layer(middleware::from_fn(attestation_validation)),
         )
         .api_route(
             "/retrieve/challenge/keypair",
-            post(keypair_challenge::handler_with_attestation::<RetrieveChallengeKeypairRequest>),
+            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>)
+                .route_layer(middleware::from_fn(attestation_validation)),
         )
         .api_route(
             "/retrieve/from-challenge",
