@@ -7,12 +7,14 @@ use axum::body::{Body, Bytes};
 use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
-use backup_service::attestation_gateway::{AttestationGateway, AttestationGatewayConfig};
+use backup_service::attestation_gateway::{
+    AttestationGateway, AttestationGatewayConfig, ATTESTATION_GATEWAY_HEADER,
+};
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
-use backup_service::types::{Environment, ATTESTATION_GATEWAY_HEADER};
+use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;

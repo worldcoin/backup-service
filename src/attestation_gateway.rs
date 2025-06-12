@@ -1,4 +1,4 @@
-use crate::types::{Environment, ErrorResponse, ATTESTATION_GATEWAY_HEADER};
+use crate::types::{Environment, ErrorResponse};
 use axum::{
     body::{to_bytes, Body},
     http::{HeaderMap, Request, Response},
@@ -18,6 +18,7 @@ use tokio::{sync::RwLock, time::Instant};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
+pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-gateway-token";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationGatewayError {
@@ -97,9 +98,6 @@ impl AttestationGateway {
     /// Initializes `AttestationGateway`
     /// # Panics
     /// Will panic if a bypass token is provided in production environment
-    ///
-    /// # Errors
-    /// Will return an error if parsing the JWK set fails
     pub fn new(config: AttestationGatewayConfig) -> Self {
         let bypass_token = env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN").ok();
         assert!(
@@ -124,10 +122,10 @@ impl AttestationGateway {
     ///
     /// # Errors
     /// Will return an error if fetching JWK set fails or parsing it fails
-    async fn _get_jwk_set(&self, base_url: &str) -> Result<Arc<JwkSet>, AttestationGatewayError> {
+    async fn _get_jwk_set(&self) -> Result<Arc<JwkSet>, AttestationGatewayError> {
         let response = self
             .reqwest_client
-            .get(Self::jwks_url(base_url))
+            .get(Self::jwks_url(&self.base_url))
             .header("User-Agent", "backup-service")
             .send()
             .await
@@ -161,9 +159,7 @@ impl AttestationGateway {
             if let Some(updated_at) = cache.updated_at {
                 let age = updated_at.elapsed();
                 if age < TTL {
-                    let keys = cache.known_keys.clone();
-                    let stale = age >= STALE_AFTER;
-                    (Some(keys), stale)
+                    (Some(cache.known_keys.clone()), age >= STALE_AFTER)
                 } else {
                     (None, false)
                 }
@@ -176,25 +172,21 @@ impl AttestationGateway {
         if let Some(keys) = keys {
             if should_refresh {
                 let this = self.clone();
-                let base_url = self.base_url.clone();
                 tokio::spawn(async move {
-                    let _ = this._get_jwk_set(&base_url).await;
+                    let _ = this._get_jwk_set().await;
                 });
             }
             return Ok(keys);
         }
 
         // Fetch fresh
-        self._get_jwk_set(&self.base_url).await
+        self._get_jwk_set().await
     }
 
-    /// Computes the expected request hash from the incoming register payload that should match the `jti` claim in the attestation gateway token
+    /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation gateway token
     ///
     /// # Errors
     /// Will return an error if serializing the payload or computing the hash fails
-    ///
-    /// # Panics
-    /// If something goes very wrong with the payload serialization (payload should already be validated at this point)
     fn compute_request_hash(
         input: &GenerateRequestHashInput,
     ) -> Result<String, AttestationGatewayError> {
@@ -229,7 +221,7 @@ impl AttestationGateway {
         Ok(hex::encode(hasher.finalize()))
     }
 
-    /// Validates an attestation gateway token fully
+    /// Validates an attestation gateway token
     ///
     /// # Errors
     /// Will return an error if the token is invalid
@@ -246,7 +238,7 @@ impl AttestationGateway {
             }
         }
 
-        // decode header to find which key to use
+        // decode jwt header to find which key to use
         let header = jwt::decode_header(&token).map_err(AttestationGatewayError::DecodeHeader)?;
         let key_id = header
             .claim("kid")
@@ -351,7 +343,7 @@ impl AttestationGateway {
     /// - If the token is valid, the request is forwarded to the next middleware or handler.
     ///
     /// # Errors
-    /// Returns `ErrorResponse::unauthorized` or `ErrorResponse::bad_request` depending on the failure mode.
+    /// Returns `ErrorResponse::unauthorized` (TODO) or `ErrorResponse::bad_request` depending on the failure mode.
     pub async fn validator(
         Extension(gateway): Extension<Arc<Self>>,
         req: Request<Body>,
@@ -719,7 +711,7 @@ mod tests {
             .await;
 
         // Refresh JWKS explicitly
-        let _ = gateway._get_jwk_set(&gateway.base_url).await.unwrap();
+        let _ = gateway._get_jwk_set().await.unwrap();
 
         // Try to validate token with new key from mock server
         let test_token = generate_test_token(
