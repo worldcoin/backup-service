@@ -359,7 +359,7 @@ impl AttestationGateway {
     ) -> Result<Response<Body>, ErrorResponse> {
         let (parts, body) = req.into_parts();
 
-        let body_bytes = to_bytes(body, 1_048_576) // 1MB limit
+        let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
             .await
             .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
 
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[should_panic(
-        expected = "ttestation gateway bypass token cannot be used in production environment"
+        expected = "attestation gateway bypass token cannot be used in production environment"
     )]
     #[tokio::test]
     async fn test_bypass_token_is_not_valid_in_production() {
