@@ -6,4 +6,6 @@ use serde::{Deserialize, Serialize};
 pub enum OidcToken {
     #[serde(rename_all = "camelCase")]
     Google { token: String },
+    #[serde(rename_all = "camelCase")]
+    Apple { token: String },
 }

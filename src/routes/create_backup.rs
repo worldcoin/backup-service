@@ -156,20 +156,23 @@ pub async fn handler(
                 .await?;
 
             // Step 2B.5: Create a factor and factor lookup
+            let email = claims
+                .email()
+                .ok_or_else(|| {
+                    tracing::info!(message = "Missing email in OIDC token");
+                    ErrorResponse::bad_request("missing_email")
+                })?
+                .to_string();
+
             let oidc_account = match &oidc_token {
-                OidcToken::Google { .. } => {
-                    let email = claims
-                        .email()
-                        .ok_or_else(|| {
-                            tracing::info!(message = "Missing email in OIDC token");
-                            ErrorResponse::bad_request("missing_email")
-                        })?
-                        .to_string();
-                    OidcAccountKind::Google {
-                        sub: claims.subject().to_string(),
-                        email,
-                    }
-                }
+                OidcToken::Google { .. } => OidcAccountKind::Google {
+                    sub: claims.subject().to_string(),
+                    email,
+                },
+                OidcToken::Apple { .. } => OidcAccountKind::Apple {
+                    sub: claims.subject().to_string(),
+                    email,
+                },
             };
             (
                 Factor::new_oidc_account(oidc_account, turnkey_provider_id),

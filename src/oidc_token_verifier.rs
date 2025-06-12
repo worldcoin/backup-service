@@ -105,6 +105,12 @@ impl OidcTokenVerifier {
                 self.environment.google_client_id(),
                 self.environment.google_issuer_url(),
             ),
+            OidcToken::Apple { token } => (
+                token,
+                self.environment.apple_jwk_set_url(),
+                self.environment.apple_client_id(),
+                self.environment.apple_issuer_url(),
+            ),
         };
 
         // Load the public keys from the OIDC provider

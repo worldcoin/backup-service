@@ -155,6 +155,8 @@ pub struct OidcAccount {
 pub enum OidcAccountKind {
     #[serde(rename_all = "camelCase")]
     Google { sub: String, email: String },
+    #[serde(rename_all = "camelCase")]
+    Apple { sub: String, email: String },
 }
 
 /// The part of metadata of the backup that's exported to the client when performing the recovery.
@@ -213,4 +215,6 @@ pub enum ExportedFactorKind {
 pub enum ExportedOidcAccountKind {
     #[serde(rename_all = "camelCase")]
     Google { masked_email: String },
+    #[serde(rename_all = "camelCase")]
+    Apple { masked_email: String },
 }
