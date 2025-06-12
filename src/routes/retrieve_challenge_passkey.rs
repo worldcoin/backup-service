@@ -5,7 +5,7 @@ use crate::attestation_gateway::{
 };
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
-use axum::http::{HeaderMap, Uri};
+use axum::http::{HeaderMap, Method, Uri};
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -25,6 +25,7 @@ pub async fn handler(
     Extension(attestation_gateway): Extension<Arc<AttestationGateway>>,
     headers: HeaderMap,
     uri: Uri,
+    method: Method,
 ) -> Result<Json<RetrieveChallengePasskeyResponse>, ErrorResponse> {
     // Step 0: verify the attestation token
     attestation_gateway
@@ -32,11 +33,11 @@ pub async fn handler(
             headers.attestation_token()?.to_string(),
             &GenerateRequestHashInput {
                 path_uri: uri.path().to_string(),
-                method: AllowedHttpMethod::POST,
+                method: method.to_string(),
                 body: None,
                 public_key_id: None,
                 client_build: None, //TODO mobile does not seem to include those for the nfc uniqueness service?
-                client_name: None,
+                client_name: None, //TODO mobile does not seem to include those for the nfc uniqueness service?
             },
         )
         .await?;

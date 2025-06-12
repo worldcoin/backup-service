@@ -1,4 +1,4 @@
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method};
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -79,7 +79,7 @@ pub enum ClientName {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GenerateRequestHashInput {
     pub path_uri: String,
-    pub method: AllowedHttpMethod,
+    pub method: String,
     pub body: Option<String>,
     pub public_key_id: Option<String>,
     pub client_name: Option<ClientName>,
@@ -412,7 +412,7 @@ mod tests {
     fn test_generate_request_hash_input() -> GenerateRequestHashInput {
         return GenerateRequestHashInput {
             path_uri: "retrieve/challenge/passkey".to_string(),
-            method: AllowedHttpMethod::POST,
+            method: Method::POST.to_string(),
             body: None,
             public_key_id: None,
             client_build: None,
