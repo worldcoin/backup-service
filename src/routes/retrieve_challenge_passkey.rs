@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::attestation_gateway::{
-    AllowedHttpMethod, AttestationGateway, AttestationHeaderExt, GenerateRequestHashInput,
+    AttestationGateway, AttestationHeaderExt, GenerateRequestHashInput,
 };
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};

@@ -59,7 +59,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/retrieve/challenge/keypair",
-            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
+            post(keypair_challenge::handler_with_attestation::<RetrieveChallengeKeypairRequest>),
         )
         .api_route(
             "/retrieve/from-challenge",
