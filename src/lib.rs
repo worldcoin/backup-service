@@ -13,6 +13,7 @@ pub mod server;
 pub mod turnkey_activity;
 pub mod types;
 pub mod verify_signature;
+pub mod webauthn;
 
 pub use routes::handler;
 
