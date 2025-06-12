@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
+use crate::attestation_gateway::{
+    AllowedHttpMethod, AttestationGateway, AttestationHeaderExt, GenerateRequestHashInput,
+};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
+use axum::http::{HeaderMap, Uri};
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -18,7 +22,25 @@ pub struct RetrieveChallengePasskeyResponse {
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
+    Extension(attestation_gateway): Extension<Arc<AttestationGateway>>,
+    headers: HeaderMap,
+    uri: Uri,
 ) -> Result<Json<RetrieveChallengePasskeyResponse>, ErrorResponse> {
+    // Step 0: verify the attestation token
+    attestation_gateway
+        .validate_token(
+            headers.attestation_token()?.to_string(),
+            &GenerateRequestHashInput {
+                path_uri: uri.path().to_string(),
+                method: AllowedHttpMethod::POST,
+                body: None,
+                public_key_id: None,
+                client_build: None, //TODO mobile does not seem to include those for the nfc uniqueness service?
+                client_name: None,
+            },
+        )
+        .await?;
+
     // Step 1: Create a new challenge using WebAuthn implementation
     let (challenge, authentication) = environment
         .webauthn_config()

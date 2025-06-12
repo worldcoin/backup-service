@@ -1,3 +1,4 @@
+use axum::http::HeaderMap;
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,7 +10,7 @@ use std::{
 };
 use tokio::{sync::RwLock, time::Instant};
 
-use crate::types::Environment;
+use crate::types::{Environment, ErrorResponse, ATTESTATION_GATEWAY_HEADER};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
@@ -366,6 +367,29 @@ pub fn sort_json(value: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(vec.iter().map(sort_json).collect())
         }
         _ => value.clone(),
+    }
+}
+
+pub trait AttestationHeaderExt {
+    fn attestation_token(&self) -> Result<&str, ErrorResponse>;
+}
+
+impl AttestationHeaderExt for HeaderMap {
+    fn attestation_token(&self) -> Result<&str, ErrorResponse> {
+        let value = self
+            .get(ATTESTATION_GATEWAY_HEADER)
+            .ok_or_else(|| ErrorResponse::bad_request("missing_attestation_token_header"))?
+            .to_str()
+            .map_err(|_| ErrorResponse::bad_request("invalid_attestation_token_header"))?;
+
+        if value.is_empty() {
+            tracing::warn!("Attestation gateway token is empty");
+            return Err(ErrorResponse::bad_request(
+                "invalid_attestation_token_header",
+            ));
+        }
+
+        Ok(value)
     }
 }
 
