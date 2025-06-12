@@ -85,6 +85,7 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
     let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
         base_url: environment.attestation_gateway_host().to_string(),
         env: environment,
+        enabled: true,
     }));
 
     backup_service::handler(environment)

@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
         base_url: environment.attestation_gateway_host().to_string(),
         env: environment,
+        enabled: environment.enable_attestation_gateway(),
     }));
 
     // Initialize challenge manager

@@ -65,6 +65,7 @@ pub struct AttestationGateway {
     cached_keys: Arc<RwLock<CachedJwks>>,
     bypass_token: Option<String>,
     reqwest_client: reqwest::Client,
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +88,7 @@ pub struct GenerateRequestHashInput {
 pub struct AttestationGatewayConfig {
     pub base_url: String,
     pub env: Environment,
+    pub enabled: bool,
 }
 
 impl AttestationGateway {
@@ -115,6 +117,7 @@ impl AttestationGateway {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token,
+            enabled: config.enabled,
         }
     }
 
@@ -349,6 +352,10 @@ impl AttestationGateway {
         req: Request<Body>,
         next: Next,
     ) -> Result<Response<Body>, ErrorResponse> {
+        if !gateway.enabled {
+            return Ok(next.run(req).await);
+        }
+
         let (parts, body) = req.into_parts();
 
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
@@ -512,6 +519,7 @@ mod tests {
         let _ = AttestationGateway::new(AttestationGatewayConfig {
             base_url: "http://localhost:8000".to_string(),
             env: Environment::Production,
+            enabled: true,
         });
     }
 
@@ -589,6 +597,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
+            enabled: true,
         };
         let test_token = generate_test_token(
             &key_pair,
@@ -634,6 +643,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
+            enabled: true,
         };
 
         // Generate token with key 2
@@ -720,6 +730,7 @@ mod tests {
             env: Environment::Development {
                 jwk_set_url_port_override: None,
             },
+            enabled: true,
         });
 
         // Try to validate token with key from mock server
@@ -811,6 +822,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
+            enabled: true,
         };
 
         let test_token = generate_test_token(

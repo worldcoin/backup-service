@@ -191,4 +191,11 @@ impl Environment {
             Self::Staging | Self::Development { .. } => "https://attestation.worldcoin.dev",
         }
     }
+
+    pub fn enable_attestation_gateway(&self) -> bool {
+        match env::var("ENABLE_ATTESTATION_GATEWAY") {
+            Ok(val) => val.trim().eq_ignore_ascii_case("true"),
+            Err(_) => false,
+        }
+    }
 }
