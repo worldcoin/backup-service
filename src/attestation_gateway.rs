@@ -67,13 +67,6 @@ pub struct AttestationGateway {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum AllowedHttpMethod {
-    GET,
-    POST,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ClientName {
     IOS,
@@ -97,7 +90,7 @@ pub struct AttestationGatewayConfig {
 
 impl AttestationGateway {
     #[must_use]
-    pub fn jwks_url(base_url: &str) -> String {
+    fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }
 
@@ -131,10 +124,7 @@ impl AttestationGateway {
     ///
     /// # Errors
     /// Will return an error if fetching JWK set fails or parsing it fails
-    pub async fn _get_jwk_set(
-        &self,
-        base_url: &str,
-    ) -> Result<Arc<JwkSet>, AttestationGatewayError> {
+    async fn _get_jwk_set(&self, base_url: &str) -> Result<Arc<JwkSet>, AttestationGatewayError> {
         let response = self
             .reqwest_client
             .get(Self::jwks_url(base_url))
@@ -205,7 +195,7 @@ impl AttestationGateway {
     ///
     /// # Panics
     /// If something goes very wrong with the payload serialization (payload should already be validated at this point)
-    pub fn compute_request_hash(
+    fn compute_request_hash(
         input: &GenerateRequestHashInput,
     ) -> Result<String, AttestationGatewayError> {
         let mut map = serde_json::Map::new();
@@ -345,13 +335,64 @@ impl AttestationGateway {
 
         Ok(())
     }
+
+    /// Middleware that validates attestation tokens using the `AttestationGateway`.
+    ///
+    /// This middleware extracts the attestation token from the request headers and
+    /// verifies it against the attestation gateway. It computes the request hash
+    /// based on the request path, method, and JSON body, and ensures the token's
+    /// `jti` claim matches the computed hash.
+    ///
+    /// # Behavior
+    /// - Rejects the request with an appropriate `ErrorResponse` if:
+    ///   - The token is missing or malformed
+    ///   - The token fails verification (e.g., expired, invalid signature, wrong audience, etc.)
+    ///   - The request hash does not match the token's `jti`
+    /// - If the token is valid, the request is forwarded to the next middleware or handler.
+    ///
+    /// # Errors
+    /// Returns `ErrorResponse::unauthorized` or `ErrorResponse::bad_request` depending on the failure mode.
+    pub async fn validator(
+        Extension(gateway): Extension<Arc<Self>>,
+        req: Request<Body>,
+        next: Next,
+    ) -> Result<Response<Body>, ErrorResponse> {
+        let (parts, body) = req.into_parts();
+
+        let body_bytes = to_bytes(body, 1_048_576) // 1MB limit
+            .await
+            .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
+
+        let body_str = String::from_utf8(body_bytes.to_vec())
+            .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
+
+        let attestation_token = parts.headers.attestation_token()?;
+
+        let hash_input = GenerateRequestHashInput {
+            path_uri: parts.uri.path().to_string(),
+            method: parts.method.to_string(),
+            body: if body_bytes.is_empty() {
+                None
+            } else {
+                Some(body_str)
+            },
+            public_key_id: None,
+            client_build: None,
+            client_name: None,
+        };
+        gateway
+            .validate_token(attestation_token.to_string(), &hash_input)
+            .await?;
+
+        let req = Request::from_parts(parts, Body::from(body_bytes));
+        Ok(next.run(req).await)
+    }
 }
 
 /// Helper function to recursively sort JSON objects by their keys
 /// Lifted from Oxide's `AttestRequestHasher`
-/// Public so it can be used in integration tests
 #[must_use]
-pub fn sort_json(value: &serde_json::Value) -> serde_json::Value {
+fn sort_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut sorted_map = serde_json::Map::new();
@@ -399,58 +440,6 @@ impl AttestationHeaderExt for HeaderMap {
 
         Ok(value)
     }
-}
-
-/// Middleware that validates attestation tokens using the `AttestationGateway`.
-///
-/// This middleware extracts the attestation token from the request headers and
-/// verifies it against the attestation gateway. It computes the request hash
-/// based on the request path, method, and JSON body, and ensures the token's
-/// `jti` claim matches the computed hash.
-///
-/// # Behavior
-/// - Rejects the request with an appropriate `ErrorResponse` if:
-///   - The token is missing or malformed
-///   - The token fails verification (e.g., expired, invalid signature, wrong audience, etc.)
-///   - The request hash does not match the token's `jti`
-/// - If the token is valid, the request is forwarded to the next middleware or handler.
-///
-/// # Errors
-/// Returns `ErrorResponse::unauthorized` or `ErrorResponse::bad_request` depending on the failure mode.
-pub async fn attestation_validation(
-    Extension(gateway): Extension<Arc<AttestationGateway>>,
-    req: Request<Body>,
-    next: Next,
-) -> Result<Response<Body>, ErrorResponse> {
-    let (parts, body) = req.into_parts();
-
-    let body_bytes = to_bytes(body, 1_048_576) // 1MB limit
-        .await
-        .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
-
-    let body_str = String::from_utf8(body_bytes.to_vec())
-        .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
-
-    let attestation_token = parts.headers.attestation_token()?;
-
-    let hash_input = GenerateRequestHashInput {
-        path_uri: parts.uri.path().to_string(),
-        method: parts.method.to_string(),
-        body: if body_bytes.is_empty() {
-            None
-        } else {
-            Some(body_str)
-        },
-        public_key_id: None,
-        client_build: None,
-        client_name: None,
-    };
-    gateway
-        .validate_token(attestation_token.to_string(), &hash_input)
-        .await?;
-
-    let req = Request::from_parts(parts, Body::from(body_bytes));
-    Ok(next.run(req).await)
 }
 
 #[cfg(test)]

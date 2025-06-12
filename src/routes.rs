@@ -5,7 +5,7 @@ use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChalleng
 use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
 use crate::types::Environment;
 use crate::{
-    attestation_gateway::attestation_validation,
+    attestation_gateway::AttestationGateway,
     routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest,
 };
 use aide::axum::{
@@ -59,12 +59,12 @@ pub fn handler(environment: Environment) -> ApiRouter {
         .api_route(
             "/retrieve/challenge/passkey",
             post(retrieve_challenge_passkey::handler)
-                .route_layer(middleware::from_fn(attestation_validation)),
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         .api_route(
             "/retrieve/challenge/keypair",
             post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>)
-                .route_layer(middleware::from_fn(attestation_validation)),
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         .api_route(
             "/retrieve/from-challenge",
