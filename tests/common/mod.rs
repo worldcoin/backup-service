@@ -14,7 +14,7 @@ use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
-use backup_service::types::Environment;
+use backup_service::types::{Environment, OidcProvider};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -513,6 +513,7 @@ pub async fn create_test_backup_with_oidc_account(
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(
         environment,
+        OidcProvider::Google,
         Some(SubjectIdentifier::new(subject.to_string())),
         &public_key,
     );
