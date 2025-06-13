@@ -183,7 +183,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -218,7 +218,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -256,7 +256,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -295,7 +295,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -334,7 +334,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -373,7 +373,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -419,7 +419,7 @@ mod tests {
         let incorrect_public_key =
             STANDARD.encode(incorrect_secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment.clone());
+        let verifier = OidcTokenVerifier::new(environment);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
