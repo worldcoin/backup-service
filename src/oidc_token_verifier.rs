@@ -5,7 +5,6 @@ use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
 use openidconnect::{reqwest, JsonWebKeySetUrl};
 use openidconnect::{EmptyAdditionalClaims, IdTokenClaims};
-
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
