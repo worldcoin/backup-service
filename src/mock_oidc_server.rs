@@ -7,7 +7,7 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
@@ -73,6 +73,18 @@ impl MockOidcServer {
         self.server.socket_address().port() as usize
     }
 
+    /// Get OIDC provider configuration (issuer URL and client ID) based on the provider type
+    fn oidc_provider_config(
+        &self,
+        env: Environment,
+        provider: OidcProvider,
+    ) -> (IssuerUrl, ClientId) {
+        match provider {
+            OidcProvider::Google => (env.google_issuer_url(), env.google_client_id()),
+            OidcProvider::Apple => (env.apple_issuer_url(), env.apple_client_id()),
+        }
+    }
+
     /// Generate a token for the specified provider
     pub fn generate_token(
         &self,
@@ -82,16 +94,7 @@ impl MockOidcServer {
         public_key_sec1_base64: &str,
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
-        let (issuer_url, client_id) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -126,16 +129,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -168,16 +162,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -221,16 +206,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (_, client_id) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (_, client_id) = self.oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
@@ -260,16 +236,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, _) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (issuer_url, _) = self.oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             issuer_url,
@@ -299,16 +266,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = match provider {
-            OidcProvider::Google => (
-                environment.google_issuer_url(),
-                environment.google_client_id(),
-            ),
-            OidcProvider::Apple => (
-                environment.apple_issuer_url(),
-                environment.apple_client_id(),
-            ),
-        };
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             issuer_url,
