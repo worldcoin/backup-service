@@ -1,5 +1,5 @@
 use crate::oidc_nonce_verifier::public_key_sec1_base64_to_expected_turnkey_nonce;
-use crate::types::Environment;
+use crate::types::{Environment, OidcProvider};
 use chrono::{Duration, Utc};
 use mockito::ServerOpts;
 use openidconnect::core::{
@@ -7,7 +7,7 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
@@ -19,7 +19,8 @@ use uuid::Uuid;
 pub struct MockOidcServer {
     signing_key: CoreRsaPrivateSigningKey,
     pub server: mockito::Server,
-    pub jwk_set_mock: mockito::Mock,
+    pub google_jwk_set_mock: mockito::Mock,
+    pub apple_jwk_set_mock: mockito::Mock,
 }
 
 impl MockOidcServer {
@@ -44,8 +45,17 @@ impl MockOidcServer {
         })
         .await;
 
-        let jwk_set_mock = server
+        // Set up Google JWK set endpoint
+        let google_jwk_set_mock = server
             .mock("GET", "/oauth2/v3/certs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&jwk_set).unwrap().as_bytes())
+            .create();
+
+        // Set up Apple JWK set endpoint
+        let apple_jwk_set_mock = server
+            .mock("GET", "/auth/keys")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(serde_json::to_string(&jwk_set).unwrap().as_bytes())
@@ -54,7 +64,8 @@ impl MockOidcServer {
         Self {
             signing_key,
             server,
-            jwk_set_mock,
+            google_jwk_set_mock,
+            apple_jwk_set_mock,
         }
     }
 
@@ -62,17 +73,33 @@ impl MockOidcServer {
         self.server.socket_address().port() as usize
     }
 
+    /// Get OIDC provider configuration (issuer URL and client ID) based on the provider type
+    fn oidc_provider_config(
+        &self,
+        env: Environment,
+        provider: OidcProvider,
+    ) -> (IssuerUrl, ClientId) {
+        match provider {
+            OidcProvider::Google => (env.google_issuer_url(), env.google_client_id()),
+            OidcProvider::Apple => (env.apple_issuer_url(), env.apple_client_id()),
+        }
+    }
+
+    /// Generate a token for the specified provider
     pub fn generate_token(
         &self,
         environment: Environment,
+        provider: OidcProvider,
         subject: Option<SubjectIdentifier>,
         public_key_sec1_base64: &str,
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            issuer_url,
+            vec![Audience::new(client_id.to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(subject),
@@ -87,7 +114,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &self.signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as both providers
             None,
             None,
         )
@@ -96,11 +123,18 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    pub fn generate_expired_token(&self, environment: Environment) -> String {
+    /// Generate an expired token for the specified provider
+    pub fn generate_expired_token(
+        &self,
+        environment: Environment,
+        provider: OidcProvider,
+    ) -> String {
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            issuer_url,
+            vec![Audience::new(client_id.to_string())],
             Utc::now(), // expiration time
             Utc::now(), // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -113,7 +147,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &self.signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
         )
@@ -122,11 +156,18 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    pub fn generate_incorrectly_signed_token(&self, environment: Environment) -> String {
+    /// Generate a token with incorrect signature for the specified provider
+    pub fn generate_incorrectly_signed_token(
+        &self,
+        environment: Environment,
+        provider: OidcProvider,
+    ) -> String {
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            issuer_url,
+            vec![Audience::new(client_id.to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -150,7 +191,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &incorrect_signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
         )
@@ -159,10 +200,17 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    pub fn generate_token_with_incorrect_issuer(&self, environment: Environment) -> String {
+    /// Generate a token with incorrect issuer for the specified provider
+    pub fn generate_token_with_incorrect_issuer(
+        &self,
+        environment: Environment,
+        provider: OidcProvider,
+    ) -> String {
+        let (_, client_id) = self.oidc_provider_config(environment, provider);
+
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            vec![Audience::new(client_id.to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -173,7 +221,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &self.signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
         )
@@ -182,9 +230,16 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    pub fn generate_token_with_incorrect_audience(&self, environment: Environment) -> String {
+    /// Generate a token with incorrect audience for the specified provider
+    pub fn generate_token_with_incorrect_audience(
+        &self,
+        environment: Environment,
+        provider: OidcProvider,
+    ) -> String {
+        let (issuer_url, _) = self.oidc_provider_config(environment, provider);
+
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            environment.google_issuer_url(),
+            issuer_url,
             vec![Audience::new("incorrect-audience".to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
@@ -196,7 +251,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &self.signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
         )
@@ -205,10 +260,17 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    pub fn generate_token_with_incorrect_issued_at(&self, environment: Environment) -> String {
+    /// Generate a token with incorrect issued_at time for the specified provider
+    pub fn generate_token_with_incorrect_issued_at(
+        &self,
+        environment: Environment,
+        provider: OidcProvider,
+    ) -> String {
+        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            environment.google_issuer_url(),
-            vec![Audience::new(environment.google_client_id().to_string())],
+            issuer_url,
+            vec![Audience::new(client_id.to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now()
                 .checked_add_signed(Duration::minutes(30))
@@ -221,7 +283,7 @@ impl MockOidcServer {
         let id_token = CoreIdToken::new(
             claims,
             &self.signing_key,
-            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256, // RS256, same as the Google OIDC provider
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
         )

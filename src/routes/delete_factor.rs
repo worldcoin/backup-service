@@ -79,6 +79,12 @@ pub async fn handler(
                             sub.to_string(),
                         ))
                     }
+                    OidcAccountKind::Apple { sub, email: _ } => {
+                        Some(FactorToLookup::from_oidc_account(
+                            environment.apple_issuer_url().to_string(),
+                            sub.to_string(),
+                        ))
+                    }
                 },
             }
         } else {

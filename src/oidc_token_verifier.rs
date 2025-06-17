@@ -105,6 +105,12 @@ impl OidcTokenVerifier {
                 self.environment.google_client_id(),
                 self.environment.google_issuer_url(),
             ),
+            OidcToken::Apple { token } => (
+                token,
+                self.environment.apple_jwk_set_url(),
+                self.environment.apple_client_id(),
+                self.environment.apple_issuer_url(),
+            ),
         };
 
         // Load the public keys from the OIDC provider
@@ -162,10 +168,31 @@ fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::mock_oidc_server::MockOidcServer;
+    use crate::types::OidcProvider;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use p256::elliptic_curve::rand_core::OsRng;
     use p256::SecretKey;
+
+    async fn verify_token_for_provider(
+        verifier: &OidcTokenVerifier,
+        provider: OidcProvider,
+        token: String,
+        public_key: String,
+    ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
+        match provider {
+            OidcProvider::Google => {
+                verifier
+                    .verify_token(&OidcToken::Google { token }, public_key)
+                    .await
+            }
+            OidcProvider::Apple => {
+                verifier
+                    .verify_token(&OidcToken::Apple { token }, public_key)
+                    .await
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_verify_valid_token() {
@@ -177,16 +204,18 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate a valid token
-        let token = oidc_server.generate_token(environment, None, &public_key);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a valid token
+            let token = oidc_server.generate_token(environment, provider, None, &public_key);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should pass with a valid token
-        assert!(result.is_ok());
+            // The test should pass with a valid token
+            assert!(result.is_ok());
+        }
     }
 
     #[tokio::test]
@@ -199,20 +228,22 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate an expired token
-        let token = oidc_server.generate_expired_token(environment);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate an expired token
+            let token = oidc_server.generate_expired_token(environment, provider);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should fail with an expired token
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an expired token
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -225,20 +256,22 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate an incorrectly signed token
-        let token = oidc_server.generate_incorrectly_signed_token(environment);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate an incorrectly signed token
+            let token = oidc_server.generate_incorrectly_signed_token(environment, provider);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should fail with an incorrectly signed token
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an incorrectly signed token
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -251,20 +284,22 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate a token with incorrect issuer
-        let token = oidc_server.generate_token_with_incorrect_issuer(environment);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a token with incorrect issuer
+            let token = oidc_server.generate_token_with_incorrect_issuer(environment, provider);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should fail with an incorrect issuer
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an incorrect issuer
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -277,20 +312,22 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate a token with incorrect audience
-        let token = oidc_server.generate_token_with_incorrect_audience(environment);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a token with incorrect audience
+            let token = oidc_server.generate_token_with_incorrect_audience(environment, provider);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should fail with an incorrect audience
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an incorrect audience
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -303,20 +340,22 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate a token with incorrect issued_at
-        let token = oidc_server.generate_token_with_incorrect_issued_at(environment);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a token with incorrect issued_at
+            let token = oidc_server.generate_token_with_incorrect_issued_at(environment, provider);
 
-        // Verify the token
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, public_key)
-            .await;
+            // Verify the token
+            let result =
+                verify_token_for_provider(&verifier, provider, token, public_key.clone()).await;
 
-        // The test should fail with an incorrect issued_at
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an incorrect issued_at
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -336,19 +375,23 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment);
 
-        // Generate a token with the correct public key
-        let token = oidc_server.generate_token(environment, None, &correct_public_key);
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a token with the correct public key
+            let token =
+                oidc_server.generate_token(environment, provider, None, &correct_public_key);
 
-        // Verify the token but pass a different public key
-        let result = verifier
-            .verify_token(&OidcToken::Google { token }, incorrect_public_key)
-            .await;
+            // Verify the token but pass a different public key
+            let result =
+                verify_token_for_provider(&verifier, provider, token, incorrect_public_key.clone())
+                    .await;
 
-        // The test should fail with an incorrect public key
-        assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(OidcTokenVerifierError::TokenVerificationError)
-        ));
+            // The test should fail with an incorrect public key
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
     }
 }
