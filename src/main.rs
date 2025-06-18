@@ -40,11 +40,15 @@ async fn main() -> anyhow::Result<()> {
 
     let backup_storage = Arc::new(BackupStorage::new(environment, s3_client.clone()));
     let factor_lookup = Arc::new(FactorLookup::new(environment, dynamodb_client.clone()));
-    let oidc_token_verifier = Arc::new(OidcTokenVerifier::new(environment));
     let dynamo_cache_manager = Arc::new(DynamoCacheManager::new(
         environment,
         environment.cache_default_ttl(),
         dynamodb_client.clone(),
+    ));
+
+    let oidc_token_verifier = Arc::new(OidcTokenVerifier::new(
+        environment,
+        dynamo_cache_manager.clone(),
     ));
 
     let auth_handler = AuthHandler::new(

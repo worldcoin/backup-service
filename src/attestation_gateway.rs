@@ -460,14 +460,14 @@ mod tests {
     use tokio::time::sleep;
 
     fn test_generate_request_hash_input() -> GenerateRequestHashInput {
-        return GenerateRequestHashInput {
+        GenerateRequestHashInput {
             path_uri: "retrieve/challenge/passkey".to_string(),
             method: Method::POST.to_string(),
             body: None,
             public_key_id: None,
             client_build: None,
             client_name: None,
-        };
+        }
     }
 
     fn generate_test_token(

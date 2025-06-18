@@ -64,14 +64,16 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
         environment,
         dynamodb_client.clone(),
     ));
-    let oidc_token_verifier = Arc::new(
-        backup_service::oidc_token_verifier::OidcTokenVerifier::new(environment),
-    );
     let dynamo_cache_manager = Arc::new(backup_service::dynamo_cache::DynamoCacheManager::new(
         environment,
         environment.cache_default_ttl(),
         dynamodb_client.clone(),
     ));
+    let oidc_token_verifier =
+        Arc::new(backup_service::oidc_token_verifier::OidcTokenVerifier::new(
+            environment,
+            dynamo_cache_manager.clone(),
+        ));
 
     let auth_handler = AuthHandler::new(
         backup_storage.clone(),

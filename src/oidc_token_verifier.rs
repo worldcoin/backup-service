@@ -1,3 +1,4 @@
+use crate::dynamo_cache::{DynamoCacheError, DynamoCacheManager};
 use crate::oidc_nonce_verifier::OidcNonceVerifier;
 use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
@@ -25,14 +26,16 @@ type JwkCache = Arc<RwLock<HashMap<JsonWebKeySetUrl, JwkCacheEntry>>>;
 #[derive(Debug, Clone)]
 pub struct OidcTokenVerifier {
     environment: Environment,
+    dynamo_cache_manager: Arc<DynamoCacheManager>,
     reqwest_client: reqwest::Client,
     cached_keys: JwkCache,
 }
 
 impl OidcTokenVerifier {
-    pub fn new(environment: Environment) -> Self {
+    pub fn new(environment: Environment, dynamo_cache_manager: Arc<DynamoCacheManager>) -> Self {
         OidcTokenVerifier {
             environment,
+            dynamo_cache_manager,
             reqwest_client: reqwest::Client::new(),
             cached_keys: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -97,7 +100,7 @@ impl OidcTokenVerifier {
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
-        // Extract the token and other parameters based on the OIDC provider
+        // Step 1: Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
                 token,
@@ -116,17 +119,18 @@ impl OidcTokenVerifier {
         // Load the public keys from the OIDC provider
         let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
 
-        // Create the token verifier
+        // Step 3: Create the token verifier
         let token_verifier =
             CoreIdTokenVerifier::new_public_client(client_id, issuer_url, signature_keys)
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
-        // Verify the token and extract claims
+        // Step 4: Verify the token and extract claims
         let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
             tracing::warn!(message = "Failed to parse OIDC token", err = ?err);
             OidcTokenVerifierError::TokenParseError
         })?;
 
+        // Step 5: Verify the nonce and extract the claims
         let claims = oidc_token
             .claims(
                 &token_verifier,
@@ -136,6 +140,16 @@ impl OidcTokenVerifier {
                 tracing::error!(message = "Token verification error", err = ?err);
                 OidcTokenVerifierError::TokenVerificationError
             })?;
+
+        // Step 6: Track the nonce to prevent replays
+        let nonce = claims
+            .nonce()
+            .ok_or(OidcTokenVerifierError::MissingNonce)?
+            .secret();
+
+        self.dynamo_cache_manager
+            .use_oidc_nonce(nonce, &token.into())
+            .await?;
 
         Ok(claims.clone())
     }
@@ -149,6 +163,10 @@ pub enum OidcTokenVerifierError {
     TokenParseError,
     #[error("Failed to verify OIDC token")]
     TokenVerificationError,
+    #[error("OIDC token is missing nonce claim")]
+    MissingNonce,
+    #[error(transparent)]
+    DynamoCacheError(#[from] DynamoCacheError),
 }
 
 /// If issued at is in the future or too far in the past, the token is invalid
@@ -166,6 +184,8 @@ fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::mock_oidc_server::MockOidcServer;
     use crate::types::OidcProvider;
@@ -173,6 +193,18 @@ mod tests {
     use base64::Engine;
     use p256::elliptic_curve::rand_core::OsRng;
     use p256::SecretKey;
+
+    async fn get_dynamo_cache_manager() -> Arc<DynamoCacheManager> {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let aws_config = environment.aws_config().await;
+        let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(&aws_config));
+        Arc::new(DynamoCacheManager::new(
+            environment,
+            Duration::from_secs(60 * 60 * 24),
+            dynamodb_client,
+        ))
+    }
 
     async fn verify_token_for_provider(
         verifier: &OidcTokenVerifier,
@@ -202,7 +234,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -226,7 +258,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -254,7 +286,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -282,7 +314,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -310,7 +342,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -338,7 +370,7 @@ mod tests {
         let secret_key = SecretKey::random(&mut OsRng);
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -373,7 +405,7 @@ mod tests {
         let incorrect_public_key =
             STANDARD.encode(incorrect_secret_key.public_key().to_sec1_bytes());
 
-        let verifier = OidcTokenVerifier::new(environment);
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
@@ -393,5 +425,59 @@ mod tests {
                 Err(OidcTokenVerifierError::TokenVerificationError)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn test_verify_replay_attack_fails() {
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
+
+        let token =
+            oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+        let _ = verify_token_for_provider(
+            &verifier,
+            OidcProvider::Google,
+            token.clone(),
+            public_key.clone(),
+        )
+        .await
+        .unwrap(); // The first time is successful
+
+        // The second time fails because the nonce is already used
+        let result = verify_token_for_provider(
+            &verifier,
+            OidcProvider::Google,
+            token.clone(),
+            public_key.clone(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::DynamoCacheError(
+                DynamoCacheError::AlreadyUsed
+            ))
+        ));
+
+        // Even if we generate a new token with the same nonce, it still fails
+        let new_token =
+            oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+
+        assert_ne!(token, new_token);
+        let result =
+            verify_token_for_provider(&verifier, OidcProvider::Google, token, public_key.clone())
+                .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::DynamoCacheError(
+                DynamoCacheError::AlreadyUsed
+            ))
+        ));
     }
 }
