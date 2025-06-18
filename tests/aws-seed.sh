@@ -28,6 +28,6 @@ awslocal dynamodb create-table \
 
 awslocal dynamodb update-time-to-live \
   --table-name backup-service-cache \
-  --time-to-live-specification "Enabled=true,AttributeName=ExpiresAt"
+  --time-to-live-specification "Enabled=true,AttributeName=ttl"
 
 echo "AWS LocalStack resources initialized successfully!"
