@@ -4,7 +4,7 @@ use std::env;
 use webauthn_rs::prelude::Url;
 use webauthn_rs::{Webauthn, WebauthnBuilder};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     Production,
     Staging,
@@ -171,6 +171,38 @@ impl Environment {
         IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL")
     }
 
+    /// JWK Set URL for the Apple OIDC provider
+    pub fn apple_jwk_set_url(&self) -> JsonWebKeySetUrl {
+        match self {
+            Self::Production | Self::Staging => {
+                // https://developer.apple.com/documentation/signinwithapplerestapi/fetch_apple_s_public_key_for_verifying_token_signature
+                JsonWebKeySetUrl::new("https://appleid.apple.com/auth/keys".to_string())
+                    .expect("Invalid JWK set URL")
+            }
+            Self::Development {
+                jwk_set_url_port_override: port,
+            } => {
+                let port = port.unwrap_or(8001);
+                JsonWebKeySetUrl::new(format!("http://localhost:{}/auth/keys", port))
+                    .expect("Invalid JWK set URL")
+            }
+        }
+    }
+
+    /// The client ID for the Apple OIDC provider
+    pub fn apple_client_id(&self) -> ClientId {
+        match self {
+            Self::Production | Self::Staging => ClientId::new("placeholder".to_string()),
+            Self::Development { .. } => ClientId::new("placeholder".to_string()),
+        }
+    }
+
+    /// Issuer URL for the Apple OIDC provider
+    pub fn apple_issuer_url(&self) -> IssuerUrl {
+        // https://developer.apple.com/documentation/signinwithapple/verifying-a-user
+        IssuerUrl::new("https://appleid.apple.com".to_string()).expect("Invalid issuer URL")
+    }
+
     pub fn factor_lookup_dynamodb_table_name(&self) -> &'static str {
         match self {
             Self::Production | Self::Staging | Self::Development { .. } => {
@@ -182,6 +214,20 @@ impl Environment {
     pub fn cache_table_name(&self) -> &'static str {
         match self {
             Self::Production | Self::Staging | Self::Development { .. } => "backup-service-cache",
+        }
+    }
+
+    pub const fn attestation_gateway_host(&self) -> &str {
+        match self {
+            Self::Production => "https://attestation.worldcoin.org",
+            Self::Staging | Self::Development { .. } => "https://attestation.worldcoin.dev",
+        }
+    }
+
+    pub fn enable_attestation_gateway(&self) -> bool {
+        match env::var("ENABLE_ATTESTATION_GATEWAY") {
+            Ok(val) => val.trim().eq_ignore_ascii_case("true"),
+            Err(_) => false,
         }
     }
 }

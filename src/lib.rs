@@ -1,3 +1,4 @@
+pub mod attestation_gateway;
 pub mod auth;
 pub mod axum_utils;
 pub mod backup_storage;
@@ -13,6 +14,7 @@ pub mod server;
 pub mod turnkey_activity;
 pub mod types;
 pub mod verify_signature;
+pub mod webauthn;
 
 pub use routes::handler;
 

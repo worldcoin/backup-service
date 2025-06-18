@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::types::{Environment, ErrorResponse};
+
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::Serialize;

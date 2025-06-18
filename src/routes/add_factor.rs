@@ -11,6 +11,7 @@ use crate::types::backup_metadata::{Factor, FactorKind, OidcAccountKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse, OidcToken};
 use crate::verify_signature::verify_signature;
+use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -74,13 +75,7 @@ pub async fn handler(
                 return Err(ErrorResponse::bad_request("missing_turnkey_activity"));
             };
             // Parse credential per the WebAuthn spec
-            let user_provided_credential: PublicKeyCredential = serde_json::from_value(
-                credential.clone(),
-            )
-            .map_err(|err| {
-                tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                ErrorResponse::bad_request("webauthn_error")
-            })?;
+            let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
 
             // Step 1A.2: Retrieve the potential backup using credential ID in the passkey.
             // At this point, the user has not verified that they correctly signed the challenge.
@@ -232,6 +227,7 @@ pub async fn handler(
             {
                 let raw_oidc_token = match &oidc_token {
                     OidcToken::Google { token } => token,
+                    OidcToken::Apple { token } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
                     return Err(ErrorResponse::bad_request("invalid_oidc_token"));
@@ -263,20 +259,22 @@ pub async fn handler(
             // TODO/FIXME
 
             // Step 2A.6: Create a new factor and factor lookup
+            let email = claims
+                .email()
+                .ok_or_else(|| {
+                    tracing::info!(message = "Missing email in OIDC token");
+                    ErrorResponse::bad_request("missing_email")
+                })?
+                .to_string();
             let oidc_account = match &oidc_token {
-                OidcToken::Google { .. } => {
-                    let email = claims
-                        .email()
-                        .ok_or_else(|| {
-                            tracing::info!(message = "Missing email in OIDC token");
-                            ErrorResponse::bad_request("missing_email")
-                        })?
-                        .to_string();
-                    OidcAccountKind::Google {
-                        sub: claims.subject().to_string(),
-                        email,
-                    }
-                }
+                OidcToken::Google { .. } => OidcAccountKind::Google {
+                    sub: claims.subject().to_string(),
+                    email,
+                },
+                OidcToken::Apple { .. } => OidcAccountKind::Apple {
+                    sub: claims.subject().to_string(),
+                    email,
+                },
             };
             (
                 Factor::new_oidc_account(oidc_account, turnkey_provider_id),

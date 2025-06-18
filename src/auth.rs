@@ -5,6 +5,7 @@ use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKe
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::OidcAccountKind;
 use crate::verify_signature::verify_signature;
+use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
@@ -90,13 +91,7 @@ impl AuthHandler {
                 })?;
 
                 // Step 4A.2: Deserialize the credential
-                let user_provided_credential: PublicKeyCredential = serde_json::from_value(
-                    credential.clone(),
-                )
-                .map_err(|err| {
-                    tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                    ErrorResponse::bad_request("webauthn_error")
-                })?;
+                let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
 
                 // Step 4A.3: Identify which user is referenced by the credential. Note that at
                 // this point, the credential is not verified yet.
@@ -194,6 +189,10 @@ impl AuthHandler {
                         claims.issuer().to_string(),
                         claims.subject().to_string(),
                     ),
+                    crate::types::OidcToken::Apple { .. } => FactorToLookup::from_oidc_account(
+                        claims.issuer().to_string(),
+                        claims.subject().to_string(),
+                    ),
                 };
 
                 let not_verified_backup_id = self
@@ -236,6 +235,10 @@ impl AuthHandler {
                     {
                         match account {
                             OidcAccountKind::Google {
+                                sub,
+                                email: factor_email,
+                            } => sub == &claims.subject().to_string() && factor_email == &email,
+                            OidcAccountKind::Apple {
                                 sub,
                                 email: factor_email,
                             } => sub == &claims.subject().to_string() && factor_email == &email,

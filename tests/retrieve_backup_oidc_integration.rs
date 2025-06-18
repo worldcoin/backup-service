@@ -5,6 +5,7 @@ use crate::common::{
     send_post_request_with_environment, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
+use backup_service::types::OidcProvider;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -27,6 +28,7 @@ async fn test_retrieve_backup_with_oidc_account() {
     let (public_key, secret_key) = generate_keypair();
     let new_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
+        OidcProvider::Google,
         Some(SubjectIdentifier::new(subject.clone())),
         &public_key,
     );
@@ -126,6 +128,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     let different_subject = Uuid::new_v4().to_string();
     let different_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
+        OidcProvider::Google,
         Some(SubjectIdentifier::new(different_subject)),
         &public_key,
     );
@@ -195,6 +198,7 @@ async fn test_retrieve_backup_with_different_keypair() {
     let (public_key, _) = generate_keypair(); // a new keypair for the OIDC nonce is used on each request
     let new_oidc_token = test_backup.oidc_server.generate_token(
         test_backup.environment,
+        OidcProvider::Google,
         Some(SubjectIdentifier::new(subject.clone())),
         &public_key,
     );
@@ -266,6 +270,7 @@ async fn test_retrieve_backup_with_incorrect_nonce() {
     // Generate new OIDC token for the same user with an incorrect nonce
     let token_with_incorrect_nonce = test_backup.oidc_server.generate_token(
         test_backup.environment,
+        OidcProvider::Google,
         Some(SubjectIdentifier::new(subject.clone())),
         &generate_keypair().0,
     );
