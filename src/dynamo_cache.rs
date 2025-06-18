@@ -1,4 +1,4 @@
-use crate::types::Environment;
+use crate::types::{Environment, OidcProvider};
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
@@ -253,6 +253,53 @@ impl DynamoCacheManager {
             })?;
         Ok(())
     }
+
+    /// Stores a hashed OIDC nonce to prevent replay attacks.
+    ///
+    /// Note this method is very similar to `use_challenge_token` but uses different configuration
+    ///
+    /// # Errors
+    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
+    pub async fn use_oidc_nonce(
+        &self,
+        nonce: &str,
+        oidc_provider: &OidcProvider,
+    ) -> Result<(), DynamoCacheError> {
+        let token_hash = hash_token(
+            USED_OIDC_NONCE_PREFIX,
+            format!("{oidc_provider}:{nonce}").as_ref(),
+        );
+
+        // Nonces may be indefinitely valid, in a regular OIDC flow, the nonce would be created by the RP and short-lived,
+        // but this nonce depends on Turnkey, so we can't depend on a server-side expiration.
+        // For the time being, we cache the hashed nonce indefinitely to prevent replay.
+        let creation_date = Utc::now().date_naive();
+
+        self.dynamodb_client
+            .put_item()
+            .table_name(self.environment.cache_table_name())
+            .item(
+                UsedChallengeAttribute::Pk.to_string(),
+                AttributeValue::S(token_hash),
+            )
+            .item(
+                UsedChallengeAttribute::CreationDate.to_string(),
+                AttributeValue::S(creation_date.to_string()),
+            )
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", UsedChallengeAttribute::Pk.to_string())
+            .send()
+            .await
+            .map_err(|err| {
+                if let SdkError::ServiceError(context) = &err {
+                    if context.err().is_conditional_check_failed_exception() {
+                        return DynamoCacheError::AlreadyUsed;
+                    }
+                }
+                DynamoCacheError::DynamoDbPutError(err)
+            })?;
+        Ok(())
+    }
 }
 
 /// Hashes a token using SHA-256 and returns the hex representation
@@ -261,8 +308,6 @@ fn hash_token(prefix: &str, token: &str) -> String {
     hasher.update(token.as_bytes());
     format!("{prefix}#{:x}", hasher.finalize())
 }
-
-const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken#";
 
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum SyncFactorTokenAttribute {
@@ -279,7 +324,9 @@ pub enum SyncFactorTokenAttribute {
     ExpiresAt,
 }
 
-const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash#";
+const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
+const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash";
+const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum UsedChallengeAttribute {
@@ -288,6 +335,8 @@ pub enum UsedChallengeAttribute {
     Pk,
     /// Expiration timestamp for TTL
     ExpiresAt,
+    /// Creation date (only used for some attributes)
+    CreationDate,
 }
 
 #[derive(thiserror::Error, Debug)]

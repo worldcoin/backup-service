@@ -4,8 +4,8 @@ use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
+use openidconnect::{reqwest, JsonWebKeySetUrl};
 use openidconnect::{EmptyAdditionalClaims, IdTokenClaims};
-use openidconnect::{JsonWebKeySetUrl, reqwest};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -148,7 +148,7 @@ impl OidcTokenVerifier {
             .secret();
 
         self.dynamo_cache_manager
-            .use_challenge_token(format!("oidc:{nonce}"))
+            .use_oidc_nonce(nonce, &token.into())
             .await?;
 
         Ok(claims.clone())
@@ -189,12 +189,13 @@ mod tests {
     use super::*;
     use crate::mock_oidc_server::MockOidcServer;
     use crate::types::OidcProvider;
-    use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
-    use p256::SecretKey;
+    use base64::Engine;
     use p256::elliptic_curve::rand_core::OsRng;
+    use p256::SecretKey;
 
     async fn get_dynamo_cache_manager() -> Arc<DynamoCacheManager> {
+        dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let aws_config = environment.aws_config().await;
         let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(&aws_config));
@@ -424,5 +425,59 @@ mod tests {
                 Err(OidcTokenVerifierError::TokenVerificationError)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn test_verify_replay_attack_fails() {
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+
+        let verifier = OidcTokenVerifier::new(environment, get_dynamo_cache_manager().await);
+
+        let token =
+            oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+        let _ = verify_token_for_provider(
+            &verifier,
+            OidcProvider::Google,
+            token.clone(),
+            public_key.clone(),
+        )
+        .await
+        .unwrap(); // The first time is successful
+
+        // The second time fails because the nonce is already used
+        let result = verify_token_for_provider(
+            &verifier,
+            OidcProvider::Google,
+            token.clone(),
+            public_key.clone(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::DynamoCacheError(
+                DynamoCacheError::AlreadyUsed
+            ))
+        ));
+
+        // Even if we generate a new token with the same nonce, it still fails
+        let new_token =
+            oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+
+        assert_ne!(token, new_token);
+        let result =
+            verify_token_for_provider(&verifier, OidcProvider::Google, token, public_key.clone())
+                .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::DynamoCacheError(
+                DynamoCacheError::AlreadyUsed
+            ))
+        ));
     }
 }
