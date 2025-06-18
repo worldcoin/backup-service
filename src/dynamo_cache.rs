@@ -83,7 +83,7 @@ impl DynamoCacheManager {
                 AttributeValue::N(Utc::now().timestamp_millis().to_string()),
             )
             .item(
-                SyncFactorTokenAttribute::ExpiresAt.to_string(),
+                SyncFactorTokenAttribute::Ttl.to_string(),
                 AttributeValue::N(ttl.to_string()),
             )
             .send()
@@ -147,7 +147,7 @@ impl DynamoCacheManager {
 
         // Check if the token has expired
         let expires_at = item
-            .get(&SyncFactorTokenAttribute::ExpiresAt.to_string())
+            .get(&SyncFactorTokenAttribute::Ttl.to_string())
             .ok_or(DynamoCacheError::MalformedToken)?
             .as_n()
             .map_err(|_| DynamoCacheError::MalformedToken)?
@@ -236,7 +236,7 @@ impl DynamoCacheManager {
                 AttributeValue::S(token_hash),
             )
             .item(
-                UsedChallengeAttribute::ExpiresAt.to_string(),
+                UsedChallengeAttribute::Ttl.to_string(),
                 AttributeValue::N(ttl.to_string()),
             )
             .condition_expression("attribute_not_exists(#pk)")
@@ -321,7 +321,8 @@ pub enum SyncFactorTokenAttribute {
     /// Creation timestamp for debugging
     CreatedAt,
     /// Expiration timestamp for TTL
-    ExpiresAt,
+    #[strum(serialize = "ttl")]
+    Ttl,
 }
 
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
@@ -334,7 +335,8 @@ pub enum UsedChallengeAttribute {
     #[strum(serialize = "PK")]
     Pk,
     /// Expiration timestamp for TTL
-    ExpiresAt,
+    #[strum(serialize = "ttl")]
+    Ttl,
     /// Creation date (only used for some attributes)
     CreationDate,
 }
