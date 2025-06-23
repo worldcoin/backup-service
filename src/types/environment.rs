@@ -132,7 +132,8 @@ impl Environment {
 
     /// Max size of the backup file
     pub fn max_backup_file_size(&self) -> usize {
-        5 * 1024 * 1024 // 5 MB
+        // generally each PCP is ~4MB, plus some buffer
+        10 * 1024 * 1024 // 10 MB
     }
 
     /// JWK Set URL for the Google OIDC provider
