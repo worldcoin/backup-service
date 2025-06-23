@@ -408,7 +408,7 @@ async fn test_create_backup_with_large_file() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
         }),
-        Bytes::from(vec![0; 5 * 1024 * 1024 + 1]), // 5 MB file + 1 byte
+        Bytes::from(vec![0; 10 * 1024 * 1024 + 1]), // 10 MB file + 1 byte
         None,
     )
     .await;
