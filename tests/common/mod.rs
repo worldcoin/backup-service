@@ -21,8 +21,7 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
 use josekit::jwk::alg::ec::EcCurve;
-use josekit::jwk::{Jwk, JwkSet};
-use josekit::jws::alg::ecdsa::EcdsaJwsSigner;
+use josekit::jwk::Jwk;
 use josekit::jws::{JwsHeader, ES256};
 use josekit::jwt::{self, JwtPayload};
 use openidconnect::SubjectIdentifier;
@@ -113,27 +112,6 @@ pub async fn get_test_router(
         .layer(Extension(dynamo_cache_manager))
         .layer(Extension(auth_handler))
         .layer(Extension(attestation_gateway))
-}
-
-pub async fn update_test_router_with_attestation_gateway(
-    router: axum::Router,
-    jwk: JwkSet,
-) -> axum::Router {
-    let mut server = mockito::Server::new_async().await;
-
-    server
-        .mock("GET", "/.well-known/jwks.json")
-        .with_status(200)
-        .with_body(jwk.to_string())
-        .create();
-
-    let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
-        base_url: server.url(),
-        env: Environment::development(None),
-        enabled: true,
-    }));
-
-    router.layer(Extension(attestation_gateway))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {
@@ -652,7 +630,7 @@ pub async fn verify_s3_metadata_exists(backup_id: &str) -> serde_json::Value {
     serde_json::from_slice(&metadata_content).unwrap()
 }
 
-pub fn generate_attestation_token(body: &serde_json::Value, path: &str) -> (Jwk, String) {
+pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> (Jwk, String) {
     let mut jwk = Jwk::generate_ec_key(EcCurve::P256).unwrap();
     jwk.set_key_id("integration-test-kid");
 

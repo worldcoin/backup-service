@@ -1,10 +1,9 @@
 mod common;
 
 use crate::common::{
-    authenticate_with_passkey_challenge, create_test_backup, generate_attestation_token,
+    authenticate_with_passkey_challenge, create_test_backup, generate_test_attestation_token,
     get_passkey_challenge, get_passkey_retrieval_challenge, get_test_router,
-    make_credential_from_passkey_challenge, send_post_request,
-    send_post_request_with_bypass_attestation_token, update_test_router_with_attestation_gateway,
+    make_credential_from_passkey_challenge, send_post_request_with_bypass_attestation_token,
 };
 use axum::{extract::Request, http::StatusCode};
 use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
@@ -39,7 +38,7 @@ async fn test_retrieve_backup() {
     });
 
     // Section: Attestation Gateway Token + Validation
-    let (jwk, jwt) = generate_attestation_token(&body, "/retrieve/from-challenge");
+    let (jwk, jwt) = generate_test_attestation_token(&body, "/retrieve/from-challenge");
     let mut server = mockito::Server::new_async().await;
     let mut key_response =
         json!({ "keys": [serde_json::to_value(jwk.to_public_key().unwrap()).unwrap()] });
