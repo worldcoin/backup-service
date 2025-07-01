@@ -58,17 +58,16 @@ pub fn handler(environment: Environment) -> ApiRouter {
         // Recovery
         .api_route(
             "/retrieve/challenge/passkey",
-            post(retrieve_challenge_passkey::handler)
-                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+            post(retrieve_challenge_passkey::handler),
         )
         .api_route(
             "/retrieve/challenge/keypair",
-            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>)
-                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
         )
         .api_route(
             "/retrieve/from-challenge",
-            post(retrieve_from_challenge::handler),
+            post(retrieve_from_challenge::handler)
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         // Add new factor for future sync after recovery
         .api_route(

@@ -39,7 +39,6 @@ pub async fn handler(
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    // let auth_handler: AuthHandler = request.0.into();
     let (backup_id, backup_metadata) = auth_handler
         .verify(
             &request.authorization,
@@ -49,19 +48,19 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 2: Fetch the backup from S3
+    // Step 3: Fetch the backup from S3
     let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;
     let Some(backup) = backup else {
         tracing::error!(message = "No backup found for the verified backup ID.");
         return Err(ErrorResponse::internal_server_error());
     };
 
-    // Step 3: Create a sync factor token to allow the user to add a new sync factor later
+    // Step 4: Create a sync factor token to allow the user to add a new sync factor later
     let sync_factor_token = dynamo_cache_manager
         .create_sync_factor_token(backup_metadata.id.clone())
         .await?;
 
-    // Step 4: Return the backup and metadata
+    // Step 5: Return the backup and metadata
     Ok(Json(RetrieveBackupFromChallengeResponse {
         backup: STANDARD.encode(backup),
         metadata: backup_metadata.exported(),

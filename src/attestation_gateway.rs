@@ -6,7 +6,7 @@ use axum::{
     Extension,
 };
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,11 +14,12 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
+use strum_macros::{Display, EnumString};
 use tokio::{sync::RwLock, time::Instant};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
-pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-gateway-token";
+pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-token"; // consistency with other services which World App uses
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationGatewayError {
@@ -68,19 +69,19 @@ pub struct AttestationGateway {
     enabled: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, EnumString, Display)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum ClientName {
-    IOS,
-    ANDROID,
+    Ios,
+    Android,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct GenerateRequestHashInput {
     pub path_uri: String,
     pub method: String,
     pub body: Option<String>,
-    pub public_key_id: Option<String>,
     pub client_name: Option<ClientName>,
     pub client_build: Option<String>,
 }
@@ -188,6 +189,11 @@ impl AttestationGateway {
 
     /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation gateway token
     ///
+    /// This function is similar to the function running on World App (oxide/attestation_gateway).
+    ///
+    /// Please note this function is not verbatim to the function running on World App, it is a simplified version with only the
+    /// applicable functionality for this service.
+    ///
     /// # Errors
     /// Will return an error if serializing the payload or computing the hash fails
     fn compute_request_hash(
@@ -196,23 +202,24 @@ impl AttestationGateway {
         let mut map = serde_json::Map::new();
 
         // Insert fields in the correct consistent alphabetical order:
-        // "body, clientBuild, clientName, method, pathUri, publicKeyId"
+        // "body, clientBuild, clientName, method, pathUri"
         if let Some(body_str) = &input.body {
             let body_json: Value = serde_json::from_str(body_str)
                 .map_err(AttestationGatewayError::SerializeRequestPayload)?;
             map.insert("body".to_string(), sort_json(&body_json));
         }
+
         if let Some(client_build) = &input.client_build {
             map.insert("clientBuild".to_string(), serde_json::json!(client_build));
         }
         if let Some(client_name) = &input.client_name {
             map.insert("clientName".to_string(), serde_json::json!(client_name));
         }
+
         map.insert("method".to_string(), serde_json::json!(input.method));
         map.insert("pathUri".to_string(), serde_json::json!(input.path_uri));
-        if let Some(public_key_id) = &input.public_key_id {
-            map.insert("publicKeyId".to_string(), serde_json::json!(public_key_id));
-        }
+
+        // NOTE: publicKeyId is not included in the hash because it is not relevant on this service
 
         // Serialize the ordered map into a JSON string
         let serialized = serde_json::to_string(&map)
@@ -375,9 +382,9 @@ impl AttestationGateway {
             } else {
                 Some(body_str)
             },
-            public_key_id: None,
-            client_build: None,
-            client_name: None,
+            // TODO: Validate minimum supported app versions
+            client_build: parts.headers.client_build()?,
+            client_name: parts.headers.client_name()?,
         };
         gateway
             .validate_token(attestation_token.to_string(), &hash_input)
@@ -420,6 +427,8 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 /// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
     fn attestation_token(&self) -> Result<&str, ErrorResponse>;
+    fn client_name(&self) -> Result<Option<ClientName>, ErrorResponse>;
+    fn client_build(&self) -> Result<Option<String>, ErrorResponse>;
 }
 
 impl AttestationHeaderExt for HeaderMap {
@@ -431,13 +440,41 @@ impl AttestationHeaderExt for HeaderMap {
             .map_err(|_| ErrorResponse::bad_request("invalid_attestation_token_header"))?;
 
         if value.is_empty() {
-            tracing::warn!("Attestation gateway token is empty");
+            tracing::info!("Attestation gateway token is empty");
             return Err(ErrorResponse::bad_request(
                 "invalid_attestation_token_header",
             ));
         }
 
         Ok(value)
+    }
+
+    fn client_name(&self) -> Result<Option<ClientName>, ErrorResponse> {
+        let value = self
+            .get("client-name")
+            .ok_or_else(|| ErrorResponse::bad_request("missing_client_name_header"))?
+            .to_str()
+            .map_err(|_| ErrorResponse::bad_request("invalid_client_name_header"))?;
+
+        let client_name = ClientName::try_from(value)
+            .map_err(|_| ErrorResponse::bad_request("invalid_client_name_header"))?;
+
+        Ok(Some(client_name))
+    }
+
+    fn client_build(&self) -> Result<Option<String>, ErrorResponse> {
+        let value = self
+            .get("client-build")
+            .ok_or_else(|| ErrorResponse::bad_request("missing_client_build_header"))?
+            .to_str()
+            .map_err(|_| ErrorResponse::bad_request("invalid_client_build_header"))?;
+
+        if value.is_empty() {
+            tracing::info!("Client build is empty");
+            return Err(ErrorResponse::bad_request("invalid_client_build_header"));
+        }
+
+        Ok(Some(value.to_string()))
     }
 }
 
@@ -464,7 +501,6 @@ mod tests {
             path_uri: "retrieve/challenge/passkey".to_string(),
             method: Method::POST.to_string(),
             body: None,
-            public_key_id: None,
             client_build: None,
             client_name: None,
         }
@@ -523,17 +559,10 @@ mod tests {
         });
     }
 
-    // testing the hash function by using the test payload and result hash from the nfc uniqueness service tests, assuming those have been proven correct already
+    // testing the hash function by using the test payload and result hash from the `nfc-uniqueness-service` to ensure consistency
     #[test]
     fn test_compute_request_hash() {
-        #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
-        #[serde(rename_all = "lowercase")]
-        enum DocumentType {
-            Passport,
-            Eid,
-            Mnc,
-        }
-        #[derive(Debug, Deserialize, Serialize, Clone)]
+        #[derive(Debug, Serialize, Clone)]
         #[serde(rename_all = "camelCase")]
         struct RegisterPayload {
             sod: String,
@@ -541,7 +570,7 @@ mod tests {
             command_responses: Option<Vec<String>>,
             batch_index: Option<u8>,
             signed_nonce: Option<String>,
-            document_type: Option<DocumentType>,
+            document_type: Option<String>,
             expiry_date: NaiveDate,
             identity_commitment: String,
             timestamp: i64,
@@ -563,7 +592,6 @@ mod tests {
             path_uri: "/v1/register".to_string(),
             method: Method::POST.to_string(),
             body: Some(serde_json::to_string(&payload).unwrap()),
-            public_key_id: None,
             client_build: None,
             client_name: None,
         })
