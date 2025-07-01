@@ -2,7 +2,8 @@ mod common;
 
 use crate::common::{
     create_test_backup_with_keypair, create_test_backup_with_sync_keypair,
-    get_keypair_retrieval_challenge, send_post_request, sign_keypair_challenge,
+    get_keypair_retrieval_challenge, send_post_request,
+    send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
@@ -81,7 +82,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
     );
 
     // Retrieve the backup using an incorrect token
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -91,6 +92,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
             },
             "challengeToken": "INCORRECT TOKEN",
         }),
+        None,
     )
     .await;
 

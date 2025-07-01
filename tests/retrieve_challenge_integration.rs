@@ -1,8 +1,6 @@
 mod common;
 
-use crate::common::{
-    get_test_router, send_post_request, send_post_request_with_bypass_attestation_token,
-};
+use crate::common::{get_test_router, send_post_request};
 use axum::{extract::Request, http::StatusCode};
 use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
 use http_body_util::BodyExt;
@@ -11,9 +9,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_challenge_passkey() {
-    let response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
-            .await;
+    let response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -49,9 +45,7 @@ async fn test_retrieve_challenge_passkey() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_keypair() {
-    let response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
-            .await;
+    let response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 

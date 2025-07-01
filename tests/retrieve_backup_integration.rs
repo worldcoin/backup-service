@@ -3,6 +3,7 @@ mod common;
 use crate::common::{
     authenticate_with_passkey_challenge, create_test_backup, get_passkey_challenge,
     get_passkey_retrieval_challenge, make_credential_from_passkey_challenge, send_post_request,
+    send_post_request_with_bypass_attestation_token,
 };
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
@@ -25,18 +26,18 @@ async fn test_retrieve_backup() {
     let retrieve_credential =
         authenticate_with_passkey_challenge(&mut passkey_client, &retrieve_challenge).await;
 
+    let body = json!({
+        "authorization": {
+            "kind": "PASSKEY",
+            "credential": retrieve_credential,
+        },
+        "challengeToken": retrieve_challenge["token"],
+    });
+
+    // Compute the attestation token
+
     // Retrieve the backup using the solved challenge
-    let retrieve_response = send_post_request(
-        "/retrieve/from-challenge",
-        json!({
-            "authorization": {
-                "kind": "PASSKEY",
-                "credential": retrieve_credential,
-            },
-            "challengeToken": retrieve_challenge["token"],
-        }),
-    )
-    .await;
+    let retrieve_response = send_post_request("/retrieve/from-challenge", body).await;
 
     assert_eq!(retrieve_response.status(), StatusCode::OK);
 
@@ -79,7 +80,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
         authenticate_with_passkey_challenge(&mut passkey_client, &retrieve_challenge).await;
 
     // Attempt to retrieve the backup using an incorrect token
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -88,6 +89,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
             },
             "challengeToken": "INCORRECT TOKEN",
         }),
+        None,
     )
     .await;
 
@@ -137,7 +139,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
     );
 
     // Attempt to retrieve the backup using the tampered credential
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -146,6 +148,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
@@ -192,7 +195,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
         authenticate_with_passkey_challenge(&mut passkey_client_2, &retrieve_challenge).await;
 
     // Attempt to retrieve a backup that doesn't exist
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -201,6 +204,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 

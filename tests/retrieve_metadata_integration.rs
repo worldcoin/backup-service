@@ -70,10 +70,10 @@ async fn test_retrieve_metadata_happy_path() {
         .unwrap()
         .iter()
         .any(|factor| {
-            if factor["kind"]["kind"] == json!("EC_KEYPAIR") {
-                if factor["kind"]["publicKey"] == json!(sync_public_key) {
-                    return true;
-                }
+            if factor["kind"]["kind"] == json!("EC_KEYPAIR")
+                && factor["kind"]["publicKey"] == json!(sync_public_key)
+            {
+                return true;
             }
             false
         });

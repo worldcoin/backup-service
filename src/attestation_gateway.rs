@@ -130,7 +130,10 @@ impl AttestationGateway {
         let response = self
             .reqwest_client
             .get(Self::jwks_url(&self.base_url))
-            .header("User-Agent", "backup-service")
+            .header(
+                "User-Agent",
+                format!("backup-service/{}", env!("CARGO_PKG_VERSION")),
+            )
             .send()
             .await
             .map_err(AttestationGatewayError::FetchJwkSet)?;

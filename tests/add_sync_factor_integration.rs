@@ -2,7 +2,8 @@ mod common;
 
 use crate::common::{
     authenticate_with_passkey_challenge, create_test_backup, generate_keypair,
-    get_passkey_retrieval_challenge, send_post_request, send_post_request_with_multipart,
+    get_passkey_retrieval_challenge, send_post_request,
+    send_post_request_with_bypass_attestation_token, send_post_request_with_multipart,
     sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
@@ -35,7 +36,7 @@ async fn test_add_sync_factor_happy_path() {
         authenticate_with_passkey_challenge(&mut passkey_client, &retrieve_challenge).await;
 
     // Retrieve the backup to get a sync factor token
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -44,6 +45,7 @@ async fn test_add_sync_factor_happy_path() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
