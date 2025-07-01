@@ -199,7 +199,7 @@ impl AttestationGateway {
     ///
     /// # Errors
     /// Will return an error if serializing the payload or computing the hash fails
-    fn compute_request_hash(
+    pub fn compute_request_hash(
         input: &GenerateRequestHashInput,
     ) -> Result<String, AttestationGatewayError> {
         let mut map = serde_json::Map::new();
@@ -259,10 +259,12 @@ impl AttestationGateway {
             .as_str()
             .ok_or(AttestationGatewayError::NoKeyId)?;
         let known_keys = self.get_jwk_set().await?;
+
         let jwks = known_keys.get(key_id);
 
         // we're not expecting to see >1 public key with same key ID from attestation gateway,
         // so we can check just first element
+
         let jwk = match jwks.first() {
             Some(jwk) => *jwk,
             None => {

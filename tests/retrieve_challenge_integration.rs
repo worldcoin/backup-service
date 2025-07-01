@@ -97,7 +97,7 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
     let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
 
     for endpoint in endpoints {
-        let app = get_test_router(None).await;
+        let app = get_test_router(None, None).await;
         let response = app
             .oneshot(
                 Request::builder()
