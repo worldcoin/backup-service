@@ -18,7 +18,7 @@ use tokio::{sync::RwLock, time::Instant};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
-pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-gateway-token";
+pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-token";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationGatewayError {
