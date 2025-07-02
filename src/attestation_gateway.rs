@@ -82,8 +82,9 @@ pub struct GenerateRequestHashInput {
     pub path_uri: String,
     pub method: String,
     pub body: Option<String>,
+    pub public_key_id: Option<String>,
     pub client_name: Option<ClientName>,
-    pub client_build: Option<String>,
+    pub client_version: Option<String>,
 }
 
 pub struct AttestationGatewayConfig {
@@ -212,8 +213,11 @@ impl AttestationGateway {
             map.insert("body".to_string(), sort_json(&body_json));
         }
 
-        if let Some(client_build) = &input.client_build {
-            map.insert("clientBuild".to_string(), serde_json::json!(client_build));
+        if let Some(client_version) = &input.client_version {
+            map.insert(
+                "clientVersion".to_string(),
+                serde_json::json!(client_version),
+            );
         }
         if let Some(client_name) = &input.client_name {
             map.insert("clientName".to_string(), serde_json::json!(client_name));
@@ -222,7 +226,9 @@ impl AttestationGateway {
         map.insert("method".to_string(), serde_json::json!(input.method));
         map.insert("pathUri".to_string(), serde_json::json!(input.path_uri));
 
-        // NOTE: publicKeyId is not included in the hash because it is not relevant on this service
+        if let Some(public_key_id) = &input.public_key_id {
+            map.insert("publicKeyId".to_string(), serde_json::json!(public_key_id));
+        }
 
         // Serialize the ordered map into a JSON string
         let serialized = serde_json::to_string(&map)
@@ -388,8 +394,11 @@ impl AttestationGateway {
                 Some(body_str)
             },
             // TODO: Validate minimum supported app versions
-            client_build: parts.headers.client_build()?,
+            client_version: parts.headers.client_version()?,
             client_name: parts.headers.client_name()?,
+            // Added to reflect the same implementation of other services. Yet this always needs to be nil for this service.
+            // The `public_key_id` is not relevant and should not be used in this service.
+            public_key_id: None,
         };
         gateway
             .validate_token(attestation_token.to_string(), &hash_input)
@@ -433,7 +442,7 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 pub trait AttestationHeaderExt {
     fn attestation_token(&self) -> Result<&str, ErrorResponse>;
     fn client_name(&self) -> Result<Option<ClientName>, ErrorResponse>;
-    fn client_build(&self) -> Result<Option<String>, ErrorResponse>;
+    fn client_version(&self) -> Result<Option<String>, ErrorResponse>;
 }
 
 impl AttestationHeaderExt for HeaderMap {
@@ -467,16 +476,16 @@ impl AttestationHeaderExt for HeaderMap {
         Ok(Some(client_name))
     }
 
-    fn client_build(&self) -> Result<Option<String>, ErrorResponse> {
+    fn client_version(&self) -> Result<Option<String>, ErrorResponse> {
         let value = self
-            .get("client-build")
-            .ok_or_else(|| ErrorResponse::bad_request("missing_client_build_header"))?
+            .get("client-version")
+            .ok_or_else(|| ErrorResponse::bad_request("missing_client_version_header"))?
             .to_str()
-            .map_err(|_| ErrorResponse::bad_request("invalid_client_build_header"))?;
+            .map_err(|_| ErrorResponse::bad_request("invalid_client_version_header"))?;
 
         if value.is_empty() {
-            tracing::info!("Client build is empty");
-            return Err(ErrorResponse::bad_request("invalid_client_build_header"));
+            tracing::info!("Client version is empty");
+            return Err(ErrorResponse::bad_request("invalid_client_version_header"));
         }
 
         Ok(Some(value.to_string()))
@@ -506,7 +515,8 @@ mod tests {
             path_uri: "retrieve/challenge/passkey".to_string(),
             method: Method::POST.to_string(),
             body: None,
-            client_build: None,
+            public_key_id: None,
+            client_version: None,
             client_name: None,
         }
     }
@@ -597,7 +607,8 @@ mod tests {
             path_uri: "/v1/register".to_string(),
             method: Method::POST.to_string(),
             body: Some(serde_json::to_string(&payload).unwrap()),
-            client_build: None,
+            public_key_id: None,
+            client_version: None,
             client_name: None,
         })
         .unwrap();

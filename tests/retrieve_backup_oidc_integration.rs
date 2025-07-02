@@ -2,7 +2,7 @@ mod common;
 
 use crate::common::{
     create_test_backup_with_oidc_account, generate_keypair, get_keypair_retrieve_challenge,
-    send_post_request_with_environment, sign_keypair_challenge,
+    send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
 };
 use axum::http::StatusCode;
 use backup_service::types::OidcProvider;
@@ -52,7 +52,7 @@ async fn test_retrieve_backup_with_oidc_account() {
         },
         "challengeToken": retrieve_challenge["token"],
     });
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json_body.clone(),
         // Must be sent to the same JWT issuer as the one used to create the backup
@@ -84,7 +84,7 @@ async fn test_retrieve_backup_with_oidc_account() {
     assert_eq!(metadata["keys"].as_array().unwrap().len(), 1);
 
     // Ensure the OIDC nonce cannot be re-used
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json_body,
         // Must be sent to the same JWT issuer as the one used to create the backup
@@ -140,7 +140,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     );
 
     // Retrieve the backup using the solved challenge with a different OIDC account
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -213,7 +213,7 @@ async fn test_retrieve_backup_with_different_keypair() {
     );
 
     // Retrieve the backup using the solved challenge with different signature
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -282,7 +282,7 @@ async fn test_retrieve_backup_with_incorrect_nonce() {
     );
 
     // Retrieve the backup using the solved challenge but with incorrect nonce in token
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {

@@ -231,6 +231,10 @@ async fn test_add_factor_happy_path() {
     )
     .await;
 
+    // Verify the retrieval was successful
+    assert_eq!(retrieve_response.status(), StatusCode::OK);
+
+    // Parse the response body
     let body = retrieve_response
         .into_body()
         .collect()
@@ -238,20 +242,6 @@ async fn test_add_factor_happy_path() {
         .unwrap()
         .to_bytes();
     let retrieve_response: Value = serde_json::from_slice(&body).unwrap();
-
-    println!("retrieve_response: {:?}", retrieve_response);
-
-    // // Verify the retrieval was successful
-    // assert_eq!(retrieve_response.status(), StatusCode::OK);
-
-    // // Parse the response body
-    // let body = retrieve_response
-    //     .into_body()
-    //     .collect()
-    //     .await
-    //     .unwrap()
-    //     .to_bytes();
-    // let retrieve_response: Value = serde_json::from_slice(&body).unwrap();
 
     // Verify we got back a backup and metadata
     assert!(retrieve_response["backup"].is_string());

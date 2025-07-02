@@ -232,7 +232,7 @@ pub async fn send_post_request_with_bypass_attestation_token(
                     .expect("ATTESTATION_GATEWAY_BYPASS_TOKEN must be set"),
             )
             .header("client-name", "ios")
-            .header("client-build", "1.0.0")
+            .header("client-version", "1.0.0")
             .body(payload.to_string())
             .unwrap(),
     )
@@ -638,8 +638,9 @@ pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> 
         path_uri: path.to_string(),
         method: "POST".to_string(),
         body: Some(body.to_string()),
+        public_key_id: None,
         client_name: Some(ClientName::Ios),
-        client_build: Some("1.0.0".to_string()),
+        client_version: Some("1.0.0".to_string()),
     };
 
     let request_hash = AttestationGateway::compute_request_hash(&request_hash_input).unwrap();

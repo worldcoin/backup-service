@@ -2,8 +2,8 @@ mod common;
 
 use crate::common::{
     create_test_backup_with_keypair, create_test_backup_with_sync_keypair,
-    get_keypair_retrieval_challenge, send_post_request,
-    send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
+    get_keypair_retrieval_challenge, send_post_request_with_bypass_attestation_token,
+    sign_keypair_challenge,
 };
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
@@ -28,7 +28,7 @@ async fn test_retrieve_backup_with_ec_keypair() {
     );
 
     // Retrieve the backup using the solved challenge
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -38,6 +38,7 @@ async fn test_retrieve_backup_with_ec_keypair() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
@@ -138,7 +139,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
     );
 
     // Attempt to retrieve the backup using the second keypair's signature but first keypair's public key
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -148,6 +149,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
@@ -188,7 +190,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
     );
 
     // Attempt to retrieve a backup that doesn't exist
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -198,6 +200,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
@@ -243,7 +246,7 @@ async fn test_retrieve_backup_with_sync_keypair() {
     let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
 
     // Attempt to retrieve the backup using the sync factor
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -253,6 +256,7 @@ async fn test_retrieve_backup_with_sync_keypair() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 

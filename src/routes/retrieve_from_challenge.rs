@@ -7,6 +7,7 @@ use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::FactorScope;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::{Authorization, ErrorResponse};
+use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -29,6 +30,13 @@ pub struct RetrieveBackupFromChallengeResponse {
     metadata: ExportedBackupMetadata,
     /// Token to add a new sync factor later.
     sync_factor_token: String,
+}
+
+pub fn docs(op: TransformOperation) -> TransformOperation {
+    op.description(
+        "Request to retrieve a full backup (ciphertext) with an authenticated challenge. This endpoint requires Attestation Gateway checks (through headers `attestation-token`, `client-name`, `client-version`).",
+    )
+    .security_requirement("AttestationToken")
 }
 
 /// Request to retrieve a backup using a solved challenge.

@@ -8,6 +8,7 @@ use crate::{
     attestation_gateway::AttestationGateway,
     routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest,
 };
+use aide::axum::routing::post_with;
 use aide::axum::{
     routing::{get, post},
     ApiRouter,
@@ -66,8 +67,11 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/retrieve/from-challenge",
-            post(retrieve_from_challenge::handler)
-                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+            post_with(
+                retrieve_from_challenge::handler,
+                retrieve_from_challenge::docs,
+            )
+            .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         // Add new factor for future sync after recovery
         .api_route(

@@ -64,7 +64,7 @@ async fn test_retrieve_challenge_keypair() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_without_attestation() {
-    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+    let endpoints = ["/retrieve/from-challenge"];
 
     for endpoint in endpoints {
         let response = send_post_request(endpoint, json!({})).await;
@@ -94,7 +94,7 @@ async fn test_retrieve_challenge_without_attestation() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_with_incorrect_attestation() {
-    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+    let endpoints = ["/retrieve/from-challenge"];
 
     for endpoint in endpoints {
         let app = get_test_router(None, None).await;
@@ -104,6 +104,8 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
                     .uri(endpoint)
                     .method("POST")
                     .header("Content-Type", "application/json")
+                    .header("client-name", "ios")
+                    .header("client-version", "1.0.0")
                     .header(ATTESTATION_GATEWAY_HEADER, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30")
                     .body(json!({}).to_string())
                     .unwrap(),
