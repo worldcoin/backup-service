@@ -191,8 +191,7 @@ impl AttestationGateway {
     ) -> Result<String, AttestationGatewayError> {
         let mut map = serde_json::Map::new();
 
-        // Insert fields in the correct consistent alphabetical order:
-        // "body, clientBuild, clientName, method, pathUri"
+        // Insert fields in the correct consistent alphabetical order
         if let Some(body_str) = &input.body {
             let body_json: Value = serde_json::from_str(body_str)
                 .map_err(AttestationGatewayError::SerializeRequestPayload)?;
