@@ -34,7 +34,7 @@ pub struct RetrieveBackupFromChallengeResponse {
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
     op.description(
-        "Request to retrieve a full backup (ciphertext) with an authenticated challenge. This endpoint requires Attestation Gateway checks (through headers `attestation-token`, `client-name`, `client-version`).",
+        "Request to retrieve a full backup (ciphertext) with an authenticated challenge. This endpoint requires Attestation Gateway checks (through the `attestation-token` header).",
     )
     .security_requirement("AttestationToken")
 }

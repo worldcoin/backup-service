@@ -8,7 +8,7 @@ use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
 use backup_service::attestation_gateway::{
-    AttestationGateway, AttestationGatewayConfig, ClientName, GenerateRequestHashInput,
+    AttestationGateway, AttestationGatewayConfig, GenerateRequestHashInput,
     ATTESTATION_GATEWAY_HEADER,
 };
 use backup_service::auth::AuthHandler;
@@ -19,6 +19,7 @@ use backup_service::types::{Environment, OidcProvider};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Duration, Utc};
+use http::Method;
 use http_body_util::BodyExt;
 use josekit::jwk::alg::ec::EcCurve;
 use josekit::jwk::Jwk;
@@ -231,8 +232,6 @@ pub async fn send_post_request_with_bypass_attestation_token(
                 std::env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN")
                     .expect("ATTESTATION_GATEWAY_BYPASS_TOKEN must be set"),
             )
-            .header("client-name", "ios")
-            .header("client-version", "1.0.0")
             .body(payload.to_string())
             .unwrap(),
     )
@@ -636,11 +635,8 @@ pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> 
 
     let request_hash_input = GenerateRequestHashInput {
         path_uri: path.to_string(),
-        method: "POST".to_string(),
+        method: Method::POST,
         body: Some(body.to_string()),
-        public_key_id: None,
-        client_name: Some(ClientName::Ios),
-        client_version: Some("1.0.0".to_string()),
     };
 
     let request_hash = AttestationGateway::compute_request_hash(&request_hash_input).unwrap();

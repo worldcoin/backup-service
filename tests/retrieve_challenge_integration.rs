@@ -104,8 +104,6 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
                     .uri(endpoint)
                     .method("POST")
                     .header("Content-Type", "application/json")
-                    .header("client-name", "ios")
-                    .header("client-version", "1.0.0")
                     .header(ATTESTATION_GATEWAY_HEADER, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30")
                     .body(json!({}).to_string())
                     .unwrap(),

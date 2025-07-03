@@ -61,8 +61,6 @@ async fn test_retrieve_backup() {
                 .method("POST")
                 .header("Content-Type", "application/json")
                 .header(ATTESTATION_GATEWAY_HEADER, jwt)
-                .header("client-name", "ios")
-                .header("client-version", "1.0.0")
                 .body(body.to_string())
                 .unwrap(),
         )

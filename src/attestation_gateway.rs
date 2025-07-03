@@ -5,8 +5,8 @@ use axum::{
     middleware::Next,
     Extension,
 };
+use http::Method;
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
-use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,7 +14,6 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
-use strum_macros::{Display, EnumString};
 use tokio::{sync::RwLock, time::Instant};
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
@@ -69,22 +68,11 @@ pub struct AttestationGateway {
     enabled: bool,
 }
 
-#[derive(Debug, Serialize, EnumString, Display)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum ClientName {
-    Ios,
-    Android,
-}
-
-#[derive(Serialize, Debug)]
+#[derive(Debug)]
 pub struct GenerateRequestHashInput {
     pub path_uri: String,
-    pub method: String,
+    pub method: Method,
     pub body: Option<String>,
-    pub public_key_id: Option<String>,
-    pub client_name: Option<ClientName>,
-    pub client_version: Option<String>,
 }
 
 pub struct AttestationGatewayConfig {
@@ -191,12 +179,10 @@ impl AttestationGateway {
         self._get_jwk_set().await
     }
 
-    /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation gateway token
+    /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation-gateway-token
     ///
-    /// This function is similar to the function running on World App (oxide/attestation_gateway).
+    /// This function is the same as the function running on World App (oxide/attestation_gateway.rs, function `generate_json_request_hash`).
     ///
-    /// Please note this function is not verbatim to the function running on World App, it is a simplified version with only the
-    /// applicable functionality for this service.
     ///
     /// # Errors
     /// Will return an error if serializing the payload or computing the hash fails
@@ -213,22 +199,11 @@ impl AttestationGateway {
             map.insert("body".to_string(), sort_json(&body_json));
         }
 
-        if let Some(client_version) = &input.client_version {
-            map.insert(
-                "clientVersion".to_string(),
-                serde_json::json!(client_version),
-            );
-        }
-        if let Some(client_name) = &input.client_name {
-            map.insert("clientName".to_string(), serde_json::json!(client_name));
-        }
-
-        map.insert("method".to_string(), serde_json::json!(input.method));
+        map.insert(
+            "method".to_string(),
+            serde_json::json!(input.method.as_str()),
+        );
         map.insert("pathUri".to_string(), serde_json::json!(input.path_uri));
-
-        if let Some(public_key_id) = &input.public_key_id {
-            map.insert("publicKeyId".to_string(), serde_json::json!(public_key_id));
-        }
 
         // Serialize the ordered map into a JSON string
         let serialized = serde_json::to_string(&map)
@@ -387,18 +362,12 @@ impl AttestationGateway {
 
         let hash_input = GenerateRequestHashInput {
             path_uri: parts.uri.path().to_string(),
-            method: parts.method.to_string(),
+            method: parts.method.clone(),
             body: if body_bytes.is_empty() {
                 None
             } else {
                 Some(body_str)
             },
-            // TODO: Validate minimum supported app versions
-            client_version: parts.headers.client_version()?,
-            client_name: parts.headers.client_name()?,
-            // Added to reflect the same implementation of other services. Yet this always needs to be nil for this service.
-            // The `public_key_id` is not relevant and should not be used in this service.
-            public_key_id: None,
         };
         gateway
             .validate_token(attestation_token.to_string(), &hash_input)
@@ -441,8 +410,6 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 /// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
     fn attestation_token(&self) -> Result<&str, ErrorResponse>;
-    fn client_name(&self) -> Result<Option<ClientName>, ErrorResponse>;
-    fn client_version(&self) -> Result<Option<String>, ErrorResponse>;
 }
 
 impl AttestationHeaderExt for HeaderMap {
@@ -462,34 +429,6 @@ impl AttestationHeaderExt for HeaderMap {
 
         Ok(value)
     }
-
-    fn client_name(&self) -> Result<Option<ClientName>, ErrorResponse> {
-        let value = self
-            .get("client-name")
-            .ok_or_else(|| ErrorResponse::bad_request("missing_client_name_header"))?
-            .to_str()
-            .map_err(|_| ErrorResponse::bad_request("invalid_client_name_header"))?;
-
-        let client_name = ClientName::try_from(value)
-            .map_err(|_| ErrorResponse::bad_request("invalid_client_name_header"))?;
-
-        Ok(Some(client_name))
-    }
-
-    fn client_version(&self) -> Result<Option<String>, ErrorResponse> {
-        let value = self
-            .get("client-version")
-            .ok_or_else(|| ErrorResponse::bad_request("missing_client_version_header"))?
-            .to_str()
-            .map_err(|_| ErrorResponse::bad_request("invalid_client_version_header"))?;
-
-        if value.is_empty() {
-            tracing::info!("Client version is empty");
-            return Err(ErrorResponse::bad_request("invalid_client_version_header"));
-        }
-
-        Ok(Some(value.to_string()))
-    }
 }
 
 #[cfg(test)]
@@ -506,6 +445,7 @@ mod tests {
         jws::{alg::ecdsa::EcdsaJwsAlgorithm, JwsHeader},
         jwt::{encode_with_signer, JwtPayload},
     };
+    use serde::Serialize;
     use serde_json::json;
     use std::time::{Duration, SystemTime};
     use tokio::time::sleep;
@@ -513,11 +453,8 @@ mod tests {
     fn test_generate_request_hash_input() -> GenerateRequestHashInput {
         GenerateRequestHashInput {
             path_uri: "retrieve/challenge/passkey".to_string(),
-            method: Method::POST.to_string(),
+            method: Method::POST,
             body: None,
-            public_key_id: None,
-            client_version: None,
-            client_name: None,
         }
     }
 
@@ -605,11 +542,8 @@ mod tests {
         };
         let v1_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
             path_uri: "/v1/register".to_string(),
-            method: Method::POST.to_string(),
+            method: Method::POST,
             body: Some(serde_json::to_string(&payload).unwrap()),
-            public_key_id: None,
-            client_version: None,
-            client_name: None,
         })
         .unwrap();
         assert_eq!(
