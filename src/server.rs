@@ -6,7 +6,7 @@ use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::routes;
 use crate::types::Environment;
 use crate::{auth::AuthHandler, backup_storage::BackupStorage};
-use aide::openapi::{Info, OpenApi};
+use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
 use std::sync::Arc;
@@ -32,6 +32,21 @@ pub async fn start(
         },
         ..Default::default()
     };
+
+    // register attestation-token as a header based security scheme
+    openapi
+        .components
+        .get_or_insert_with(Default::default)
+        .security_schemes
+        .insert(
+            "AttestationToken".to_string(),
+            ReferenceOr::Item(SecurityScheme::ApiKey {
+                name: "attestation-token".into(), // header name
+                location: ApiKeyLocation::Header, // mark as header
+                description: Some("An Attestation Gateway Token is used to prove provenance of requests from attested apps.".into()),
+                extensions: Default::default(),
+            }),
+        );
 
     let router = routes::handler(environment)
         .finish_api(&mut openapi)

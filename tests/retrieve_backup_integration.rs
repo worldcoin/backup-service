@@ -1,14 +1,18 @@
 mod common;
 
 use crate::common::{
-    authenticate_with_passkey_challenge, create_test_backup, get_passkey_challenge,
-    get_passkey_retrieval_challenge, make_credential_from_passkey_challenge, send_post_request,
+    authenticate_with_passkey_challenge, create_test_backup, generate_test_attestation_token,
+    get_passkey_challenge, get_passkey_retrieval_challenge, get_test_router,
+    make_credential_from_passkey_challenge, send_post_request_with_bypass_attestation_token,
 };
-use axum::http::StatusCode;
+use axum::{extract::Request, http::StatusCode};
+use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
+use josekit::jwk::JwkSet;
 use serde_json::json;
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_backup() {
@@ -25,18 +29,43 @@ async fn test_retrieve_backup() {
     let retrieve_credential =
         authenticate_with_passkey_challenge(&mut passkey_client, &retrieve_challenge).await;
 
+    let body = json!({
+        "authorization": {
+            "kind": "PASSKEY",
+            "credential": retrieve_credential,
+        },
+        "challengeToken": retrieve_challenge["token"],
+    });
+
+    // Section: Attestation Gateway Token + Validation
+    let (jwk, jwt) = generate_test_attestation_token(&body, "/retrieve/from-challenge");
+    let mut server = mockito::Server::new_async().await;
+    let mut key_response =
+        json!({ "keys": [serde_json::to_value(jwk.to_public_key().unwrap()).unwrap()] });
+    key_response["keys"][0]["kid"] = json!("integration-test-kid");
+
+    server
+        .mock("GET", "/.well-known/jwks.json")
+        .with_status(200)
+        .with_body(key_response.to_string())
+        .create();
+    let mut jwk_set = JwkSet::new();
+    jwk_set.push_key(jwk);
+
     // Retrieve the backup using the solved challenge
-    let retrieve_response = send_post_request(
-        "/retrieve/from-challenge",
-        json!({
-            "authorization": {
-                "kind": "PASSKEY",
-                "credential": retrieve_credential,
-            },
-            "challengeToken": retrieve_challenge["token"],
-        }),
-    )
-    .await;
+    let router = get_test_router(None, Some(server.url().as_str())).await;
+    let retrieve_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/retrieve/from-challenge")
+                .method("POST")
+                .header("Content-Type", "application/json")
+                .header(ATTESTATION_GATEWAY_HEADER, jwt)
+                .body(body.to_string())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(retrieve_response.status(), StatusCode::OK);
 
@@ -79,7 +108,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
         authenticate_with_passkey_challenge(&mut passkey_client, &retrieve_challenge).await;
 
     // Attempt to retrieve the backup using an incorrect token
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -88,6 +117,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
             },
             "challengeToken": "INCORRECT TOKEN",
         }),
+        None,
     )
     .await;
 
@@ -137,7 +167,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
     );
 
     // Attempt to retrieve the backup using the tampered credential
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -146,6 +176,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 
@@ -192,7 +223,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
         authenticate_with_passkey_challenge(&mut passkey_client_2, &retrieve_challenge).await;
 
     // Attempt to retrieve a backup that doesn't exist
-    let retrieve_response = send_post_request(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {
@@ -201,6 +232,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
             },
             "challengeToken": retrieve_challenge["token"],
         }),
+        None,
     )
     .await;
 

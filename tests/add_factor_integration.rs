@@ -2,8 +2,8 @@ mod common;
 
 use crate::common::{
     create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
-    send_post_request_with_environment, sign_keypair_challenge, verify_s3_metadata_exists,
-    MockPasskeyClient,
+    send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
+    verify_s3_metadata_exists, MockPasskeyClient,
 };
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -213,7 +213,7 @@ async fn test_add_factor_happy_path() {
     );
 
     // Attempt to retrieve the backup using the OIDC factor
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
         "/retrieve/from-challenge",
         json!({
             "authorization": {

@@ -8,7 +8,8 @@ use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
 use backup_service::attestation_gateway::{
-    AttestationGateway, AttestationGatewayConfig, ATTESTATION_GATEWAY_HEADER,
+    AttestationGateway, AttestationGatewayConfig, GenerateRequestHashInput,
+    ATTESTATION_GATEWAY_HEADER,
 };
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
@@ -17,7 +18,13 @@ use backup_service::kms_jwe::KmsJwe;
 use backup_service::types::{Environment, OidcProvider};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use chrono::{Duration, Utc};
+use http::Method;
 use http_body_util::BodyExt;
+use josekit::jwk::alg::ec::EcCurve;
+use josekit::jwk::Jwk;
+use josekit::jws::{JwsHeader, ES256};
+use josekit::jwt::{self, JwtPayload};
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
@@ -46,7 +53,10 @@ pub async fn get_challenge_manager() -> Arc<ChallengeManager> {
     ))
 }
 
-pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
+pub async fn get_test_router(
+    environment: Option<Environment>,
+    attestation_gateway_base_url_override: Option<&str>,
+) -> axum::Router {
     dotenvy::from_path(".env.example").ok();
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -85,7 +95,9 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
     );
 
     let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
-        base_url: environment.attestation_gateway_host().to_string(),
+        base_url: attestation_gateway_base_url_override
+            .unwrap_or(environment.attestation_gateway_host())
+            .to_string(),
         env: environment,
         enabled: true,
     }));
@@ -104,7 +116,7 @@ pub async fn get_test_router(environment: Option<Environment>) -> axum::Router {
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {
-    let app = get_test_router(None).await;
+    let app = get_test_router(None, None).await;
     app.oneshot(
         Request::builder()
             .uri(route)
@@ -125,7 +137,7 @@ pub async fn send_post_request_with_environment(
     environment: Option<Environment>,
 ) -> Response {
     let environment = environment.unwrap_or_else(|| Environment::development(None));
-    let app = get_test_router(Some(environment)).await;
+    let app = get_test_router(Some(environment), None).await;
     app.oneshot(
         Request::builder()
             .uri(route)
@@ -200,15 +212,16 @@ pub async fn send_post_request_with_multipart(
         .body(Body::from(body_bytes))
         .unwrap();
 
-    let app = get_test_router(Some(environment)).await;
+    let app = get_test_router(Some(environment), None).await;
     app.oneshot(req).await.unwrap()
 }
 
 pub async fn send_post_request_with_bypass_attestation_token(
     route: &str,
     payload: serde_json::Value,
+    environment: Option<Environment>,
 ) -> Response {
-    let app = get_test_router(None).await;
+    let app = get_test_router(environment, None).await;
     app.oneshot(
         Request::builder()
             .uri(route)
@@ -260,9 +273,7 @@ pub async fn get_keypair_challenge() -> serde_json::Value {
 
 // Get a keypair challenge response from the server that's used for OIDC and Keypair authentication
 pub async fn get_keypair_retrieve_challenge() -> serde_json::Value {
-    let challenge_response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
-            .await;
+    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -316,9 +327,7 @@ pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
 
 /// Get a passkey retrieval challenge response from the server.
 pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
-    let challenge_response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
-            .await;
+    let challenge_response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -330,9 +339,7 @@ pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
 
 /// Get a keypair retrieval challenge response from the server.
 pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
-    let challenge_response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
-            .await;
+    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -620,4 +627,42 @@ pub async fn verify_s3_metadata_exists(backup_id: &str) -> serde_json::Value {
 
     let metadata_content = metadata_response.body.collect().await.unwrap().to_vec();
     serde_json::from_slice(&metadata_content).unwrap()
+}
+
+pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> (Jwk, String) {
+    let mut jwk = Jwk::generate_ec_key(EcCurve::P256).unwrap();
+    jwk.set_key_id("integration-test-kid");
+
+    let request_hash_input = GenerateRequestHashInput {
+        path_uri: path.to_string(),
+        method: Method::POST,
+        body: Some(body.to_string()),
+    };
+
+    let request_hash = AttestationGateway::compute_request_hash(&request_hash_input).unwrap();
+
+    let mut header = JwsHeader::new();
+    header.set_token_type("JWT");
+    header.set_key_id("integration-test-kid");
+
+    let mut payload = JwtPayload::new();
+    payload.set_claim("jti", Some(json!(request_hash))).unwrap();
+    payload.set_claim("pass", Some(json!(true))).unwrap();
+    payload
+        .set_claim("iss", Some(json!("attestation.worldcoin.org")))
+        .unwrap();
+    payload
+        .set_claim("aud", Some(json!("toolsforhumanity.com")))
+        .unwrap();
+
+    let exp = Utc::now() + Duration::seconds(3600);
+
+    payload.set_expires_at(&exp.into());
+    payload.set_issued_at(&Utc::now().into());
+
+    let signer = ES256.signer_from_jwk(&jwk).unwrap();
+
+    let jwt = jwt::encode_with_signer(&payload, &header, &signer).unwrap();
+
+    (jwk, jwt)
 }

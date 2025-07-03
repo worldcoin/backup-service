@@ -1,8 +1,6 @@
 mod common;
 
-use crate::common::{
-    get_test_router, send_post_request, send_post_request_with_bypass_attestation_token,
-};
+use crate::common::{get_test_router, send_post_request};
 use axum::{extract::Request, http::StatusCode};
 use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
 use http_body_util::BodyExt;
@@ -11,9 +9,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_challenge_passkey() {
-    let response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/passkey", json!({}))
-            .await;
+    let response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -49,9 +45,7 @@ async fn test_retrieve_challenge_passkey() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_keypair() {
-    let response =
-        send_post_request_with_bypass_attestation_token("/retrieve/challenge/keypair", json!({}))
-            .await;
+    let response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -68,9 +62,10 @@ async fn test_retrieve_challenge_keypair() {
     assert!(response["token"].as_str().unwrap().len() > 10);
 }
 
+#[ignore = "FIXME: Remove. We are temporarily not enforcing the presence of attestation-token, while the roll out of attestation is in progress."]
 #[tokio::test]
 async fn test_retrieve_challenge_without_attestation() {
-    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+    let endpoints = ["/retrieve/from-challenge"];
 
     for endpoint in endpoints {
         let response = send_post_request(endpoint, json!({})).await;
@@ -100,10 +95,10 @@ async fn test_retrieve_challenge_without_attestation() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_with_incorrect_attestation() {
-    let endpoints = ["/retrieve/challenge/keypair", "/retrieve/challenge/passkey"];
+    let endpoints = ["/retrieve/from-challenge"];
 
     for endpoint in endpoints {
-        let app = get_test_router(None).await;
+        let app = get_test_router(None, None).await;
         let response = app
             .oneshot(
                 Request::builder()

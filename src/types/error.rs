@@ -20,7 +20,7 @@ use webauthn_rs::prelude::WebauthnError;
 
 #[derive(Debug, Clone)]
 pub struct ErrorResponse {
-    error: String,
+    pub error: String,
     status: StatusCode,
 }
 

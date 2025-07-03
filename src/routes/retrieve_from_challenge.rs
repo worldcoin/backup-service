@@ -7,6 +7,7 @@ use crate::dynamo_cache::DynamoCacheManager;
 use crate::factor_lookup::FactorScope;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::{Authorization, ErrorResponse};
+use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -31,6 +32,13 @@ pub struct RetrieveBackupFromChallengeResponse {
     sync_factor_token: String,
 }
 
+pub fn docs(op: TransformOperation) -> TransformOperation {
+    op.description(
+        "Request to retrieve a full backup (ciphertext) with an authenticated challenge. This endpoint requires Attestation Gateway checks (through the `attestation-token` header).",
+    )
+    .security_requirement("AttestationToken")
+}
+
 /// Request to retrieve a backup using a solved challenge.
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
@@ -39,7 +47,6 @@ pub async fn handler(
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    // let auth_handler: AuthHandler = request.0.into();
     let (backup_id, backup_metadata) = auth_handler
         .verify(
             &request.authorization,
