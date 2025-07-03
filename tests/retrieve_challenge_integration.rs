@@ -62,6 +62,7 @@ async fn test_retrieve_challenge_keypair() {
     assert!(response["token"].as_str().unwrap().len() > 10);
 }
 
+#[ignore = "FIXME: Remove. We are temporarily not enforcing the presence of attestation-token, while the roll out of attestation is in progress."]
 #[tokio::test]
 async fn test_retrieve_challenge_without_attestation() {
     let endpoints = ["/retrieve/from-challenge"];
