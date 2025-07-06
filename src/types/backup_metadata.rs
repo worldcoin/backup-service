@@ -58,6 +58,7 @@ pub struct Factor {
 }
 
 impl Factor {
+    #[must_use]
     pub fn exported(&self) -> ExportedFactor {
         ExportedFactor {
             id: self.id.clone(),
@@ -105,7 +106,7 @@ pub enum FactorKind {
         /// The ID of the Turnkey OIDC provider. Returned from Turnkey API when creating account
         /// or adding new factor. This is used to be able to delete this factor from Turnkey
         /// if needed.
-        /// https://docs.turnkey.com/api-reference/activities/create-oauth-providers
+        /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
         turnkey_provider_id: String,
     },
     #[serde(rename_all = "camelCase")]
@@ -113,6 +114,7 @@ pub enum FactorKind {
 }
 
 impl Factor {
+    #[must_use]
     pub fn new_passkey(webauthn_credential: Passkey, registration: serde_json::Value) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -124,6 +126,7 @@ impl Factor {
         }
     }
 
+    #[must_use]
     pub fn new_oidc_account(account: OidcAccountKind, turnkey_provider_id: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -135,6 +138,7 @@ impl Factor {
         }
     }
 
+    #[must_use]
     pub fn new_ec_keypair(public_key: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),

@@ -14,13 +14,14 @@ use sha2::Digest;
 #[derive(Debug, Clone, Default)]
 pub struct OidcNonceVerifier {
     /// Key that should be hashed in the nonce according to Turnkey specification:
-    /// https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens.
+    /// <https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens>.
     /// Public keys are usually represented in base64 format in our API.
     pub expected_public_key_sec1_base64: String,
 }
 
 impl OidcNonceVerifier {
     /// Creates a new `OidcNonceVerifier` with the expected public key.
+    #[must_use]
     pub fn new(expected_public_key_sec1_base64: String) -> Self {
         OidcNonceVerifier {
             expected_public_key_sec1_base64,
@@ -55,9 +56,13 @@ impl NonceVerifier for OidcNonceVerifier {
 
 /// Converts a public key in SEC1 uncompressed format (encoded base64) to the expected
 /// Turnkey OIDC nonce.
-/// https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens
+/// <https://docs.turnkey.com/authentication/social-logins#nonce-restrictions-in-oidc-tokens>
 ///
 /// Uses `String` as an error type for compatibility with `NonceVerifier` trait.
+///
+/// # Errors
+/// - Returns an error if the public key is not valid base64.
+/// - Returns an error if the public key is not the right length for a P256 uncompressedpublic key.
 pub fn public_key_sec1_base64_to_expected_turnkey_nonce(
     public_key_sec1_base64: &str,
 ) -> Result<String, String> {

@@ -38,6 +38,10 @@ pub struct KmsKey {
 
 impl KmsKey {
     #[must_use]
+    /// Parses a KMS key ARN into a `KmsKey` struct.
+    ///
+    /// # Panics
+    /// Panics if the ARN is not valid. Given this input is expected to be trusted and ran at server start up.
     pub fn from_arn(arn: &str) -> Self {
         let parts: Vec<&str> = arn.split('/').collect();
         assert!(
@@ -67,6 +71,7 @@ impl Aes256GcmKwJweEncrypter {
         }
     }
 
+    #[must_use]
     pub const fn get_encryption_content() -> AesgcmJweEncryption {
         AesgcmJweEncryption::A256gcm
     }

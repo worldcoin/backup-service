@@ -37,7 +37,7 @@ pub struct AddFactorChallengeResponse {
 ///
 /// This endpoint generates two challenges:
 /// 1. For the existing passkey factor to prove ownership over the backup. Currently, this is signed
-///    with a passkey using a Turnkey activity with extra metadata — see turnkey_activity.rs for more.
+///    with a passkey using a Turnkey activity with extra metadata — see `turnkey_activity.rs` for more.
 /// 2. For the new factor to prove ownership over the new factor. Currently, this is a keypair
 ///    that's in the nonce of an OIDC token that user wants to add.
 ///

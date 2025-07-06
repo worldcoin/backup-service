@@ -29,6 +29,7 @@ pub struct AuthHandler {
 }
 
 impl AuthHandler {
+    #[must_use]
     pub fn new(
         backup_storage: Arc<BackupStorage>,
         dynamo_cache_manager: Arc<DynamoCacheManager>,

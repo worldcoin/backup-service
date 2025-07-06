@@ -31,6 +31,7 @@ pub enum FactorScope {
 }
 
 impl FactorLookup {
+    #[must_use]
     pub fn new(environment: Environment, dynamodb_client: Arc<aws_sdk_dynamodb::Client>) -> Self {
         Self {
             environment,

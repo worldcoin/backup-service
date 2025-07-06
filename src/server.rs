@@ -43,7 +43,7 @@ pub async fn start(
             ReferenceOr::Item(SecurityScheme::ApiKey {
                 name: "attestation-token".into(), // header name
                 location: ApiKeyLocation::Header, // mark as header
-                description: Some("An Attestation Gateway Token is used to prove provenance of requests from attested apps.".into()),
+                description: Some("An Attestation Gateway Token is used to prove provenance of requests from attested mobile applications.".into()),
                 extensions: Default::default(),
             }),
         );

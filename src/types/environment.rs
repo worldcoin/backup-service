@@ -14,6 +14,11 @@ pub enum Environment {
 }
 
 impl Environment {
+    #[must_use]
+    /// Initializes an `Environment` from the `APP_ENV` environment variable.
+    ///
+    /// # Panics
+    /// Panics if the `APP_ENV` environment variable is not set.
     pub fn from_env() -> Self {
         let env = env::var("APP_ENV")
             .expect("APP_ENV environment variable is not set")
@@ -25,10 +30,11 @@ impl Environment {
             "development" => Self::Development {
                 jwk_set_url_port_override: None,
             },
-            _ => panic!("Invalid environment: {}", env),
+            _ => panic!("Invalid environment: {env}"),
         }
     }
 
+    #[must_use]
     pub fn development(jwk_set_url_port_override: Option<usize>) -> Self {
         Self::Development {
             jwk_set_url_port_override,
@@ -36,6 +42,10 @@ impl Environment {
     }
 
     /// S3 bucket where backups are stored
+    ///
+    /// # Panics
+    /// Panics if the `BACKUP_S3_BUCKET` environment variable is not set.
+    #[must_use]
     pub fn s3_bucket(&self) -> String {
         match self {
             Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
@@ -46,6 +56,7 @@ impl Environment {
     }
 
     /// Returns the endpoint URL to use for AWS services
+    #[must_use]
     pub const fn override_aws_endpoint_url(&self) -> Option<&str> {
         match self {
             // Regular AWS endpoints to be used for production and staging
@@ -78,6 +89,7 @@ impl Environment {
     }
 
     /// Returns whether the API docs should be visible
+    #[must_use]
     pub fn show_api_docs(&self) -> bool {
         match self {
             Self::Production => false,
@@ -86,6 +98,10 @@ impl Environment {
     }
 
     /// KMS keys used to encrypt challenge tokens
+    ///
+    /// # Panics
+    /// Panics if the `CHALLENGE_TOKEN_KMS_KEY_ARN` environment variable is not set.
+    #[must_use]
     pub fn challenge_token_kms_key(&self) -> KmsKey {
         KmsKey::from_arn(
             env::var("CHALLENGE_TOKEN_KMS_KEY_ARN")
@@ -95,18 +111,24 @@ impl Environment {
     }
 
     /// TTL for all challenge tokens
+    #[must_use]
     pub fn challenge_token_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)
     }
 
-    /// Default TTL for the DynamoDB cache layer
+    /// Default TTL for the `DynamoDB` cache layer
+    #[must_use]
     pub fn cache_default_ttl(&self) -> std::time::Duration {
         // 15 minutes
         std::time::Duration::from_secs(15 * 60)
     }
 
     /// Configuration to generate passkeys
+    ///
+    /// # Panics
+    /// A panic is not expected, the initialization values are static.
+    #[must_use]
     pub fn webauthn_config(&self) -> Webauthn {
         WebauthnBuilder::new(
             "keys.world.app",
@@ -131,12 +153,17 @@ impl Environment {
     }
 
     /// Max size of the backup file
+    #[must_use]
     pub fn max_backup_file_size(&self) -> usize {
         // generally each PCP is ~4MB, plus some buffer
         10 * 1024 * 1024 // 10 MB
     }
 
     /// JWK Set URL for the Google OIDC provider
+    ///
+    /// # Panics
+    /// This will not panic. The string is static.
+    #[must_use]
     pub fn google_jwk_set_url(&self) -> JsonWebKeySetUrl {
         match self {
             Self::Production | Self::Staging => {
@@ -147,13 +174,14 @@ impl Environment {
                 jwk_set_url_port_override: port,
             } => {
                 let port = port.unwrap_or(8001);
-                JsonWebKeySetUrl::new(format!("http://localhost:{}/oauth2/v3/certs", port))
+                JsonWebKeySetUrl::new(format!("http://localhost:{port}/oauth2/v3/certs"))
                     .expect("Invalid JWK set URL")
             }
         }
     }
 
     /// The client ID for the Google OIDC provider
+    #[must_use]
     pub fn google_client_id(&self) -> ClientId {
         match self {
             Self::Production | Self::Staging => ClientId::new(
@@ -168,11 +196,19 @@ impl Environment {
     }
 
     /// Issuer URL for the Google OIDC provider
+    ///
+    /// # Panics
+    /// This will not panic. The string is static.
+    #[must_use]
     pub fn google_issuer_url(&self) -> IssuerUrl {
         IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL")
     }
 
     /// JWK Set URL for the Apple OIDC provider
+    ///
+    /// # Panics
+    /// This will not panic. The string is static.
+    #[must_use]
     pub fn apple_jwk_set_url(&self) -> JsonWebKeySetUrl {
         match self {
             Self::Production | Self::Staging => {
@@ -184,26 +220,33 @@ impl Environment {
                 jwk_set_url_port_override: port,
             } => {
                 let port = port.unwrap_or(8001);
-                JsonWebKeySetUrl::new(format!("http://localhost:{}/auth/keys", port))
+                JsonWebKeySetUrl::new(format!("http://localhost:{port}/auth/keys"))
                     .expect("Invalid JWK set URL")
             }
         }
     }
 
     /// The client ID for the Apple OIDC provider
+    #[must_use]
     pub fn apple_client_id(&self) -> ClientId {
         match self {
-            Self::Production | Self::Staging => ClientId::new("placeholder".to_string()),
-            Self::Development { .. } => ClientId::new("placeholder".to_string()),
+            Self::Production | Self::Staging | Self::Development { .. } => {
+                ClientId::new("placeholder".to_string())
+            }
         }
     }
 
     /// Issuer URL for the Apple OIDC provider
+    ///
+    /// # Panics
+    /// This will not panic. The string is static.
+    #[must_use]
     pub fn apple_issuer_url(&self) -> IssuerUrl {
         // https://developer.apple.com/documentation/signinwithapple/verifying-a-user
         IssuerUrl::new("https://appleid.apple.com".to_string()).expect("Invalid issuer URL")
     }
 
+    #[must_use]
     pub fn factor_lookup_dynamodb_table_name(&self) -> &'static str {
         match self {
             Self::Production | Self::Staging | Self::Development { .. } => {
@@ -212,12 +255,14 @@ impl Environment {
         }
     }
 
+    #[must_use]
     pub fn cache_table_name(&self) -> &'static str {
         match self {
             Self::Production | Self::Staging | Self::Development { .. } => "backup-service-cache",
         }
     }
 
+    #[must_use]
     pub const fn attestation_gateway_host(&self) -> &str {
         match self {
             Self::Production => "https://attestation.worldcoin.org",
@@ -225,7 +270,9 @@ impl Environment {
         }
     }
 
+    #[must_use]
     pub fn enable_attestation_gateway(&self) -> bool {
+        //  TODO: Swap to `DISABLE_ATTESTATION_GATEWAY`
         match env::var("ENABLE_ATTESTATION_GATEWAY") {
             Ok(val) => val.trim().eq_ignore_ascii_case("true"),
             Err(_) => false,

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use strum_macros::{Display, EnumString};
 
-/// The `DynamoCacheManager` introduces a simple and generic cache layer on top of DynamoDB.
+/// The `DynamoCacheManager` introduces a simple and generic cache layer on top of `DynamoDB`.
 ///
 /// # Use Cases
 /// - It is used to store tokens that are used to add a sync factor to a backup.
@@ -40,12 +40,12 @@ impl DynamoCacheManager {
     }
 
     /// Creates a new sync factor token that allows to update `backup_id` and stores it
-    /// in the DynamoDB database. The token is returned to the caller.
+    /// in the `DynamoDB` database. The token is returned to the caller.
     ///
     /// Sync Factor Tokens are prefixed in Dynamo with `syncFactorToken#`
     ///
     /// # Errors
-    /// * `SyncFactorTokenError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
+    /// * `SyncFactorTokenError::DynamoDbPutError` - if the token cannot be inserted into the `DynamoDB` table
     pub async fn create_sync_factor_token(
         &self,
         backup_id: String,
@@ -108,8 +108,8 @@ impl DynamoCacheManager {
     /// in a semi-atomic process.
     ///
     /// # Errors
-    /// * `DynamoCacheError::DynamoDbGetError` - if the token cannot be fetched from the DynamoDB table
-    /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be marked as used in the DynamoDB table
+    /// * `DynamoCacheError::DynamoDbGetError` - if the token cannot be fetched from the `DynamoDB` table
+    /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be marked as used in the `DynamoDB` table
     /// * `DynamoCacheError::TokenNotFound` - if the token does not exist in the database
     /// * `DynamoCacheError::AlreadyUsed` - if the token was already used
     /// * `DynamoCacheError::TokenExpired` - if the token has expired
@@ -119,7 +119,7 @@ impl DynamoCacheManager {
         // Hash the token for lookup
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
-        // Get the token from DynamoDB
+        // Get the token from `DynamoDB`
         let result = self
             .dynamodb_client
             .get_item()
@@ -196,7 +196,7 @@ impl DynamoCacheManager {
     /// to allow the user to try again.
     ///
     /// # Errors
-    /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be unmarked as used in the DynamoDB table
+    /// * `DynamoCacheError::DynamoDbUpdateError` - if the token cannot be unmarked as used in the `DynamoDB` table
     pub async fn unuse_sync_factor_token(&self, token: String) -> Result<(), DynamoCacheError> {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
         self.dynamodb_client
@@ -215,10 +215,10 @@ impl DynamoCacheManager {
         Ok(())
     }
 
-    /// Records a hashed challenge token as used in DynamoDB to prevent replay attacks.
+    /// Records a hashed challenge token as used in `DynamoDB` to prevent replay attacks.
     ///
     /// # Errors
-    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
+    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the `DynamoDB` table
     pub async fn use_challenge_token(
         &self,
         challenge_token: String,
@@ -259,7 +259,7 @@ impl DynamoCacheManager {
     /// Note this method is very similar to `use_challenge_token` but uses different configuration
     ///
     /// # Errors
-    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the DynamoDB table
+    /// * `DynamoCacheError::DynamoDbPutError` - if the token cannot be inserted into the `DynamoDB` table
     pub async fn use_oidc_nonce(
         &self,
         nonce: &str,
@@ -311,7 +311,7 @@ fn hash_token(prefix: &str, token: &str) -> String {
 
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum SyncFactorTokenAttribute {
-    /// Primary key for the token (prefix SYNC_FACTOR_TOKEN_PREFIX)
+    /// Primary key for the token (prefix `SYNC_FACTOR_TOKEN_PREFIX`)
     #[strum(serialize = "PK")]
     Pk,
     /// Backup ID that the token is associated with
@@ -330,7 +330,7 @@ const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
 #[derive(Debug, Clone, Display, EnumString)]
 pub enum UsedChallengeAttribute {
-    /// Primary key for the token (prefix USED_CHALLENGE_PREFIX)
+    /// Primary key for the token (prefix `USED_CHALLENGE_PREFIX`)
     #[strum(serialize = "PK")]
     Pk,
     /// Expiration timestamp for TTL

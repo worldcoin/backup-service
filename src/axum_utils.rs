@@ -3,7 +3,10 @@ use axum::extract::multipart::MultipartError;
 use axum::extract::Multipart;
 use std::collections::HashMap;
 
-/// Extracts fields from a multipart request to a HashMap for easy access.
+/// Extracts fields from a multipart request to a `HashMap` for easy access.
+///
+/// # Errors
+/// Returns `MultipartError` if the multipart request is invalid.
 pub async fn extract_fields_from_multipart(
     multipart: &mut Multipart,
 ) -> Result<HashMap<String, Bytes>, MultipartError> {
