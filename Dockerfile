@@ -1,10 +1,11 @@
-FROM --platform=linux/amd64 rust:1.85.1-slim AS builder
+FROM rust:1.85.1-slim AS builder
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     musl-tools \
     clang \
+    libssl-dev \
     pkg-config \
     build-essential \
     ca-certificates \
