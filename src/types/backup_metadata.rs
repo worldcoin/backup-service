@@ -217,3 +217,85 @@ pub enum ExportedOidcAccountKind {
     #[serde(rename_all = "camelCase")]
     Apple { masked_email: String },
 }
+
+#[cfg(test)]
+mod tests {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use p256::SecretKey;
+    use rand::rngs::OsRng;
+
+    use super::*;
+
+    #[test]
+    fn test_factor_kind_comparison_keypair() {
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+        let factor_1 = FactorKind::EcKeypair {
+            public_key: public_key.clone(),
+        };
+        let factor_2 = FactorKind::EcKeypair {
+            public_key: public_key.clone(),
+        };
+
+        let factor_3 = FactorKind::EcKeypair {
+            public_key: public_key[..public_key.len() - 1].to_string(),
+        };
+
+        assert_eq!(factor_1, factor_2);
+        assert_ne!(factor_1, factor_3);
+    }
+
+    #[test]
+    fn test_factor_kind_comparison_oidc_account() {
+        let factor_1 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_2 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_3 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567891".to_string(), // different provider ID
+        };
+
+        let factor_4 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567891".to_string(), // different sub
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_5 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Apple {
+                // different `OidcAccountKind`
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        assert_eq!(factor_1, factor_2);
+        assert_ne!(factor_1, factor_3);
+        assert_ne!(factor_1, factor_4);
+        assert_ne!(factor_1, factor_5);
+    }
+
+    #[test]
+    fn test_factor_kind_comparison_passkey() {
+        // let client = get_mock_passkey_client();
+    }
+}

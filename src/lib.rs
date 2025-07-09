@@ -8,7 +8,6 @@ pub mod challenge_manager;
 pub mod dynamo_cache;
 pub mod factor_lookup;
 pub mod kms_jwe;
-pub mod mock_oidc_server;
 pub mod oidc_nonce_verifier;
 pub mod oidc_token_verifier;
 pub mod routes;

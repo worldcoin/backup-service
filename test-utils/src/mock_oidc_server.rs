@@ -1,6 +1,5 @@
 #![allow(clippy::missing_panics_doc)] // this is module used for testing, panics are allowed and self-explanatory
-use crate::oidc_nonce_verifier::public_key_sec1_base64_to_expected_turnkey_nonce;
-use crate::types::{Environment, OidcProvider};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
 use mockito::ServerOpts;
 use openidconnect::core::{
@@ -8,12 +7,42 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
-use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
 use rsa::RsaPrivateKey;
+use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+pub enum MockOidcProvider {
+    Google,
+    Apple,
+}
+
+impl MockOidcProvider {
+    /// Note this matches the same client ID defined in the `Environment` struct (`src/types/environment.rs`)
+    #[must_use]
+    pub const fn as_client_id(&self) -> &'static str {
+        match self {
+            Self::Google => {
+                "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+            }
+            Self::Apple => "placeholder",
+        }
+    }
+
+    #[must_use]
+    pub fn as_issuer_url(&self) -> IssuerUrl {
+        match self {
+            Self::Google => IssuerUrl::new("https://accounts.google.com".to_string())
+                .expect("Invalid issuer URL"),
+            Self::Apple => {
+                IssuerUrl::new("https://appleid.apple.com".to_string()).expect("Invalid issuer URL")
+            }
+        }
+    }
+}
 
 /// Mock OIDC server for testing purposes. We have to expose it as a module, because it's used in
 /// both integration and unit tests.
@@ -74,37 +103,33 @@ impl MockOidcServer {
         self.server.socket_address().port() as usize
     }
 
-    /// Get OIDC provider configuration (issuer URL and client ID) based on the provider type
-    fn oidc_provider_config(env: Environment, provider: OidcProvider) -> (IssuerUrl, ClientId) {
-        match provider {
-            OidcProvider::Google => (env.google_issuer_url(), env.google_client_id()),
-            OidcProvider::Apple => (env.apple_issuer_url(), env.apple_client_id()),
-        }
-    }
-
     /// Generate a token for the specified provider
     pub fn generate_token(
         &self,
-        environment: Environment,
-        provider: OidcProvider,
+        provider: &MockOidcProvider,
         subject: Option<SubjectIdentifier>,
         public_key_sec1_base64: &str,
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
-        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
+
+        // convert public key to expected turnkey nonce
+        // see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
+        let public_key_bytes = STANDARD.decode(public_key_sec1_base64).unwrap();
+        let public_key_hex = hex::encode(public_key_bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(public_key_hex.as_bytes());
+        let nonce_value = hex::encode(hasher.finalize());
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            issuer_url,
-            vec![Audience::new(client_id.to_string())],
+            provider.as_issuer_url(),
+            vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(subject),
             EmptyAdditionalClaims {},
         )
-        .set_nonce(Some(Nonce::new(
-            public_key_sec1_base64_to_expected_turnkey_nonce(public_key_sec1_base64).unwrap(),
-        )))
+        .set_nonce(Some(Nonce::new(nonce_value)))
         .set_email(Some(EndUserEmail::new("hello@example.com".to_string())));
 
         // Sign the claims with the private key
@@ -121,17 +146,11 @@ impl MockOidcServer {
     }
 
     /// Generate an expired token for the specified provider
-    pub fn generate_expired_token(
-        &self,
-        environment: Environment,
-        provider: OidcProvider,
-    ) -> String {
-        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
-
+    pub fn generate_expired_token(&self, provider: &MockOidcProvider) -> String {
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            issuer_url,
-            vec![Audience::new(client_id.to_string())],
+            provider.as_issuer_url(),
+            vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now(), // expiration time
             Utc::now(), // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -154,17 +173,11 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect signature for the specified provider
-    pub fn generate_incorrectly_signed_token(
-        &self,
-        environment: Environment,
-        provider: OidcProvider,
-    ) -> String {
-        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
-
+    pub fn generate_incorrectly_signed_token(&self, provider: &MockOidcProvider) -> String {
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            issuer_url,
-            vec![Audience::new(client_id.to_string())],
+            provider.as_issuer_url(),
+            vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -198,16 +211,10 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect issuer for the specified provider
-    pub fn generate_token_with_incorrect_issuer(
-        &self,
-        environment: Environment,
-        provider: OidcProvider,
-    ) -> String {
-        let (_, client_id) = Self::oidc_provider_config(environment, provider);
-
+    pub fn generate_token_with_incorrect_issuer(&self, provider: &MockOidcProvider) -> String {
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
-            vec![Audience::new(client_id.to_string())],
+            provider.as_issuer_url(),
+            vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -228,15 +235,9 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect audience for the specified provider
-    pub fn generate_token_with_incorrect_audience(
-        &self,
-        environment: Environment,
-        provider: OidcProvider,
-    ) -> String {
-        let (issuer_url, _) = Self::oidc_provider_config(environment, provider);
-
+    pub fn generate_token_with_incorrect_audience(&self, provider: &MockOidcProvider) -> String {
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            issuer_url,
+            provider.as_issuer_url(),
             vec![Audience::new("incorrect-audience".to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
@@ -258,16 +259,10 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect `issued_at` time for the specified provider
-    pub fn generate_token_with_incorrect_issued_at(
-        &self,
-        environment: Environment,
-        provider: OidcProvider,
-    ) -> String {
-        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
-
+    pub fn generate_token_with_incorrect_issued_at(&self, provider: &MockOidcProvider) -> String {
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            issuer_url,
-            vec![Audience::new(client_id.to_string())],
+            provider.as_issuer_url(),
+            vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now()
                 .checked_add_signed(Duration::minutes(30))

@@ -15,7 +15,8 @@ use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
-use backup_service::types::{Environment, OidcProvider};
+use backup_service::types::Environment;
+use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Duration, Utc};
@@ -500,7 +501,7 @@ pub struct TestBackupWithOidcAccount {
     pub oidc_token: String,
     pub environment: Environment,
     pub response: Response,
-    pub oidc_server: backup_service::mock_oidc_server::MockOidcServer,
+    pub oidc_server: MockOidcServer,
 }
 
 /// Create a test backup with an OIDC account.
@@ -509,7 +510,7 @@ pub async fn create_test_backup_with_oidc_account(
     backup_data: &[u8],
 ) -> TestBackupWithOidcAccount {
     // Setup OIDC server
-    let oidc_server = backup_service::mock_oidc_server::MockOidcServer::new().await;
+    let oidc_server = MockOidcServer::new().await;
     let environment =
         Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
@@ -521,8 +522,7 @@ pub async fn create_test_backup_with_oidc_account(
 
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
+        &MockOidcProvider::Google,
         Some(SubjectIdentifier::new(subject.to_string())),
         &public_key,
     );

@@ -7,8 +7,8 @@ use crate::common::{
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use backup_service::mock_oidc_server::MockOidcServer;
-use backup_service::types::{Environment, OidcProvider};
+use backup_service::types::Environment;
+use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
 use http_body_util::BodyExt;
 use serde_json::json;
 
@@ -116,8 +116,7 @@ async fn test_create_backup_with_oidc_token() {
     let (public_key, secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &public_key);
     let signature = sign_keypair_challenge(
         &secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -440,7 +439,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
     let challenge_response = get_keypair_challenge().await;
 
     // Generate invalid OIDC token
-    let oidc_token = oidc_server.generate_expired_token(environment, OidcProvider::Google);
+    let oidc_token = oidc_server.generate_expired_token(&MockOidcProvider::Google);
 
     // Generate temporary keypair for OIDC authentication and sign the challenge
     let (public_key, secret_key) = generate_keypair();
@@ -508,12 +507,8 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
     let (public_key, secret_key) = generate_keypair();
 
     // Generate OIDC token with incorrect nonce
-    let incorrect_nonce_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
-        None,
-        &generate_keypair().0,
-    );
+    let incorrect_nonce_token =
+        oidc_server.generate_token(&MockOidcProvider::Google, None, &generate_keypair().0);
 
     // Sign the challenge correctly
     let signature = sign_keypair_challenge(

@@ -761,6 +761,7 @@ dependencies = [
  "aws-sdk-kms",
  "aws-sdk-s3",
  "axum",
+ "backup-service-test-utils",
  "base64 0.22.1",
  "chrono",
  "dotenvy",
@@ -792,6 +793,22 @@ dependencies = [
  "url",
  "uuid",
  "webauthn-rs",
+]
+
+[[package]]
+name = "backup-service-test-utils"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "mockito",
+ "openidconnect",
+ "rand 0.8.5",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
