@@ -6,14 +6,11 @@ RUN apt-get update && apt-get install -y \
     musl-tools \
     clang \
     pkg-config \
-    libssl-dev \
     build-essential \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add x86_64-unknown-linux-musl
-
-ENV OPENSSL_STATIC=1
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
