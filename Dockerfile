@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     musl-tools \
+    clang \
     pkg-config \
     libssl-dev \
     build-essential \
