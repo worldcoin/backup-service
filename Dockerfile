@@ -3,14 +3,17 @@ FROM rust:1.85.1-slim AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
+    musl-tools \
     pkg-config \
     libssl-dev \
     build-essential \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+RUN rustup target add x86_64-unknown-linux-musl
+
 # Copy manifests
-COPY Cargo.toml Cargo.toml
+COPY Cargo.toml Cargo.lock ./
 
 # Cache dependencies
 RUN mkdir src && \
@@ -22,20 +25,18 @@ RUN mkdir src && \
 COPY . .
 
 # Build the application
-RUN cargo build --release
+RUN cargo build --release --target x86_64-unknown-linux-musl
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM scratch
 
 WORKDIR /app
 
-# Install SSL certificates
-RUN apt-get update && \
-    apt-get install -y ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# Copy SSL certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy the binary
-COPY --from=builder /app/target/release/backup-service /app/backup-service
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/backup-service /app/backup-service
 
 # Set the entrypoint
 USER 100

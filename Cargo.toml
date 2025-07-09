@@ -74,3 +74,7 @@ rsa            = "0.9.8"
 rand           = "0.8.0"
 chrono         = "0.4.40"
 mockito        = "1.7.0"
+
+
+[profile.release]
+strip = true
