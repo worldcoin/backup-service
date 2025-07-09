@@ -1,4 +1,4 @@
-FROM rust:1.85.1-slim AS builder
+FROM --platform=linux/amd64 rust:1.85.1-slim AS builder
 
 WORKDIR /app
 
@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
  && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add x86_64-unknown-linux-musl
+
+ENV OPENSSL_STATIC=1
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./

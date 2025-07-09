@@ -113,6 +113,7 @@ jobs:
             GITHUB_TOKEN=${{ secrets.GIT_HUB_TOKEN }}
           cache-from: type=gha
           cache-to: "type=gha,mode=max"
+          platforms: linux/amd64
 
       - name: Docker Compose services
         run: |
