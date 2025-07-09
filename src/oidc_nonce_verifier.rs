@@ -62,7 +62,7 @@ impl NonceVerifier for OidcNonceVerifier {
 ///
 /// # Errors
 /// - Returns an error if the public key is not valid base64.
-/// - Returns an error if the public key is not the right length for a P256 uncompressedpublic key.
+/// - Returns an error if the public key is not the right length for a P256 uncompressed public key.
 pub fn public_key_sec1_base64_to_expected_turnkey_nonce(
     public_key_sec1_base64: &str,
 ) -> Result<String, String> {

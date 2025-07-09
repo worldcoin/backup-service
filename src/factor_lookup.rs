@@ -8,7 +8,7 @@ use strum_macros::{Display, EnumString};
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,
 /// keypair public key, iss + sub for OIDC) and the backup ID.
 ///
-/// It used during recovery to find the backup corresponding ot the provided factor. When a user is restoring
+/// It used during recovery to find the backup corresponding to the provided factor. When a user is restoring
 /// their backup, they only have their factor. Hence a lookup to get the `backup_id` is needed.
 ///
 /// To reiterate, the `FactorLookup` is used only to lookup the `backup_id` for a given factor. It cannot authorize access
