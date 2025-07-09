@@ -2,5 +2,7 @@
 .github
 target/
 tests/
+test-utils/
+!test-utils/Cargo.toml
 deny.toml
 docker-compose.yml # used for tests
