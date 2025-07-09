@@ -8,12 +8,13 @@ use crate::common::{
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
+use backup_service_test_utils::get_mock_passkey_client;
 use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
 async fn test_add_sync_factor_happy_path() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Create a backup first
     let (_credential, create_response) =

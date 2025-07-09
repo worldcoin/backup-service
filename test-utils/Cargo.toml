@@ -4,11 +4,14 @@ publish = false
 edition = "2024"
 
 [dependencies]
+async-trait    = "0.1.88"
 base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 mockito = { workspace = true }
 openidconnect = { workspace = true }
+passkey        =  { workspace = true }
+public-suffix  = "0.1.2"
 rand = { workspace = true }
 rsa     = "0.9.8"
 serde_json = { workspace = true }

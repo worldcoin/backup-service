@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-mod passkey_client;
-
 use aws_sdk_s3::Client as S3Client;
 use axum::body::{Body, Bytes};
 use axum::http::Request;
@@ -16,7 +14,7 @@ use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::types::Environment;
-use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
+use backup_service_test_utils::{MockOidcProvider, MockOidcServer, MockPasskeyClient};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Duration, Utc};
@@ -31,8 +29,6 @@ use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
-#[allow(unused_imports)]
-pub use passkey_client::*;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;

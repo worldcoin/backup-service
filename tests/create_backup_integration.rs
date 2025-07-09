@@ -8,14 +8,14 @@ use crate::common::{
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use backup_service::types::Environment;
-use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
+use backup_service_test_utils::{get_mock_passkey_client, MockOidcProvider, MockOidcServer};
 use http_body_util::BodyExt;
 use serde_json::json;
 
 // Happy path - passkey
 #[tokio::test]
 async fn test_create_backup_with_passkey() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -214,7 +214,7 @@ async fn test_create_backup_with_ec_keypair() {
 
 #[tokio::test]
 async fn test_create_backup_with_incorrect_token() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -266,7 +266,7 @@ async fn test_create_backup_with_incorrect_token() {
 
 #[tokio::test]
 async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -327,7 +327,7 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
 
 #[tokio::test]
 async fn test_create_backup_with_empty_file() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -379,7 +379,7 @@ async fn test_create_backup_with_empty_file() {
 
 #[tokio::test]
 async fn test_create_backup_with_large_file() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;

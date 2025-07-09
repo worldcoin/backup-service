@@ -3,13 +3,15 @@ mod common;
 use crate::common::{
     create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
-    verify_s3_metadata_exists, MockPasskeyClient,
+    verify_s3_metadata_exists,
 };
 use axum::http::StatusCode;
 use axum::response::Response;
 use backup_service::types::Environment;
+use backup_service_test_utils::get_mock_passkey_client;
 use backup_service_test_utils::MockOidcProvider;
 use backup_service_test_utils::MockOidcServer;
+use backup_service_test_utils::MockPasskeyClient;
 use base64::engine::general_purpose::STANDARD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -30,7 +32,7 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
         Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
     // Create a backup with a passkey
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
     let (_credential, response) = create_test_backup(&mut passkey_client, b"BACKUP DATA").await;
 
     // Extract the backup ID from the response
@@ -559,8 +561,8 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
 #[tokio::test]
 async fn test_add_factor_with_passkey_credential_for_different_user() {
     let (oidc_server, environment, _, _) = setup_test_environment().await;
-    let mut passkey_client_1 = common::get_mock_passkey_client();
-    let mut passkey_client_2 = common::get_mock_passkey_client();
+    let mut passkey_client_1 = get_mock_passkey_client();
+    let mut passkey_client_2 = get_mock_passkey_client();
 
     // Create a backup with the first and second passkey
     let (_, response) = create_test_backup(&mut passkey_client_1, b"BACKUP DATA").await;

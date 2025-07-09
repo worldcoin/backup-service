@@ -3,8 +3,8 @@
 use passkey::authenticator::Authenticator;
 use passkey::authenticator::{UserCheck, UserValidationMethod};
 use passkey::client::Client;
-use passkey::types::ctap2::{Aaguid, Ctap2Error};
 use passkey::types::Passkey;
+use passkey::types::ctap2::{Aaguid, Ctap2Error};
 
 pub type MockPasskeyClient =
     Client<Option<Passkey>, MockUserValidationMethod, public_suffix::PublicSuffixList>;
@@ -37,6 +37,7 @@ impl UserValidationMethod for MockUserValidationMethod {
 }
 
 /// Initialize an authenticator with a mock user validation method
+#[must_use]
 pub fn get_mock_passkey_client() -> MockPasskeyClient {
     let store: Option<Passkey> = None;
     let user_validation_method = MockUserValidationMethod {};
