@@ -25,6 +25,7 @@ pub struct ErrorResponse {
 }
 
 impl ErrorResponse {
+    #[must_use]
     pub fn internal_server_error() -> Self {
         Self {
             error: "internal_server_error".to_string(),
@@ -32,6 +33,7 @@ impl ErrorResponse {
         }
     }
 
+    #[must_use]
     pub fn bad_request(message: &str) -> Self {
         Self {
             error: message.to_string(),
@@ -83,15 +85,12 @@ impl OperationOutput for ErrorResponse {
 
 impl From<WebauthnError> for ErrorResponse {
     fn from(err: WebauthnError) -> Self {
-        match err {
-            WebauthnError::Configuration => {
-                tracing::error!(message = "Webauthn configuration error", error = ?err);
-                ErrorResponse::internal_server_error()
-            }
-            _ => {
-                tracing::info!(message = "Passkey webauthn error", error = ?err);
-                ErrorResponse::bad_request("webauthn_error")
-            }
+        if err == WebauthnError::Configuration {
+            tracing::error!(message = "Webauthn configuration error", error = ?err);
+            ErrorResponse::internal_server_error()
+        } else {
+            tracing::info!(message = "Passkey webauthn error", error = ?err);
+            ErrorResponse::bad_request("webauthn_error")
         }
     }
 }

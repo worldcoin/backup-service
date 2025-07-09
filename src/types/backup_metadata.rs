@@ -30,16 +30,8 @@ impl BackupMetadata {
         ExportedBackupMetadata {
             id: self.id.clone(),
             keys: self.keys.clone(),
-            factors: self
-                .factors
-                .iter()
-                .map(|factor| factor.exported())
-                .collect(),
-            sync_factors: self
-                .sync_factors
-                .iter()
-                .map(|factor| factor.exported())
-                .collect(),
+            factors: self.factors.iter().map(Factor::exported).collect(),
+            sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
         }
     }
 }
@@ -58,10 +50,11 @@ pub struct Factor {
 }
 
 impl Factor {
+    #[must_use]
     pub fn exported(&self) -> ExportedFactor {
         ExportedFactor {
             id: self.id.clone(),
-            created_at: self.created_at.timestamp() as u64,
+            created_at: self.created_at.timestamp(),
             kind: match &self.kind {
                 FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
                     registration: registration.clone(),
@@ -105,7 +98,7 @@ pub enum FactorKind {
         /// The ID of the Turnkey OIDC provider. Returned from Turnkey API when creating account
         /// or adding new factor. This is used to be able to delete this factor from Turnkey
         /// if needed.
-        /// https://docs.turnkey.com/api-reference/activities/create-oauth-providers
+        /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
         turnkey_provider_id: String,
     },
     #[serde(rename_all = "camelCase")]
@@ -113,6 +106,7 @@ pub enum FactorKind {
 }
 
 impl Factor {
+    #[must_use]
     pub fn new_passkey(webauthn_credential: Passkey, registration: serde_json::Value) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -124,6 +118,7 @@ impl Factor {
         }
     }
 
+    #[must_use]
     pub fn new_oidc_account(account: OidcAccountKind, turnkey_provider_id: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -135,6 +130,7 @@ impl Factor {
         }
     }
 
+    #[must_use]
     pub fn new_ec_keypair(public_key: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -186,7 +182,7 @@ pub struct ExportedFactor {
     /// Used as a unique identifier for the factor
     pub id: String,
     /// Timestamp when the factor was created
-    pub created_at: u64,
+    pub created_at: i64,
     /// The kind of factor and the associated metadata
     pub kind: ExportedFactorKind,
 }

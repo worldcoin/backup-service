@@ -1,3 +1,4 @@
+#![allow(clippy::missing_panics_doc)] // this is module used for testing, panics are allowed and self-explanatory
 use crate::oidc_nonce_verifier::public_key_sec1_base64_to_expected_turnkey_nonce;
 use crate::types::{Environment, OidcProvider};
 use chrono::{Duration, Utc};
@@ -74,11 +75,7 @@ impl MockOidcServer {
     }
 
     /// Get OIDC provider configuration (issuer URL and client ID) based on the provider type
-    fn oidc_provider_config(
-        &self,
-        env: Environment,
-        provider: OidcProvider,
-    ) -> (IssuerUrl, ClientId) {
+    fn oidc_provider_config(env: Environment, provider: OidcProvider) -> (IssuerUrl, ClientId) {
         match provider {
             OidcProvider::Google => (env.google_issuer_url(), env.google_client_id()),
             OidcProvider::Apple => (env.apple_issuer_url(), env.apple_client_id()),
@@ -94,7 +91,7 @@ impl MockOidcServer {
         public_key_sec1_base64: &str,
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
-        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -129,7 +126,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -162,7 +159,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -206,7 +203,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (_, client_id) = self.oidc_provider_config(environment, provider);
+        let (_, client_id) = Self::oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             IssuerUrl::new("https://incorrect-issuer.com".to_string()).unwrap(),
@@ -236,7 +233,7 @@ impl MockOidcServer {
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, _) = self.oidc_provider_config(environment, provider);
+        let (issuer_url, _) = Self::oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             issuer_url,
@@ -260,13 +257,13 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    /// Generate a token with incorrect issued_at time for the specified provider
+    /// Generate a token with incorrect `issued_at` time for the specified provider
     pub fn generate_token_with_incorrect_issued_at(
         &self,
         environment: Environment,
         provider: OidcProvider,
     ) -> String {
-        let (issuer_url, client_id) = self.oidc_provider_config(environment, provider);
+        let (issuer_url, client_id) = Self::oidc_provider_config(environment, provider);
 
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             issuer_url,

@@ -58,6 +58,7 @@ pub struct AddFactorResponse {
 ///
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
 /// and the new factor (to prove ownership of the new factor).
+#[allow(clippy::too_many_lines)] // the code is properly split out into steps
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
@@ -182,11 +183,8 @@ pub async fn handler(
             if STANDARD.encode(trusted_challenge) != backup_service_challenge {
                 return Err(ErrorResponse::bad_request("invalid_challenge"));
             }
-            let new_factor_type = match challenge_context {
-                ChallengeContext::AddFactor { new_factor_type } => new_factor_type,
-                _ => {
-                    return Err(ErrorResponse::bad_request("invalid_challenge_context"));
-                }
+            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
             };
             // We do not need to check signature here, because whole activity is signed and verified
             // in the previous steps.
@@ -226,8 +224,7 @@ pub async fn handler(
             } = &expected_new_factor
             {
                 let raw_oidc_token = match &oidc_token {
-                    OidcToken::Google { token } => token,
-                    OidcToken::Apple { token } => token,
+                    OidcToken::Google { token } | OidcToken::Apple { token } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
                     return Err(ErrorResponse::bad_request("invalid_oidc_token"));
@@ -296,6 +293,12 @@ pub async fn handler(
     factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
         .await?;
+
+    // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
+    // provides the best security guarantees. If the second step (adding the factor to the backup metadata)
+    // fails, the factor still cannot be used for authentication and will only cause some not found errors. If
+    // this was flipped however, it would be possible to have a technically valid orphan factor, which couldn't be revoked
+    // potentially leading to a security issue.
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
     backup_storage

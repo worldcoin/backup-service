@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AddSyncFactorRequest {
-    /// The challenge token that was used to create the sync factor, from AddSyncFactorChallengeKeypairResponse
+    /// The challenge token that was used to create the sync factor, from `AddSyncFactorChallengeKeypairResponse`
     challenge_token: String,
     /// New sync factor to add. Must be an EC keypair.
     sync_factor: Authorization,
-    /// From sync_factor_token in RetrieveBackupFromChallengeResponse, used to authorize the request
+    /// From `sync_factor_token` in `RetrieveBackupFromChallengeResponse`, used to authorize the request
     /// to specific backup.
     sync_factor_token: String,
 }

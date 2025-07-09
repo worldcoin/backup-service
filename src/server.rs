@@ -13,6 +13,10 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::Level;
 
+/// Starts the backup service.
+///
+/// # Errors
+/// - Returns an error if there are any issues starting the server. In practice, this will terminate the process.
 #[allow(clippy::too_many_arguments)] // logical module separation is preferred
 pub async fn start(
     environment: Environment,
@@ -43,7 +47,7 @@ pub async fn start(
             ReferenceOr::Item(SecurityScheme::ApiKey {
                 name: "attestation-token".into(), // header name
                 location: ApiKeyLocation::Header, // mark as header
-                description: Some("An Attestation Gateway Token is used to prove provenance of requests from attested apps.".into()),
+                description: Some("An Attestation Gateway Token is used to prove provenance of requests from attested mobile applications.".into()),
                 extensions: Default::default(),
             }),
         );

@@ -3,11 +3,15 @@ use serde_json::Value;
 use webauthn_rs::prelude::PublicKeyCredential;
 
 pub trait TryFromValue: Sized {
+    /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
+    ///
+    /// # Errors
+    /// - Returns `webauthn_prf_results_not_allowed` if PRF extension information is present in the credential. This is a security risk.
+    /// - Returns `webauthn_error` if the credential is invalid or cannot be deserialized.
     fn try_from_value(value: &Value) -> Result<Self, ErrorResponse>;
 }
 
 impl TryFromValue for PublicKeyCredential {
-    /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
     fn try_from_value(value: &Value) -> Result<Self, ErrorResponse> {
         // https://w3c.github.io/webauthn/#prf-extension
         // Check for PRF extension misuse

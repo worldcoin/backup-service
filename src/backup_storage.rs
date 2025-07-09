@@ -15,6 +15,7 @@ pub struct BackupStorage {
 }
 
 impl BackupStorage {
+    #[must_use]
     pub fn new(environment: Environment, s3_client: Arc<S3Client>) -> Self {
         Self {
             environment,
@@ -25,9 +26,9 @@ impl BackupStorage {
     /// Creates a backup and metadata in S3.
     ///
     /// # Errors
-    /// * If the backup or metadata cannot be serialized to JSON, BackupManagerError::SerdeJsonError is returned.
+    /// * If the backup or metadata cannot be serialized to JSON, `BackupManagerError::SerdeJsonError` is returned.
     /// * If the backup or metadata cannot be uploaded to S3 (e.g. due to internal error or because
-    ///   this backup ID is already used), BackupManagerError::PutObjectError is returned.
+    ///   this backup ID is already used), `BackupManagerError::PutObjectError` is returned.
     ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
         &self,
@@ -58,14 +59,14 @@ impl BackupStorage {
     }
 
     /// Retrieves a backup and metadata from S3 by backup ID, which is linked to credential using
-    /// separate FactorLookup service.
+    /// separate `FactorLookup` service.
     ///
     /// If the backup or metadata does not exist, None is returned.
     ///
     /// # Errors
-    /// * If the metadata cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
-    /// * If the backup or metadata cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
-    /// * If the backup or metadata cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    /// * If the metadata cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
+    /// * If the backup or metadata cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
+    /// * If the backup or metadata cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
     pub async fn get_by_backup_id(
         &self,
         backup_id: &str,
@@ -85,14 +86,14 @@ impl BackupStorage {
     }
 
     /// Retrieves metadata from S3 by backup ID, which is linked to credential using
-    /// separate FactorLookup service.
+    /// separate `FactorLookup` service.
     ///
     /// If the metadata does not exist, None is returned.
     ///
     /// # Errors
-    /// * If the metadata cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
-    /// * If the metadata cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
-    /// * If the metadata cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    /// * If the metadata cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
+    /// * If the metadata cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
+    /// * If the metadata cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
     pub async fn get_metadata_by_backup_id(
         &self,
         backup_id: &str,
@@ -117,14 +118,14 @@ impl BackupStorage {
     }
 
     /// Retrieves a backup from S3 by backup ID, which is linked to credential using
-    /// separate FactorLookup service.
+    /// separate `FactorLookup` service.
     ///
     /// If the backup does not exist, None is returned.
     ///
     /// # Errors
-    /// * If the backup cannot be deserialized from JSON, BackupManagerError::SerdeJsonError is returned.
-    /// * If the backup cannot be downloaded from S3, BackupManagerError::GetObjectError is returned.
-    /// * If the backup cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    /// * If the backup cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
+    /// * If the backup cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
+    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
     pub async fn get_backup_by_backup_id(
         &self,
         backup_id: &str,
@@ -150,8 +151,8 @@ impl BackupStorage {
     /// Updates a backup in S3 by backup ID. Overwrites the existing backup with the new one.
     ///
     /// # Errors
-    /// * If the backup cannot be uploaded to S3, BackupManagerError::PutObjectError is returned.
-    /// * If the backup cannot be converted to bytes, BackupManagerError::ByteStreamError is returned.
+    /// * If the backup cannot be uploaded to S3, `BackupManagerError::PutObjectError` is returned.
+    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
     pub async fn update_backup(
         &self,
         backup_id: &str,
@@ -168,9 +169,13 @@ impl BackupStorage {
         Ok(())
     }
 
-    /// Adds a regular factor to the backup metadata in S3.
+    /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
+    ///   maintenance harder (e.g. when deleting a factor).
     pub async fn add_factor(
         &self,
         backup_id: &str,
@@ -210,7 +215,12 @@ impl BackupStorage {
     }
 
     /// Adds a sync factor to the backup metadata in S3.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
+    ///    maintenance harder (e.g. when deleting a factor)
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -229,7 +239,9 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing kinds
+        // Check if this factor already exists by comparing `FactorKind`
+        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
+        // it is not comparing just the "kind", but the entire factor.
         if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
             || metadata
                 .sync_factors
@@ -262,7 +274,11 @@ impl BackupStorage {
     /// metadata if it is no longer needed. For example, if last OIDC factor is removed, the Turnkey
     /// account can no longer be used to decrypt the backup, so the key and reference to Turnkey IDs
     /// should be deleted.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorNotFound` - if the factor does not exist.
+    /// - `BackupManagerError::EncryptionKeyNotFound` - if the backup encryption key is not found in the metadata.
     pub async fn remove_factor(
         &self,
         backup_id: &str,
@@ -333,11 +349,11 @@ pub struct FoundBackup {
 }
 
 fn get_backup_key(backup_id: &str) -> String {
-    format!("{}/backup", backup_id)
+    format!("{backup_id}/backup")
 }
 
 fn get_metadata_key(backup_id: &str) -> String {
-    format!("{}/metadata", backup_id)
+    format!("{backup_id}/metadata")
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -372,6 +388,7 @@ mod tests {
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
+    use chrono::DateTime;
     use serde_json::json;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -426,7 +443,7 @@ mod tests {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                     registration: json!({}),
                 },
-                created_at: Default::default(),
+                created_at: DateTime::default(),
             }],
             sync_factors: vec![],
             keys: vec![BackupEncryptionKey::Prf {

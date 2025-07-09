@@ -1,3 +1,5 @@
+#![deny(clippy::all, dead_code, clippy::pedantic)]
+#![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 pub mod attestation_gateway;
 pub mod auth;
 pub mod axum_utils;
@@ -19,8 +21,11 @@ pub mod webauthn;
 pub use routes::handler;
 
 /// Utility function to mask an email address with two first letters and full domain.
+///
+///
 /// For example, "seva.zhidkov@toolsforhumanity.com" => "se***@toolsforhumanity.com"
 /// If the email is not valid, it returns None.
+#[must_use]
 pub fn mask_email(email: &str) -> Option<String> {
     let parts: Vec<&str> = email.split('@').collect();
     if parts.len() != 2 {
@@ -37,7 +42,7 @@ pub fn mask_email(email: &str) -> Option<String> {
     }
 
     let masked_local_part = format!("{}***", &local_part[..2]);
-    Some(format!("{}@{}", masked_local_part, domain_part))
+    Some(format!("{masked_local_part}@{domain_part}"))
 }
 
 #[cfg(test)]

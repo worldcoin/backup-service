@@ -42,7 +42,8 @@ impl OidcTokenVerifier {
     }
 
     // TODO Add a guard if this service becomes heavily used. This implementation does not protect against cache stampedes under high loads.
-    async fn _get_jwk_set(
+    /// Fetches the JWK Set from the OIDC provider's well known URL.
+    async fn fetch_remote_jwk_set(
         &self,
         jwk_set_url: &JsonWebKeySetUrl,
     ) -> Result<Arc<CoreJsonWebKeySet>, OidcTokenVerifierError> {
@@ -85,16 +86,20 @@ impl OidcTokenVerifier {
                     let url = jwk_set_url.clone();
                     let this = self.clone();
                     tokio::spawn(async move {
-                        let _ = this._get_jwk_set(&url).await;
+                        let _ = this.fetch_remote_jwk_set(&url).await;
                     });
                 }
                 return Ok(keys);
             }
         }
         // Cache miss
-        self._get_jwk_set(jwk_set_url).await
+        self.fetch_remote_jwk_set(jwk_set_url).await
     }
 
+    /// Verifies an OIDC token. It also ensures that the nonce has not been used before.
+    ///
+    /// # Errors
+    /// - `OidcTokenVerifierError`s will be raised if the token is not valid or the nonce has been used before.
     pub async fn verify_token(
         &self,
         token: &OidcToken,

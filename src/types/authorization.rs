@@ -37,9 +37,10 @@ impl From<&Authorization> for ChallengeType {
     fn from(value: &Authorization) -> Self {
         match value {
             Authorization::Passkey { .. } => ChallengeType::Passkey,
-            Authorization::EcKeypair { .. } => ChallengeType::Keypair,
             // NOTE: OIDC Accounts also sign a `Keypair` challenge. The keypair is part of the OIDC nonce.
-            Authorization::OidcAccount { .. } => ChallengeType::Keypair,
+            Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
+                ChallengeType::Keypair
+            }
         }
     }
 }

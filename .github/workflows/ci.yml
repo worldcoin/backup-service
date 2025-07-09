@@ -37,7 +37,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-features
 
   build-release:
     name: Build Release
@@ -81,7 +81,7 @@ jobs:
         run: |
           docker compose up -d
           # Wait for services to be ready
-          sleep 5
+          sleep 7
 
       - name: Health check LocalStack
         run: curl -s http://localhost:4566/_localstack/health | jq -e '.services.s3 == "running"'

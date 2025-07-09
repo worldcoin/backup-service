@@ -4,6 +4,7 @@ use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKe
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::OidcAccountKind;
+use crate::types::OidcToken;
 use crate::verify_signature::verify_signature;
 use crate::webauthn::TryFromValue;
 use crate::{
@@ -47,6 +48,12 @@ impl AuthHandler {
         }
     }
 
+    /// Verifies a request is properly authenticated and authorized for the specific action being performed.
+    ///
+    /// # Errors
+    /// - Returns an error if the challenge token is not properly authorized (e.g. using a `FactorScope` not supported for the action).
+    /// - Returns an error if the request is not properly authenticated (which depends on the `Authorization` type).
+    #[allow(clippy::too_many_lines)] // the code is properly split out into steps
     pub async fn verify(
         self,
         authorization: &Authorization,
@@ -123,14 +130,9 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let backup_metadata = match backup_metadata {
-                    Some(backup_metadata) => backup_metadata,
-                    None => {
-                        tracing::info!(
-                            message = "No backup metadata found for the given backup ID"
-                        );
-                        return Err(ErrorResponse::bad_request("webauthn_error"));
-                    }
+                let Some(backup_metadata) = backup_metadata else {
+                    tracing::info!(message = "No backup metadata found for the given backup ID");
+                    return Err(ErrorResponse::bad_request("webauthn_error"));
                 };
                 let reference_credentials: Vec<DiscoverableKey> = backup_metadata
                     .factors
@@ -185,14 +187,12 @@ impl AuthHandler {
 
                 // Step 4B.3: Look up the OIDC account in the factor lookup table
                 let oidc_factor = match &oidc_token {
-                    crate::types::OidcToken::Google { .. } => FactorToLookup::from_oidc_account(
-                        claims.issuer().to_string(),
-                        claims.subject().to_string(),
-                    ),
-                    crate::types::OidcToken::Apple { .. } => FactorToLookup::from_oidc_account(
-                        claims.issuer().to_string(),
-                        claims.subject().to_string(),
-                    ),
+                    OidcToken::Google { .. } | OidcToken::Apple { .. } => {
+                        FactorToLookup::from_oidc_account(
+                            claims.issuer().to_string(),
+                            claims.subject().to_string(),
+                        )
+                    }
                 };
 
                 let not_verified_backup_id = self
@@ -209,14 +209,9 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let backup_metadata = match backup_metadata {
-                    Some(backup_metadata) => backup_metadata,
-                    None => {
-                        tracing::info!(
-                            message = "No backup metadata found for the given backup ID"
-                        );
-                        return Err(ErrorResponse::bad_request("oidc_account_error"));
-                    }
+                let Some(backup_metadata) = backup_metadata else {
+                    tracing::info!(message = "No backup metadata found for the given backup ID");
+                    return Err(ErrorResponse::bad_request("oidc_account_error"));
                 };
 
                 // Step 4B.5: Verify that the OIDC account exists in the backup's factors
@@ -237,8 +232,8 @@ impl AuthHandler {
                             OidcAccountKind::Google {
                                 sub,
                                 email: factor_email,
-                            } => sub == &claims.subject().to_string() && factor_email == &email,
-                            OidcAccountKind::Apple {
+                            }
+                            | OidcAccountKind::Apple {
                                 sub,
                                 email: factor_email,
                             } => sub == &claims.subject().to_string() && factor_email == &email,
@@ -284,14 +279,9 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let backup_metadata = match backup_metadata {
-                    Some(backup_metadata) => backup_metadata,
-                    None => {
-                        tracing::info!(
-                            message = "No backup metadata found for the given backup ID"
-                        );
-                        return Err(ErrorResponse::bad_request("backup_not_found"));
-                    }
+                let Some(backup_metadata) = backup_metadata else {
+                    tracing::info!(message = "No backup metadata found for the given backup ID");
+                    return Err(ErrorResponse::bad_request("backup_not_found"));
                 };
 
                 // Step 4C.4: Verify that the public key exists in the backup's `Sync` or `Main` factors
