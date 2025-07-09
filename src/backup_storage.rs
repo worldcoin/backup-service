@@ -1,9 +1,9 @@
+use crate::types::Environment;
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::Environment;
+use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client as S3Client;
 use std::sync::Arc;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
@@ -187,9 +187,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing `FactorKind`
-        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
-        // it is not comparing just the "kind", but the entire factor.
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == factor.kind)
             || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
         {
@@ -241,9 +239,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing `FactorKind`
-        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
-        // it is not comparing just the "kind", but the entire factor.
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
             || metadata
                 .sync_factors
@@ -385,11 +381,11 @@ pub enum BackupManagerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Environment;
     use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::types::encryption_key::BackupEncryptionKey;
-    use crate::types::Environment;
-    use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
+    use aws_sdk_s3::error::ProvideErrorMetadata;
     use chrono::DateTime;
     use serde_json::json;
     use std::sync::Arc;

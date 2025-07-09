@@ -2,6 +2,7 @@
 name = "backup-service-test-utils"
 publish = false
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 async-trait = "0.1.88"
