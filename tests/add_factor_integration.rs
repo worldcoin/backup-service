@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use backup_service::types::Environment;
 use backup_service_test_utils::get_mock_passkey_client;
+use backup_service_test_utils::get_passkey_assertion;
 use backup_service_test_utils::MockOidcProvider;
 use backup_service_test_utils::MockOidcServer;
 use backup_service_test_utils::MockPasskeyClient;
@@ -19,10 +20,8 @@ use chrono::Utc;
 use http_body_util::BodyExt;
 use openidconnect::SubjectIdentifier;
 use p256::SecretKey;
-use passkey::types::webauthn::CredentialRequestOptions;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use url::Url;
 
 /// Sets up a test environment with OIDC server, mock passkey client and a backup
 async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockPasskeyClient) {
@@ -79,31 +78,6 @@ fn create_turnkey_activity(challenge: &str) -> (String, String) {
     };
 
     (turnkey_activity, turnkey_activity_challenge)
-}
-
-/// Gets a passkey assertion for a Turnkey activity
-async fn get_passkey_assertion(client: &mut MockPasskeyClient, challenge: &str) -> Value {
-    let credential_request_options: CredentialRequestOptions = serde_json::from_value(json!({
-        "publicKey": {
-            "challenge": challenge,
-            "timeout": 60000,
-            "rpId": "keys.world.app",
-            "userVerification": "preferred"
-        },
-    }))
-    .unwrap();
-
-    serde_json::to_value(
-        client
-            .authenticate(
-                &Url::parse("https://keys.world.app").unwrap(),
-                credential_request_options,
-                passkey::client::DefaultClientData,
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap()
 }
 
 /// Creates a new keypair and signs a challenge

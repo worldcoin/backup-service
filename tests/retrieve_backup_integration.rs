@@ -1,13 +1,16 @@
 mod common;
 
 use crate::common::{
-    authenticate_with_passkey_challenge, create_test_backup, generate_test_attestation_token,
-    get_passkey_challenge, get_passkey_retrieval_challenge, get_test_router,
-    make_credential_from_passkey_challenge, send_post_request_with_bypass_attestation_token,
+    create_test_backup, generate_test_attestation_token, get_passkey_challenge,
+    get_passkey_retrieval_challenge, get_test_router,
+    send_post_request_with_bypass_attestation_token,
 };
 use axum::{extract::Request, http::StatusCode};
 use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
-use backup_service_test_utils::get_mock_passkey_client;
+use backup_service_test_utils::{
+    authenticate_with_passkey_challenge, get_mock_passkey_client,
+    make_credential_from_passkey_challenge,
+};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;

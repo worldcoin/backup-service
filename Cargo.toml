@@ -20,7 +20,6 @@ uuid = { version = "1.16.0", features = ["v4", "serde"] }
 
 # dev workspace dependencies
 mockito = "1.7.0"
-passkey        = "0.4.0"
 
 [dependencies]
 aide = { version = "0.14.2", features = [
@@ -81,7 +80,5 @@ sha2 = { workspace = true }
 backup-service-test-utils = { path = "test-utils/" }
 http-body-util = "0.1.3"
 tower          = "0.5.2"
-url            = "2.5.4"
 mockito        =  { workspace = true }
-passkey        =  { workspace = true }
 chrono         = "0.4.40"

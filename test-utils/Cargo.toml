@@ -10,10 +10,11 @@ chrono = { workspace = true }
 hex = { workspace = true }
 mockito = { workspace = true }
 openidconnect = { workspace = true }
-passkey        =  { workspace = true }
+passkey        = "0.4.0"
 public-suffix  = "0.1.2"
 rand = { workspace = true }
 rsa     = "0.9.8"
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+url            = "2.5.4"

@@ -1,14 +1,17 @@
 mod common;
 
 use crate::common::{
-    generate_keypair, get_keypair_challenge, get_passkey_challenge,
-    make_credential_from_passkey_challenge, make_sync_factor, send_post_request_with_multipart,
-    sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
+    generate_keypair, get_keypair_challenge, get_passkey_challenge, make_sync_factor,
+    send_post_request_with_multipart, sign_keypair_challenge, verify_s3_backup_exists,
+    verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use backup_service::types::Environment;
-use backup_service_test_utils::{get_mock_passkey_client, MockOidcProvider, MockOidcServer};
+use backup_service_test_utils::{
+    get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
+    MockOidcServer,
+};
 use http_body_util::BodyExt;
 use serde_json::json;
 
@@ -19,6 +22,8 @@ async fn test_create_backup_with_passkey() {
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
+
+    dbg!(&challenge_response);
 
     // Register a credential by solving the challenge
     let credential =

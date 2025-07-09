@@ -1,7 +1,6 @@
 #![allow(clippy::missing_panics_doc)] // this is module used for testing, panics are allowed and self-explanatory
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
-use mockito::ServerOpts;
 use openidconnect::core::{
     CoreIdToken, CoreIdTokenClaims, CoreJsonWebKeySet, CoreJwsSigningAlgorithm,
     CoreRsaPrivateSigningKey,
@@ -48,7 +47,7 @@ impl MockOidcProvider {
 /// both integration and unit tests.
 pub struct MockOidcServer {
     signing_key: CoreRsaPrivateSigningKey,
-    pub server: mockito::Server,
+    pub server: mockito::ServerGuard,
     pub google_jwk_set_mock: mockito::Mock,
     pub apple_jwk_set_mock: mockito::Mock,
 }
@@ -69,11 +68,7 @@ impl MockOidcServer {
         let jwk_set = CoreJsonWebKeySet::new(vec![signing_key.as_verification_key()]);
 
         // Set up the mock server with the JWK set
-        let mut server = mockito::Server::new_with_opts_async(ServerOpts {
-            port: 0, // Dynamically assign port
-            ..Default::default()
-        })
-        .await;
+        let mut server = mockito::Server::new_async().await;
 
         // Set up Google JWK set endpoint
         let google_jwk_set_mock = server

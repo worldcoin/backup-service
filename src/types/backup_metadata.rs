@@ -81,7 +81,7 @@ impl Factor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 #[allow(clippy::large_enum_variant)]
 pub enum FactorKind {
@@ -103,6 +103,43 @@ pub enum FactorKind {
     },
     #[serde(rename_all = "camelCase")]
     EcKeypair { public_key: String },
+}
+
+impl PartialEq for FactorKind {
+    fn eq(&self, other: &Self) -> bool {
+        use FactorKind::{EcKeypair, OidcAccount, Passkey};
+        match (self, other) {
+            // compare only the passkey (through the credential ID), ignore the registration
+            // note `Passkey` implements `PartialEq` correctly based on the `cred_id` field
+            (
+                Passkey {
+                    webauthn_credential: a,
+                    ..
+                },
+                Passkey {
+                    webauthn_credential: b,
+                    ..
+                },
+            ) => a == b,
+
+            // compare the rest of the fields regularly
+            (
+                OidcAccount {
+                    account: a0,
+                    turnkey_provider_id: a1,
+                },
+                OidcAccount {
+                    account: b0,
+                    turnkey_provider_id: b1,
+                },
+            ) => a0 == b0 && a1 == b1,
+
+            (EcKeypair { public_key: a }, EcKeypair { public_key: b }) => a == b,
+
+            // Different variants are never equal
+            _ => false,
+        }
+    }
 }
 
 impl Factor {
@@ -220,9 +257,15 @@ pub enum ExportedOidcAccountKind {
 
 #[cfg(test)]
 mod tests {
+    use backup_service_test_utils::{
+        get_mock_passkey_client, make_credential_from_passkey_challenge,
+    };
     use base64::{engine::general_purpose::STANDARD, Engine};
     use p256::SecretKey;
     use rand::rngs::OsRng;
+    use serde_json::json;
+
+    use crate::types::Environment;
 
     use super::*;
 
@@ -294,8 +337,39 @@ mod tests {
         assert_ne!(factor_1, factor_5);
     }
 
-    #[test]
-    fn test_factor_kind_comparison_passkey() {
-        // let client = get_mock_passkey_client();
+    #[tokio::test]
+    async fn test_factor_kind_comparison_passkey() {
+        let mut client = get_mock_passkey_client();
+
+        let (challenge, registration) = Environment::development(None)
+            .webauthn_config()
+            .start_passkey_registration(Uuid::new_v4(), "test", "test", None)
+            .unwrap();
+
+        let challenge = json!({
+            "challenge": challenge,
+        });
+
+        let passkey = Environment::development(None)
+            .webauthn_config()
+            .finish_passkey_registration(
+                &serde_json::from_value(
+                    make_credential_from_passkey_challenge(&mut client, &challenge).await,
+                )
+                .unwrap(),
+                &registration,
+            )
+            .unwrap();
+
+        let factor_1 = FactorKind::Passkey {
+            webauthn_credential: passkey.clone(),
+            registration: json!([1]),
+        };
+        let factor_2 = FactorKind::Passkey {
+            webauthn_credential: passkey,
+            registration: json!([2]),
+        };
+
+        assert_eq!(factor_1, factor_2);
     }
 }

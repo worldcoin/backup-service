@@ -772,7 +772,6 @@ dependencies = [
  "mockito",
  "openidconnect",
  "p256 0.13.2",
- "passkey",
  "rand 0.8.5",
  "reqwest",
  "schemars",
@@ -787,7 +786,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "url",
  "uuid",
  "webauthn-rs",
 ]
@@ -808,6 +806,7 @@ dependencies = [
  "rsa",
  "serde_json",
  "sha2",
+ "url",
  "uuid",
 ]
 
