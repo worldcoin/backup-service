@@ -82,7 +82,6 @@ pub struct AttestationGatewayConfig {
 }
 
 impl AttestationGateway {
-    #[must_use]
     fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }

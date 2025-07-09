@@ -30,16 +30,8 @@ impl BackupMetadata {
         ExportedBackupMetadata {
             id: self.id.clone(),
             keys: self.keys.clone(),
-            factors: self
-                .factors
-                .iter()
-                .map(|factor| factor.exported())
-                .collect(),
-            sync_factors: self
-                .sync_factors
-                .iter()
-                .map(|factor| factor.exported())
-                .collect(),
+            factors: self.factors.iter().map(Factor::exported).collect(),
+            sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
         }
     }
 }
@@ -62,7 +54,7 @@ impl Factor {
     pub fn exported(&self) -> ExportedFactor {
         ExportedFactor {
             id: self.id.clone(),
-            created_at: self.created_at.timestamp() as u64,
+            created_at: self.created_at.timestamp(),
             kind: match &self.kind {
                 FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
                     registration: registration.clone(),
@@ -190,7 +182,7 @@ pub struct ExportedFactor {
     /// Used as a unique identifier for the factor
     pub id: String,
     /// Timestamp when the factor was created
-    pub created_at: u64,
+    pub created_at: i64,
     /// The kind of factor and the associated metadata
     pub kind: ExportedFactorKind,
 }

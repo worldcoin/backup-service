@@ -6,7 +6,7 @@ use p256::ecdsa::{self, signature::Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType};
 
-/// Verifies a Turnkey activity WebAuthn stamp. This function takes a passkey signature that was
+/// Verifies a Turnkey activity `WebAuthn` stamp. This function takes a passkey signature that was
 /// used to approve a Turnkey activity and verifies it against the passkey public key (in the same
 /// format as we store in the backup metadata, see `webauthn_credential.get_public_key()`).
 ///

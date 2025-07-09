@@ -373,6 +373,7 @@ mod tests {
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
+    use chrono::DateTime;
     use serde_json::json;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -427,7 +428,7 @@ mod tests {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                     registration: json!({}),
                 },
-                created_at: Default::default(),
+                created_at: DateTime::default(),
             }],
             sync_factors: vec![],
             keys: vec![BackupEncryptionKey::Prf {
