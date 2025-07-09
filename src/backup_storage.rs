@@ -169,9 +169,13 @@ impl BackupStorage {
         Ok(())
     }
 
-    /// Adds a regular factor to the backup metadata in S3.
+    /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
+    ///   maintenance harder (e.g. when deleting a factor).
     pub async fn add_factor(
         &self,
         backup_id: &str,
@@ -211,7 +215,12 @@ impl BackupStorage {
     }
 
     /// Adds a sync factor to the backup metadata in S3.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
+    ///    maintenance harder (e.g. when deleting a factor)
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -230,7 +239,9 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing kinds
+        // Check if this factor already exists by comparing `FactorKind`
+        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
+        // it is not comparing just the "kind", but the entire factor.
         if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
             || metadata
                 .sync_factors
@@ -263,7 +274,11 @@ impl BackupStorage {
     /// metadata if it is no longer needed. For example, if last OIDC factor is removed, the Turnkey
     /// account can no longer be used to decrypt the backup, so the key and reference to Turnkey IDs
     /// should be deleted.
-    /// TODO/FIXME: Make this atomic.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorNotFound` - if the factor does not exist.
+    /// - `BackupManagerError::EncryptionKeyNotFound` - if the backup encryption key is not found in the metadata.
     pub async fn remove_factor(
         &self,
         backup_id: &str,

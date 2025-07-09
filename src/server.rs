@@ -13,6 +13,10 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::Level;
 
+/// Starts the backup service.
+///
+/// # Errors
+/// - Returns an error if there are any issues starting the server. In practice, this will terminate the process.
 #[allow(clippy::too_many_arguments)] // logical module separation is preferred
 pub async fn start(
     environment: Environment,

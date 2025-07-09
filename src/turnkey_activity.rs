@@ -19,8 +19,11 @@ use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType};
 /// service and once to Turnkey.
 ///
 /// Reference:
-/// * https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn
-/// * https://github.com/tkhq/sdk/blob/0c391acab671b0ccadfad66fd6b3e926f21654ea/packages/webauthn-stamper/src/index.ts#L70
+/// * <https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn>
+/// * <https://github.com/tkhq/sdk/blob/0c391acab671b0ccadfad66fd6b3e926f21654ea/packages/webauthn-stamper/src/index.ts#L70>
+///
+/// # Errors
+/// - `TurnkeyActivityError`s will be raised if the stamp is not valid.
 pub fn verify_turnkey_activity_webauthn_stamp(
     credential_public_key: &COSEKey,
     activity_json: &str,
@@ -276,7 +279,7 @@ mod tests {
             // Client data JSON from header
             "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiWmpFeU1XSmpNMk00WVRNM1lqYzFZVEUwT0RZMU1qUTFOVFpoWWpjME9XTTRPV0V6WW1VNE1tWXpPRGxoTlRsaU5EWTFaVGcyTkRKa01XTmxNRGc1TkEiLCJvcmlnaW4iOiJodHRwOi8vbG9jYWxob3N0OjMwMDAiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
             "MEQCIDjJBMjQD470A5dzt-JY1GIBwB5mbnxpsqoJx2tFAaBFAiAy2u97FwJnE8jZNbBKfV-mVHMVPlzeIYZhHuqrH7lWQg",
-        ).unwrap_err().to_string(), "Signature verification failed")
+        ).unwrap_err().to_string(), "Signature verification failed");
     }
 
     #[test]
@@ -302,7 +305,7 @@ mod tests {
             // Client data JSON from header
             "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiWmpFeU1XSmpNMk00WVRNM1lqYzFZVEUwT0RZMU1qUTFOVFpoWWpjME9XTTRPV0V6WW1VNE1tWXpPRGxoTlRsaU5EWTFaVGcyTkRKa01XTmxNRGc1TkEiLCJvcmlnaW4iOiJodHRwOi8vbG9jYWxob3N0OjMwMDAiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
             "MEQCIDjJBMjQD470A5dzt-JY1GIBwB5mbnxpsqoJx2tFAaBFAiAy2u97FwJnE8jZNbBKfV-mVHMVPlzeIYZhHuqrH7lWQg",
-        ).unwrap_err().to_string(), "Mismatch between challenge in the assertion and the hash of activity JSON")
+        ).unwrap_err().to_string(), "Mismatch between challenge in the assertion and the hash of activity JSON");
     }
 
     #[test]

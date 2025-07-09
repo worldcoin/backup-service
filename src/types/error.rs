@@ -85,7 +85,7 @@ impl OperationOutput for ErrorResponse {
 
 impl From<WebauthnError> for ErrorResponse {
     fn from(err: WebauthnError) -> Self {
-        if let WebauthnError::Configuration = err {
+        if err == WebauthnError::Configuration {
             tracing::error!(message = "Webauthn configuration error", error = ?err);
             ErrorResponse::internal_server_error()
         } else {

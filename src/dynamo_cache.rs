@@ -27,7 +27,7 @@ pub struct DynamoCacheManager {
 
 impl DynamoCacheManager {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         environment: Environment,
         default_ttl: Duration,
         dynamodb_client: Arc<aws_sdk_dynamodb::Client>,

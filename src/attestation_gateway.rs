@@ -82,6 +82,7 @@ pub struct AttestationGatewayConfig {
 }
 
 impl AttestationGateway {
+    #[must_use]
     fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }
@@ -110,11 +111,11 @@ impl AttestationGateway {
         }
     }
 
-    /// Fetches trusted JWK set from attestation gateway
+    /// Fetches the JWK Set from the Attestation Gateway's well known URL.
     ///
     /// # Errors
     /// Will return an error if fetching JWK set fails or parsing it fails
-    async fn _get_jwk_set(&self) -> Result<Arc<JwkSet>, AttestationGatewayError> {
+    async fn fetch_remote_jwk_set(&self) -> Result<Arc<JwkSet>, AttestationGatewayError> {
         let response = self
             .reqwest_client
             .get(Self::jwks_url(&self.base_url))
@@ -147,6 +148,8 @@ impl AttestationGateway {
     /// stale but not expired, it is returned and a background task is spawned to
     /// revalidate and refresh it. If the cache is missing or expired, the key set
     /// is fetched synchronously from the source.
+    ///
+    /// Note: This method follows the same pattern as `OidcTokenVerifier::get_jwk_set`.
     async fn get_jwk_set(&self) -> Result<Arc<JwkSet>, AttestationGatewayError> {
         // Check cache
         let (keys, should_refresh) = {
@@ -168,20 +171,19 @@ impl AttestationGateway {
             if should_refresh {
                 let this = self.clone();
                 tokio::spawn(async move {
-                    let _ = this._get_jwk_set().await;
+                    let _ = this.fetch_remote_jwk_set().await;
                 });
             }
             return Ok(keys);
         }
 
         // Fetch fresh
-        self._get_jwk_set().await
+        self.fetch_remote_jwk_set().await
     }
 
     /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation-gateway-token
     ///
-    /// This function is the same as the function running on World App (oxide/attestation_gateway.rs, function `generate_json_request_hash`).
-    ///
+    /// This function is the same as the function running on World App (`oxide/attestation_gateway.rs`, function `generate_json_request_hash`).
     ///
     /// # Errors
     /// Will return an error if serializing the payload or computing the hash fails
@@ -416,6 +418,11 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 /// Provides a convenience method to retrieve and validate the attestation gateway token
 /// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
+    /// Retrieves the attestation token from the request's `HeaderMap`.
+    ///
+    /// # Errors
+    /// - `ErrorResponse::bad_request("missing_attestation_token_header")` - if the attestation token is missing.
+    /// - `ErrorResponse::bad_request("invalid_attestation_token_header")` - if the attestation token is invalid.
     fn attestation_token(&self) -> Result<&str, ErrorResponse>;
 }
 
@@ -749,7 +756,7 @@ mod tests {
             .await;
 
         // Refresh JWKS explicitly
-        let _ = gateway._get_jwk_set().await.unwrap();
+        let _ = gateway.fetch_remote_jwk_set().await.unwrap();
 
         // Try to validate token with new key from mock server
         let test_token = generate_test_token(

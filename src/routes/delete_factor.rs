@@ -96,13 +96,19 @@ pub async fn handler(
         return Err(ErrorResponse::bad_request("factor_not_found"));
     };
 
-    // Step 4: Delete the factor from the factor lookup & backup storage
-    factor_lookup
-        .delete(FactorScope::Main, &factor_to_delete)
-        .await?;
-
+    // Step 4: Delete the factor from the backup storage
     backup_storage
         .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
+        .await?;
+
+    // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
+    //   truth. Only factors in the S3 metadata are considered valid and allowed for authentication. In
+    //   the edge case where the factor is deleted from the S3 metadata but not from the `FactorLookup`,
+    //   this may lead to a backup not found error when retrieval, but it does not affect security.
+
+    // Step 5: Delete the factor from the factor lookup
+    factor_lookup
+        .delete(FactorScope::Main, &factor_to_delete)
         .await?;
 
     Ok(Json(DeleteFactorResponse {}))

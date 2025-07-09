@@ -8,7 +8,11 @@ use strum_macros::{Display, EnumString};
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,
 /// keypair public key, iss + sub for OIDC) and the backup ID.
 ///
-/// It used during recovery to find the backup corresponding ot the provided factor.
+/// It used during recovery to find the backup corresponding ot the provided factor. When a user is restoring
+/// their backup, they only have their factor. Hence a lookup to get the `backup_id` is needed.
+///
+/// To reiterate, the `FactorLookup` is used only to lookup the `backup_id` for a given factor. It cannot authorize access
+/// to a backup. Only factors registered in the backup metadata are considered valid and allowed for authentication.
 #[derive(Clone, Debug)]
 pub struct FactorLookup {
     environment: Environment,
@@ -31,7 +35,6 @@ pub enum FactorScope {
 }
 
 impl FactorLookup {
-    #[must_use]
     pub fn new(environment: Environment, dynamodb_client: Arc<aws_sdk_dynamodb::Client>) -> Self {
         Self {
             environment,
@@ -39,12 +42,12 @@ impl FactorLookup {
         }
     }
 
-    /// Inserts the factor into the DynamoDB table.
+    /// Inserts the factor into the `DynamoDB` table.
     ///
     /// It will fail if the factor already exists in the table.
     ///
     /// # Errors
-    /// * `FactorLookupError::DynamoDbPutError` - if the factor cannot be inserted into the DynamoDB table,
+    /// * `FactorLookupError::DynamoDbPutError` - if the factor cannot be inserted into the `DynamoDB` table,
     ///   or if the factor already exists in the table.
     pub async fn insert(
         &self,
@@ -85,6 +88,10 @@ impl FactorLookup {
     }
 
     /// Looks up the backup ID for the given factor.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbGetError` - if the factor cannot be fetched from the `DynamoDB` table.
+    /// * `FactorLookupError::ParseBackupIdError` - if the backup ID cannot be parsed from the `DynamoDB` item.
     pub async fn lookup(
         &self,
         scope: FactorScope,
@@ -122,7 +129,7 @@ impl FactorLookup {
     /// Deletes a factor from the lookup table.
     ///
     /// # Errors
-    /// * `FactorLookupError::DynamoDbDeleteError` - if the factor cannot be deleted from the DynamoDB table.
+    /// * `FactorLookupError::DynamoDbDeleteError` - if the factor cannot be deleted from the `DynamoDB` table.
     pub async fn delete(
         &self,
         scope: FactorScope,
@@ -188,14 +195,14 @@ impl FactorToLookup {
         Self::EcKeypair { public_key }
     }
 
-    /// Returns the primary key for the factor that we use for DynamoDB.
+    /// Returns the primary key for the factor that we use for `DynamoDB`.
     pub fn primary_key(&self) -> String {
         // we use | as a separator as this character is not allowed in the issuer URL or other
         // identifiers
         match self {
-            FactorToLookup::Passkey { credential_id } => format!("PK|{}", credential_id),
-            FactorToLookup::OidcAccount { iss, sub } => format!("OIDC|{}|{}", iss, sub),
-            FactorToLookup::EcKeypair { public_key } => format!("EC_KEYPAIR|{}", public_key),
+            FactorToLookup::Passkey { credential_id } => format!("PK|{credential_id}"),
+            FactorToLookup::OidcAccount { iss, sub } => format!("OIDC|{iss}|{sub}"),
+            FactorToLookup::EcKeypair { public_key } => format!("EC_KEYPAIR|{public_key}"),
         }
     }
 }

@@ -36,6 +36,7 @@ pub struct CreateBackupResponse {
     pub backup_id: String,
 }
 
+#[allow(clippy::too_many_lines)] // the code is properly split out into steps
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,

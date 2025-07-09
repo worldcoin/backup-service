@@ -19,7 +19,7 @@ use strum_macros::{Display, EnumString};
 ///
 /// The payload can store:
 /// - Raw challenge for keypair challenges
-/// - "PasskeyRegistration" object for passkey challenges
+/// - `PasskeyRegistration` object for passkey challenges
 ///
 /// We're using encrypting tokens to minimize amount of state we need to store on the server.
 #[derive(Clone)]
@@ -38,6 +38,19 @@ impl ChallengeManager {
         }
     }
 
+    /// Generates a challenge JWE.
+    ///
+    /// The challenge JWE is used to authenticate requests to the server. The JWE will include a challenge (random bytes)
+    /// which depending on the factor type, the user _signs_ to send back to the server.
+    ///
+    /// A JWE is used so that:
+    /// - Challenge tokens are stateless. The authenticity is guaranteed from the decryption process (AES-GCM is AEAD).
+    /// - Only the server can understand the challenge (it's encrypted).
+    ///
+    /// # Errors
+    /// - `ChallengeManagerError::SetClaim` - if the claim cannot be set in the JWT payload.
+    /// - `ChallengeManagerError::EncryptToken` - if the token cannot be encrypted.
+    /// - `ChallengeManagerError::TokioError` - if the token cannot be encrypted.
     pub async fn create_challenge_token(
         &self,
         challenge_type: ChallengeType,
@@ -77,6 +90,14 @@ impl ChallengeManager {
         Ok(jwe)
     }
 
+    /// Decrypts, decodes and parses a JWE challenge token.
+    ///
+    /// It will verify the JWE contains the expected payload.
+    ///
+    /// # Errors
+    /// - Will error if the JWE is not valid (completely invalid, not the right encryption, not the right key, etc.)
+    /// - Will error if any of the expected claims are missing or invalid.
+    /// - Will error if the token is expired or not yet valid.
     pub async fn extract_token_payload(
         &self,
         expected_challenge_type: ChallengeType,
