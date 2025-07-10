@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 https://github.com/actions/checkout/releases/tag/v4.2.2
 
       - name: Get new version
         id: version
@@ -43,7 +43,7 @@ jobs:
             exit 1
           fi
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2 https://github.com/softprops/action-gh-release/releases/tag/v2.3.2
         with:
           name: ${{ steps.version.outputs.new_version }}
           tag_name: ${{ steps.version.outputs.new_version }}
