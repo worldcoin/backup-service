@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use openidconnect::{Nonce, NonceVerifier};
 use sha2::Digest;
 

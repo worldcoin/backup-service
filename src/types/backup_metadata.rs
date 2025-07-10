@@ -1,8 +1,8 @@
-use crate::types::Environment;
 use crate::types::encryption_key::BackupEncryptionKey;
+use crate::types::Environment;
 use crate::{factor_lookup::FactorToLookup, mask_email};
-use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -291,7 +291,7 @@ mod tests {
     use backup_service_test_utils::{
         get_mock_passkey_client, make_credential_from_passkey_challenge,
     };
-    use base64::{Engine, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use p256::SecretKey;
     use rand::rngs::OsRng;
     use serde_json::json;
