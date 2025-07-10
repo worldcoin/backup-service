@@ -14,6 +14,8 @@ pub struct BackupStorage {
     s3_client: Arc<S3Client>,
 }
 
+type ETag = Option<String>;
+
 impl BackupStorage {
     #[must_use]
     pub fn new(environment: Environment, s3_client: Arc<S3Client>) -> Self {
@@ -79,7 +81,7 @@ impl BackupStorage {
 
         match (backup, metadata) {
             // If both the backup and metadata exist, return them
-            (Some(backup), Some(metadata)) => Ok(Some(FoundBackup { backup, metadata })),
+            (Some(backup), Some((metadata, _))) => Ok(Some(FoundBackup { backup, metadata })),
             // If either the backup or metadata does not exist, return None
             _ => Ok(None),
         }
@@ -97,8 +99,8 @@ impl BackupStorage {
     pub async fn get_metadata_by_backup_id(
         &self,
         backup_id: &str,
-    ) -> Result<Option<BackupMetadata>, BackupManagerError> {
-        let metadata = self
+    ) -> Result<Option<(BackupMetadata, ETag)>, BackupManagerError> {
+        let result = self
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
@@ -106,11 +108,11 @@ impl BackupStorage {
             .send()
             .await;
 
-        match metadata {
-            Ok(metadata) => {
-                let metadata = metadata.body.collect().await?.into_bytes().to_vec();
+        match result {
+            Ok(result) => {
+                let metadata = result.body.collect().await?.into_bytes().to_vec();
                 let metadata: BackupMetadata = serde_json::from_slice(&metadata)?;
-                Ok(Some(metadata))
+                Ok(Some((metadata, result.e_tag)))
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
             Err(err) => Err(BackupManagerError::GetObjectError(err)),
@@ -183,7 +185,8 @@ impl BackupStorage {
         new_encryption_key: Option<BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
         // Get the current metadata
-        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+        // FIXME
+        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
 
@@ -235,7 +238,8 @@ impl BackupStorage {
         }
 
         // Get the current metadata
-        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+        // FIXME
+        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
 
@@ -282,7 +286,8 @@ impl BackupStorage {
         factor_id: &str,
         backup_encryption_key_to_delete: Option<&BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
-        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+        // FIXME
+        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
 
@@ -330,8 +335,12 @@ impl BackupStorage {
         backup_id: &str,
         factor_id: &str,
     ) -> Result<(), BackupManagerError> {
-        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
         };
 
         let factor_index = metadata.sync_factors.iter().position(|f| f.id == factor_id);
@@ -346,6 +355,7 @@ impl BackupStorage {
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
@@ -406,6 +416,8 @@ pub enum BackupManagerError {
     FactorNotFound,
     #[error("Encryption key not found in metadata")]
     EncryptionKeyNotFound,
+    #[error("ETag not found")]
+    ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
 }

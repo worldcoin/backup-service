@@ -149,6 +149,10 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Backup not found", error = ?err);
                 ErrorResponse::bad_request("backup_not_found")
             }
+            BackupManagerError::ETagNotFound => {
+                tracing::info!(message = "ETag not found", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
             BackupManagerError::FactorAlreadyExists => {
                 tracing::info!(message = "Factor already exists", error = ?err);
                 ErrorResponse::bad_request("factor_already_exists")
