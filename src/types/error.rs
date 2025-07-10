@@ -126,6 +126,10 @@ impl From<ChallengeManagerError> for ErrorResponse {
                 tracing::info!(message = "Challenge manager error", error = ?err);
                 ErrorResponse::bad_request("jwt_error")
             }
+            ChallengeManagerError::UnexpectedChallengeType(challenge) => {
+                tracing::info!(message = format!("Unexpected challenge type: {challenge}"), error = ?err);
+                ErrorResponse::bad_request("unexpected_challenge_type")
+            }
         }
     }
 }

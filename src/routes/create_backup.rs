@@ -227,6 +227,7 @@ pub async fn handler(
                     request.initial_sync_challenge_token.to_string(),
                 )
                 .await?;
+
             if challenge_context != (ChallengeContext::Create {}) {
                 return Err(ErrorResponse::bad_request("invalid_challenge_context"));
             }
