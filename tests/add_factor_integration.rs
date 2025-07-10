@@ -3,12 +3,16 @@ mod common;
 use crate::common::{
     create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
-    verify_s3_metadata_exists, MockPasskeyClient,
+    verify_s3_metadata_exists,
 };
 use axum::http::StatusCode;
 use axum::response::Response;
 use backup_service::types::Environment;
-use backup_service::{mock_oidc_server::MockOidcServer, types::OidcProvider};
+use backup_service_test_utils::get_mock_passkey_client;
+use backup_service_test_utils::get_passkey_assertion;
+use backup_service_test_utils::MockOidcProvider;
+use backup_service_test_utils::MockOidcServer;
+use backup_service_test_utils::MockPasskeyClient;
 use base64::engine::general_purpose::STANDARD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -16,10 +20,8 @@ use chrono::Utc;
 use http_body_util::BodyExt;
 use openidconnect::SubjectIdentifier;
 use p256::SecretKey;
-use passkey::types::webauthn::CredentialRequestOptions;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use url::Url;
 
 /// Sets up a test environment with OIDC server, mock passkey client and a backup
 async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockPasskeyClient) {
@@ -29,7 +31,7 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
         Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
     // Create a backup with a passkey
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
     let (_credential, response) = create_test_backup(&mut passkey_client, b"BACKUP DATA").await;
 
     // Extract the backup ID from the response
@@ -78,31 +80,6 @@ fn create_turnkey_activity(challenge: &str) -> (String, String) {
     (turnkey_activity, turnkey_activity_challenge)
 }
 
-/// Gets a passkey assertion for a Turnkey activity
-async fn get_passkey_assertion(client: &mut MockPasskeyClient, challenge: &str) -> Value {
-    let credential_request_options: CredentialRequestOptions = serde_json::from_value(json!({
-        "publicKey": {
-            "challenge": challenge,
-            "timeout": 60000,
-            "rpId": "keys.world.app",
-            "userVerification": "preferred"
-        },
-    }))
-    .unwrap();
-
-    serde_json::to_value(
-        client
-            .authenticate(
-                &Url::parse("https://keys.world.app").unwrap(),
-                credential_request_options,
-                passkey::client::DefaultClientData,
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap()
-}
-
 /// Creates a new keypair and signs a challenge
 fn create_keypair_and_sign(challenge: &str) -> (String, SecretKey, String) {
     let (public_key, secret_key) = common::generate_keypair();
@@ -128,8 +105,7 @@ async fn test_add_factor_happy_path() {
     // Generate subject ID and OIDC token with consistent subject
     let subject = format!("test-subject-{}", uuid::Uuid::new_v4());
     let oidc_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
+        &MockOidcProvider::Google,
         Some(SubjectIdentifier::new(subject.clone())),
         &new_public_key,
     );
@@ -206,8 +182,7 @@ async fn test_add_factor_happy_path() {
 
     // Generate a new OIDC token with the same subject ID
     let new_oidc_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
+        &MockOidcProvider::Google,
         Some(SubjectIdentifier::new(subject)),
         &retrieval_public_key,
     );
@@ -254,7 +229,7 @@ async fn test_add_factor_happy_path() {
 
     // Verify the metadata contains expected fields
     let metadata = &retrieve_response["metadata"];
-    assert_eq!(metadata["id"].as_str().unwrap(), backup_id);
+    assert_eq!(metadata["id"].as_str().unwrap(), &backup_id);
 }
 
 // Mismatch between OIDC token when getting the challenge and when adding the factor
@@ -268,10 +243,9 @@ async fn test_add_factor_with_mismatched_oidc_token() {
 
     // Generate two different OIDC tokens
     let original_oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+        oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
     let different_oidc_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
+        &MockOidcProvider::Google,
         Some(openidconnect::SubjectIdentifier::new(
             "different-subject".to_string(),
         )),
@@ -350,8 +324,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -431,8 +404,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -497,8 +469,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     let (new_public_key, _) = common::generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -564,8 +535,8 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
 #[tokio::test]
 async fn test_add_factor_with_passkey_credential_for_different_user() {
     let (oidc_server, environment, _, _) = setup_test_environment().await;
-    let mut passkey_client_1 = common::get_mock_passkey_client();
-    let mut passkey_client_2 = common::get_mock_passkey_client();
+    let mut passkey_client_1 = get_mock_passkey_client();
+    let mut passkey_client_2 = get_mock_passkey_client();
 
     // Create a backup with the first and second passkey
     let (_, response) = create_test_backup(&mut passkey_client_1, b"BACKUP DATA").await;
@@ -578,8 +549,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
     let (new_public_key, new_secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;
@@ -657,8 +627,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
     let (new_public_key, new_secret_key) = common::generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &new_public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
 
     // Get challenges for both factors
     let challenges = get_add_factor_challenges(&oidc_token).await;

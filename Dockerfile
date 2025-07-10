@@ -15,10 +15,14 @@ RUN rustup target add x86_64-unknown-linux-musl
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
+COPY test-utils/Cargo.toml test-utils/Cargo.toml
+# test-utils won't actually be included in the final image
 
 # Cache dependencies
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
+    mkdir -p test-utils/src && \
+    echo "fn main() {}" > test-utils/src/main.rs && \
     cargo build --release && \
     rm -rf src
 
