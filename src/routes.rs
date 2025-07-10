@@ -1,4 +1,5 @@
 use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
+use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
 use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
 use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
@@ -22,6 +23,8 @@ mod add_sync_factor_challenge_keypair;
 mod create_backup;
 mod create_challenge_keypair;
 mod create_challenge_passkey;
+mod delete_backup;
+mod delete_backup_challenge_keypair;
 mod delete_factor;
 mod delete_factor_challenge_keypair;
 mod docs;
@@ -105,4 +108,10 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(keypair_challenge::handler::<DeleteFactorChallengeKeypairRequest>),
         )
         .api_route("/delete-factor", post(delete_factor::handler))
+        // Delete backup
+        .api_route(
+            "/delete-backup/challenge/keypair",
+            post(keypair_challenge::handler::<DeleteBackupChallengeKeypairRequest>),
+        )
+        .api_route("/delete-backup", post(delete_backup::handler))
 }

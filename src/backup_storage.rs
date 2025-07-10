@@ -376,7 +376,10 @@ impl BackupStorage {
     }
 
     /// Deletes a backup and its metadata from S3.
-    async fn delete_backup(&self, backup_id: &str) -> Result<(), BackupManagerError> {
+    ///
+    /// # Errors
+    /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
+    pub async fn delete_backup(&self, backup_id: &str) -> Result<(), BackupManagerError> {
         self.s3_client
             .delete_object()
             .bucket(self.environment.s3_bucket())

@@ -203,6 +203,9 @@ pub enum ChallengeContext {
     /// Signed by sync factor when removing an existing factor from backup metadata.
     #[serde(rename_all = "camelCase")]
     DeleteFactor { factor_id: String },
+    /// Signed by sync factor when deleting the entire backup.
+    #[serde(rename_all = "camelCase")]
+    DeleteBackup {},
     /// Challenge used as part of adding a new factor to the backup. This challenge has to be
     /// signed by the existing factor and include reference to the new factor. It allows to verify
     /// that new factor has been "authorized" by the existing factor.
