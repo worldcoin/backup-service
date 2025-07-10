@@ -38,18 +38,39 @@ pub async fn handler(
     // Step 2: Delete the backup and the metadata
     backup_storage.delete_backup(&backup_id).await?;
 
-    // Step 3: Delete all `Sync` factors from FactorLookup
+    // Step 3: Delete all `Sync` factors from `FactorLookup`
     for factor in backup_metadata.sync_factors {
-        factor_lookup
+        let result = factor_lookup
             .delete(FactorScope::Sync, &factor.as_factor_to_lookup(&environment))
-            .await?;
+            .await;
+
+        if let Err(e) = result {
+            tracing::warn!(
+                message = "[DeleteBackup] - Failed to delete `Sync` factor from FactorLookup, but continuing.",
+                error = ?e,
+                backup_id = backup_id,
+                factor_id = factor.id,
+            );
+        }
     }
 
-    // Step 4: Delete all `Main` factors from FactorLookup
+    // Step 4: Delete all `Main` factors from `FactorLookup`
     for factor in backup_metadata.factors {
-        factor_lookup
+        let result = factor_lookup
             .delete(FactorScope::Main, &factor.as_factor_to_lookup(&environment))
-            .await?;
+            .await;
+
+        dbg!("hello");
+        dbg!(&result);
+
+        if let Err(e) = result {
+            tracing::warn!(
+                message = "[DeleteBackup] - Failed to delete `Main` factor from FactorLookup, but continuing.",
+                error = ?e,
+                backup_id = backup_id,
+                factor_id = factor.id,
+            );
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)
