@@ -1,9 +1,9 @@
+use crate::types::Environment;
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::Environment;
+use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client as S3Client;
 use std::sync::Arc;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
@@ -185,9 +185,12 @@ impl BackupStorage {
         new_encryption_key: Option<BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
         // Get the current metadata
-        // FIXME
-        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
         };
 
         // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
@@ -210,6 +213,7 @@ impl BackupStorage {
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
@@ -238,9 +242,12 @@ impl BackupStorage {
         }
 
         // Get the current metadata
-        // FIXME
-        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
         };
 
         // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
@@ -261,6 +268,7 @@ impl BackupStorage {
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
@@ -286,9 +294,12 @@ impl BackupStorage {
         factor_id: &str,
         backup_encryption_key_to_delete: Option<&BackupEncryptionKey>,
     ) -> Result<(), BackupManagerError> {
-        // FIXME
-        let Some((mut metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
         };
 
         let factor_index = metadata.factors.iter().position(|f| f.id == factor_id);
@@ -318,6 +329,7 @@ impl BackupStorage {
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
@@ -425,11 +437,11 @@ pub enum BackupManagerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Environment;
     use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::types::encryption_key::BackupEncryptionKey;
-    use crate::types::Environment;
-    use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
+    use aws_sdk_s3::error::ProvideErrorMetadata;
     use chrono::DateTime;
     use serde_json::json;
     use std::sync::Arc;

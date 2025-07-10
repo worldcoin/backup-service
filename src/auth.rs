@@ -3,8 +3,8 @@ use std::sync::Arc;
 use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
-use crate::types::backup_metadata::OidcAccountKind;
 use crate::types::OidcToken;
+use crate::types::backup_metadata::OidcAccountKind;
 use crate::verify_signature::verify_signature;
 use crate::webauthn::TryFromValue;
 use crate::{
@@ -13,11 +13,11 @@ use crate::{
     dynamo_cache::DynamoCacheManager,
     factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
     types::{
-        backup_metadata::{BackupMetadata, FactorKind},
         Authorization, Environment, ErrorResponse,
+        backup_metadata::{BackupMetadata, FactorKind},
     },
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Clone)]
 pub struct AuthHandler {
@@ -130,7 +130,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some((backup_metadata, _)) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 };
@@ -209,7 +209,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some((backup_metadata, _)) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("oidc_account_error"));
                 };
@@ -279,7 +279,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some((backup_metadata, _)) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("backup_not_found"));
                 };
