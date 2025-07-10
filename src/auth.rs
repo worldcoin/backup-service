@@ -3,8 +3,8 @@ use std::sync::Arc;
 use webauthn_rs::prelude::{DiscoverableAuthentication, DiscoverableKey, PublicKeyCredential};
 
 use crate::oidc_token_verifier::OidcTokenVerifier;
-use crate::types::OidcToken;
 use crate::types::backup_metadata::OidcAccountKind;
+use crate::types::OidcToken;
 use crate::verify_signature::verify_signature;
 use crate::webauthn::TryFromValue;
 use crate::{
@@ -13,11 +13,11 @@ use crate::{
     dynamo_cache::DynamoCacheManager,
     factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
     types::{
-        Authorization, Environment, ErrorResponse,
         backup_metadata::{BackupMetadata, FactorKind},
+        Authorization, Environment, ErrorResponse,
     },
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
 #[derive(Clone)]
 pub struct AuthHandler {

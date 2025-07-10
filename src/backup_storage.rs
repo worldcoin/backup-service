@@ -1,9 +1,9 @@
-use crate::types::Environment;
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
-use aws_sdk_s3::Client as S3Client;
+use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
 use std::sync::Arc;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
@@ -437,11 +437,11 @@ pub enum BackupManagerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Environment;
     use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::types::encryption_key::BackupEncryptionKey;
-    use aws_sdk_s3::Client as S3Client;
+    use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
+    use aws_sdk_s3::Client as S3Client;
     use chrono::DateTime;
     use serde_json::json;
     use std::sync::Arc;

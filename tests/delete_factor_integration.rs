@@ -5,16 +5,16 @@ use std::sync::Arc;
 use crate::common::{
     create_test_backup_with_sync_keypair, sign_keypair_challenge, verify_s3_metadata_exists,
 };
-use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::Client as S3Client;
 use axum::http::StatusCode;
 use backup_service::factor_lookup::FactorScope;
 use backup_service::factor_lookup::FactorToLookup;
-use backup_service::types::Environment;
 use backup_service::types::backup_metadata::FactorKind;
-use base64::Engine;
+use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use futures::future;
 use http_body_util::BodyExt;
 use serde_json::json;
