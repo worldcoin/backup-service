@@ -1,5 +1,8 @@
-use crate::mask_email;
 use crate::types::encryption_key::BackupEncryptionKey;
+use crate::types::Environment;
+use crate::{factor_lookup::FactorToLookup, mask_email};
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,7 @@ pub struct BackupMetadata {
     pub factors: Vec<Factor>,
     /// Factors that are used to update backup content and view backup metadata
     /// (but not update backup metadata).
+    /// **Important:** Only `FactorKind::EcKeypair` is allowed to be a sync factor.
     pub sync_factors: Vec<Factor>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
     pub keys: Vec<BackupEncryptionKey>,
@@ -77,6 +81,34 @@ impl Factor {
                     public_key: public_key.clone(),
                 },
             },
+        }
+    }
+
+    pub fn as_factor_to_lookup(&self, environment: &Environment) -> FactorToLookup {
+        match &self.kind {
+            FactorKind::Passkey {
+                webauthn_credential,
+                ..
+            } => FactorToLookup::from_passkey(
+                BASE64_URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
+            ),
+            FactorKind::OidcAccount {
+                account,
+                turnkey_provider_id: _,
+            } => {
+                let (issuer_url, sub) = match account {
+                    OidcAccountKind::Google { sub, email: _ } => {
+                        (environment.google_issuer_url().to_string(), sub.to_string())
+                    }
+                    OidcAccountKind::Apple { sub, email: _ } => {
+                        (environment.apple_issuer_url().to_string(), sub.to_string())
+                    }
+                };
+                FactorToLookup::from_oidc_account(issuer_url, sub)
+            }
+            FactorKind::EcKeypair { public_key } => {
+                FactorToLookup::from_ec_keypair(public_key.to_string())
+            }
         }
     }
 }

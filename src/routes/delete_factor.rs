@@ -3,13 +3,10 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::types::backup_metadata::{FactorKind, OidcAccountKind};
+use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::{Extension, Json};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +25,11 @@ pub struct DeleteFactorRequest {
 pub struct DeleteFactorResponse {}
 
 /// Request to delete a factor from backup metadata using a solved challenge.
+/// If it is the last `Main` factor, this will also delete the entire backup (as the backup becomes inaccessible).
+///
+/// This endpoint allows deleting both `Main` and `Sync` factors:
+/// 1. `Main` factors are deleted manually by the user.
+/// 2. `Sync` factors are deleted when the user logs out of their account as they're local to each device.
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
@@ -54,52 +56,45 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Find the factor to delete from the backup
-    let factor_to_delete = backup_metadata.factors.iter().find_map(|factor| {
-        // Match on factor ID provided in the request
-        if factor.id == factor_id {
-            // And convert it to a factor to lookup format
-            match &factor.kind {
-                FactorKind::EcKeypair { public_key } => {
-                    Some(FactorToLookup::from_ec_keypair(public_key.to_string()))
-                }
-                FactorKind::Passkey {
-                    webauthn_credential,
-                    ..
-                } => Some(FactorToLookup::from_passkey(
-                    BASE64_URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
-                )),
-                FactorKind::OidcAccount {
-                    account,
-                    turnkey_provider_id: _,
-                } => match account {
-                    OidcAccountKind::Google { sub, email: _ } => {
-                        Some(FactorToLookup::from_oidc_account(
-                            environment.google_issuer_url().to_string(),
-                            sub.to_string(),
-                        ))
-                    }
-                    OidcAccountKind::Apple { sub, email: _ } => {
-                        Some(FactorToLookup::from_oidc_account(
-                            environment.apple_issuer_url().to_string(),
-                            sub.to_string(),
-                        ))
-                    }
-                },
-            }
-        } else {
-            None
+    // Step 3: Find the factor to delete from the backup (either Main or Sync). Main will be searched first.
+    let factor_to_delete = {
+        // First check main factors
+        if let Some(factor) = backup_metadata.factors.iter().find(|f| f.id == factor_id) {
+            Some((factor.as_factor_to_lookup(&environment), FactorScope::Main))
         }
-    });
-    let Some(factor_to_delete) = factor_to_delete else {
+        // Then check sync factors
+        else {
+            backup_metadata
+                .sync_factors
+                .iter()
+                .find(|f| f.id == factor_id)
+                .map(|factor| (factor.as_factor_to_lookup(&environment), FactorScope::Sync))
+        }
+    };
+
+    let Some((factor_to_delete, factor_scope)) = factor_to_delete else {
         tracing::info!(message = "Factor not found in backup metadata");
         return Err(ErrorResponse::bad_request("factor_not_found"));
     };
 
+    // Step 3.1 Validate there is no encryption key if deleting a `Sync` factor
+    if factor_scope == FactorScope::Sync && encryption_key.is_some() {
+        return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
+    }
+
     // Step 4: Delete the factor from the backup storage
-    backup_storage
-        .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
-        .await?;
+    match factor_scope {
+        FactorScope::Main => {
+            backup_storage
+                .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
+                .await?;
+        }
+        FactorScope::Sync => {
+            backup_storage
+                .remove_sync_factor(&backup_id, &factor_id)
+                .await?;
+        }
+    }
 
     // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
     //   truth. Only factors in the S3 metadata are considered valid and allowed for authentication. In
@@ -108,7 +103,7 @@ pub async fn handler(
 
     // Step 5: Delete the factor from the factor lookup
     factor_lookup
-        .delete(FactorScope::Main, &factor_to_delete)
+        .delete(factor_scope, &factor_to_delete)
         .await?;
 
     Ok(Json(DeleteFactorResponse {}))
