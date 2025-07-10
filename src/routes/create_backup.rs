@@ -257,8 +257,6 @@ pub async fn handler(
         keys: vec![request.initial_encryption_key.clone()],
     };
 
-    // TODO/FIXME: More checks and metadata initialization
-
     // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery
     // and sync. This should happen before the backup storage is updated, because
     // it might fail with a duplicate key error.
