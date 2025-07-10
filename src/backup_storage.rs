@@ -187,7 +187,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing kinds
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == factor.kind)
             || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
         {
@@ -239,9 +239,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing `FactorKind`
-        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
-        // it is not comparing just the "kind", but the entire factor.
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
             || metadata
                 .sync_factors
@@ -266,9 +264,8 @@ impl BackupStorage {
         Ok(())
     }
 
-    /// Removes a regular factor from the backup metadata in S3 by factor ID.
-    /// This method will only remove factors from the regular factors list, not sync factors.
-    /// If this is the last regular factor, the entire backup will be deleted, even if sync factors exist.
+    /// Removes a `Main` factor from the backup metadata in S3 by factor ID.
+    /// If this is the last `Main` factor, the entire backup will be deleted, even if sync factors exist.
     ///
     /// `backup_encryption_key_to_delete` is optionally used to delete the provided backup encryption key from
     /// metadata if it is no longer needed. For example, if last OIDC factor is removed, the Turnkey
@@ -311,6 +308,39 @@ impl BackupStorage {
                 return Err(BackupManagerError::EncryptionKeyNotFound);
             }
         }
+
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    /// Removes a `Sync` factor from the backup metadata in S3 by factor ID.
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorNotFound` - if the factor does not exist.
+    pub async fn remove_sync_factor(
+        &self,
+        backup_id: &str,
+        factor_id: &str,
+    ) -> Result<(), BackupManagerError> {
+        let Some(mut metadata) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let factor_index = metadata.sync_factors.iter().position(|f| f.id == factor_id);
+
+        let Some(index) = factor_index else {
+            return Err(BackupManagerError::FactorNotFound);
+        };
+
+        metadata.sync_factors.remove(index);
 
         self.s3_client
             .put_object()

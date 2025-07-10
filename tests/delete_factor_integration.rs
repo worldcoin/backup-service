@@ -1,17 +1,25 @@
 mod common;
 
+use std::sync::Arc;
+
 use crate::common::{
     create_test_backup_with_sync_keypair, sign_keypair_challenge, verify_s3_metadata_exists,
 };
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::http::StatusCode;
+use backup_service::factor_lookup::FactorLookup;
+use backup_service::factor_lookup::FactorLookupError;
+use backup_service::factor_lookup::FactorScope;
+use backup_service::factor_lookup::FactorToLookup;
+use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
 
-// Happy path - delete the last factor with a sync keypair, should delete the backup
+/// Happy path - delete the last `Main` factor with a sync keypair.
+/// Deleting the last factor also deletes the backup.
 #[tokio::test]
 async fn test_delete_last_factor_happy_path() {
     // Create a backup with a keypair and a sync factor
@@ -25,6 +33,7 @@ async fn test_delete_last_factor_happy_path() {
 
     // Get the metadata to extract the factor ID
     let metadata = verify_s3_metadata_exists(backup_id).await;
+
     let factor_id = metadata["factors"][0]["id"].as_str().unwrap().to_string();
 
     // Get a delete factor challenge
@@ -89,6 +98,108 @@ async fn test_delete_last_factor_happy_path() {
         }
         _ => panic!("Expected NoSuchKey error"),
     }
+}
+
+#[tokio::test]
+async fn test_delete_sync_factor_happy_path() {
+    // Setup test environment
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup =
+        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
+
+    // Create a backup with a keypair and a sync factor
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID and the main factor ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_response["backupId"].as_str().unwrap();
+
+    // Get the metadata to extract the factor ID
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+
+    let factor_id = metadata["syncFactors"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // check the factor exists in DynamoDB
+    let factor_to_lookup = FactorToLookup::from_ec_keypair(
+        metadata["syncFactors"][0]["kind"]["publicKey"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    );
+    let observed_backup_id = factor_lookup
+        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(backup_id, &observed_backup_id);
+
+    // Get a delete factor challenge
+    let challenge_response = common::send_post_request(
+        "/delete-factor/challenge/keypair",
+        json!({
+            "factorId": factor_id
+        }),
+    )
+    .await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
+    let response = common::send_post_request(
+        "/delete-factor",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "factorId": factor_id,
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+
+    let factors = metadata["factors"].as_array().unwrap();
+    assert_eq!(factors.len(), 1);
+
+    let sync_factors = metadata["syncFactors"].as_array().unwrap();
+    assert_eq!(sync_factors.len(), 0);
+
+    // Verify the sync factor was deleted from DynamoDB
+    let lookup_result = factor_lookup
+        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .await
+        .unwrap();
+
+    assert_eq!(lookup_result, None);
 }
 
 // Test with incorrect factor ID - should fail
