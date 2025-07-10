@@ -23,8 +23,6 @@ async fn test_create_backup_with_passkey() {
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
 
-    dbg!(&challenge_response);
-
     // Register a credential by solving the challenge
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
@@ -107,7 +105,8 @@ async fn test_create_backup_with_passkey() {
         })
     );
 }
-// Happy path - OIDC
+
+/// Happy path - OIDC
 #[tokio::test]
 async fn test_create_backup_with_oidc_token() {
     let oidc_server = MockOidcServer::new().await;
@@ -624,4 +623,127 @@ async fn test_create_backup_with_invalid_ec_keypair() {
     );
 }
 
-// TODO/FIXME: add tests for incorrect sync factor
+/// Only EC keypairs are valid sync factors
+#[tokio::test]
+async fn test_create_backup_with_invalid_sync_factor() {
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate keypair and sign the challenge
+    let (public_key, secret_key) = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let mut passkey_client = get_mock_passkey_client();
+
+    // Get a challenge from the server
+    let passkey_challenge_response = get_passkey_challenge().await;
+
+    // Get a sync factor challenge
+    let (_, sync_challenge_token, _) = make_sync_factor().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(&mut passkey_client, &passkey_challenge_response)
+            .await;
+
+    // Send the keypair signature to the server to create a backup
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": {
+                "kind": "PASSKEY",
+                "credential": credential,
+            },
+            "initialSyncChallengeToken": sync_challenge_token,
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "invalid_sync_factor",
+                "message": "invalid_sync_factor",
+            },
+        })
+    );
+}
+
+/// Incorrectly signed sync factor
+#[tokio::test]
+async fn test_create_backup_with_incorrectly_signed_sync_factor() {
+    // Get a challenge from the server
+    let challenge_response = get_keypair_challenge().await;
+
+    // Generate keypair and sign the challenge
+    let (public_key, secret_key) = generate_keypair();
+    let signature = sign_keypair_challenge(
+        &secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Get a sync factor challenge
+    let (mut sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
+    let mut sig = sync_factor["signature"].as_str().unwrap().to_string();
+    sig.pop();
+    sync_factor["signature"] = json!(sig);
+
+    // Send the keypair signature to the server to create a backup
+    let response = send_post_request_with_multipart(
+        "/create",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor,
+            "initialSyncChallengeToken": sync_challenge_token,
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "signature_verification_error",
+                "message": "signature_verification_error",
+            },
+        })
+    );
+}

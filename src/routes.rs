@@ -50,10 +50,8 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/create",
-            // Use 2x backup limit for payload size in order to support backup uploads with some
-            // extra buffer for JSON data.
             post(create_backup::handler).layer(DefaultBodyLimit::max(
-                2 * environment.max_backup_file_size(),
+                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
             )),
         )
         // Recovery
@@ -90,7 +88,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         .api_route(
             "/sync",
             post(sync_backup::handler).layer(DefaultBodyLimit::max(
-                2 * environment.max_backup_file_size(),
+                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
             )),
         )
         // Metadata retrieval

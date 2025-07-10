@@ -13,7 +13,6 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-// TODO make this a config?
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
 

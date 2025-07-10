@@ -116,8 +116,12 @@ impl ChallengeManager {
             .ok_or(ChallengeManagerError::NoValidChallengeTypeClaim)?
             .as_str()
             .ok_or(ChallengeManagerError::NoValidChallengeTypeClaim)?;
+
         if actual_challenge_type != expected_challenge_type.to_string() {
-            return Err(ChallengeManagerError::NoValidChallengeTypeClaim);
+            return Err(ChallengeManagerError::UnexpectedChallengeType {
+                expected: expected_challenge_type.to_string(),
+                actual: actual_challenge_type.to_string(),
+            });
         }
 
         let encoded_payload = jwt_payload
@@ -164,6 +168,9 @@ pub enum ChallengeManagerError {
     NoValidPayloadClaim,
     #[error("No valid challenge type claim in token")]
     NoValidChallengeTypeClaim,
+    /// An unexpected challenge type means that the challenge token provided was issued for a different type of challenge.
+    #[error("Unexpected challenge type, expected: {expected}, actual: {actual}")]
+    UnexpectedChallengeType { expected: String, actual: String },
     #[error("No valid challenge context claim in token")]
     NoValidChallengeContextClaim,
     #[error("No expiration / not before claim in token or token expired")]
@@ -304,7 +311,7 @@ mod tests {
             .await;
         assert_eq!(
             result.unwrap_err().to_string(),
-            "No valid challenge type claim in token"
+            "Unexpected challenge type, expected: KEYPAIR, actual: PASSKEY"
         );
     }
 

@@ -339,7 +339,7 @@ impl AttestationGateway {
     /// - If the token is valid, the request is forwarded to the next middleware or handler.
     ///
     /// # Errors
-    /// Returns `ErrorResponse::unauthorized` (TODO) or `ErrorResponse::bad_request` depending on the failure mode.
+    /// Returns bad request errors depending on the failure.
     pub async fn validator(
         Extension(gateway): Extension<Arc<Self>>,
         req: Request<Body>,

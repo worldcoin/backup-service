@@ -74,6 +74,10 @@ pub async fn start(
             std::time::Duration::from_secs(30),
         ));
 
+    // By default Axum enforces a 2MB limit on the request body. Explicitly for the routes that upload or update backups,
+    // a higher limit is set on a per-route basis.
+    // Reference: <https://docs.rs/axum/latest/axum/extract/struct.DefaultBodyLimit.html>
+
     let addr = std::net::SocketAddr::from((
         [0, 0, 0, 0],
         std::env::var("PORT").map_or(Ok(8000), |p| p.parse())?,

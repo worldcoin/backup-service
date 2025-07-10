@@ -277,7 +277,6 @@ pub enum ExportedFactorKind {
 
 /// Exported version of the OIDC account. Allows the mobile app to render that some account was
 /// added, but for now, it doesn't contain which account it is.
-/// TODO/FIXME: Figure out if we should export email and sub here or not.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum ExportedOidcAccountKind {

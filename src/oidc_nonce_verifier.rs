@@ -30,9 +30,11 @@ impl OidcNonceVerifier {
 }
 
 impl NonceVerifier for OidcNonceVerifier {
+    /// Verifies the nonce against the expected public key.
+    ///
+    /// Note this only verifies validity. It does not track used nonces (this is done in
+    /// `oidc_token_verifier.rs`).
     fn verify(self, nonce: Option<&Nonce>) -> Result<(), String> {
-        // TODO/FIXME: Track used nonces for OIDC tokens
-
         let expected_nonce = public_key_sec1_base64_to_expected_turnkey_nonce(
             &self.expected_public_key_sec1_base64,
         )?;
@@ -104,7 +106,14 @@ mod tests {
             expected_public_key_sec1_base64: public_key_base64,
         };
         assert!(verifier.clone().verify(Some(&correct_nonce)).is_ok());
-        assert_eq!(verifier.clone().verify(Some(&incorrect_nonce)).unwrap_err().to_string(), "Nonce mismatch: expected 1f9570d976946c0cb72f0e853eea0fb648b5e9e9a2266d25f971817e187c9b18, got 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        assert_eq!(
+            verifier
+                .clone()
+                .verify(Some(&incorrect_nonce))
+                .unwrap_err()
+                .to_string(),
+            "Nonce mismatch: expected 1f9570d976946c0cb72f0e853eea0fb648b5e9e9a2266d25f971817e187c9b18, got 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        );
         assert_eq!(
             verifier.clone().verify(None).unwrap_err(),
             "Nonce is required for OIDC verification".to_string()

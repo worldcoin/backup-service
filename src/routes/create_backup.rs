@@ -227,6 +227,7 @@ pub async fn handler(
                     request.initial_sync_challenge_token.to_string(),
                 )
                 .await?;
+
             if challenge_context != (ChallengeContext::Create {}) {
                 return Err(ErrorResponse::bad_request("invalid_challenge_context"));
             }
@@ -256,8 +257,6 @@ pub async fn handler(
         sync_factors: vec![initial_sync_factor],
         keys: vec![request.initial_encryption_key.clone()],
     };
-
-    // TODO/FIXME: More checks and metadata initialization
 
     // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery
     // and sync. This should happen before the backup storage is updated, because
