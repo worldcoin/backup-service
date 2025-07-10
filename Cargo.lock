@@ -2936,9 +2936,9 @@ dependencies = [
 
 [[package]]
 name = "public-suffix"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a59553bc595dc1514e7d713e6167cf1c4d68ef6fcc2d10ad834a97a1ca9bc4"
+checksum = "51315bca45305dd8aa64b831b33e71abac528ca8058c0651346a39b8d3009498"
 
 [[package]]
 name = "quinn"
