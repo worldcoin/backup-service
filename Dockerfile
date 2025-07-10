@@ -23,14 +23,14 @@ RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     mkdir -p test-utils/src && \
     echo "fn main() {}" > test-utils/src/main.rs && \
-    cargo build --release && \
+    cargo build --locked --release && \
     rm -rf src
 
 # Copy source code
 COPY . .
 
 # Build the application
-RUN cargo build --release --target x86_64-unknown-linux-musl
+RUN cargo build --locked --release --target x86_64-unknown-linux-musl
 
 # Runtime stage
 FROM scratch
