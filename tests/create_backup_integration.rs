@@ -9,8 +9,8 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 use backup_service::types::Environment;
 use backup_service_test_utils::{
-    get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
-    MockOidcServer,
+    MockOidcProvider, MockOidcServer, get_mock_passkey_client,
+    make_credential_from_passkey_challenge,
 };
 use http_body_util::BodyExt;
 use serde_json::json;
@@ -107,7 +107,8 @@ async fn test_create_backup_with_passkey() {
         })
     );
 }
-// Happy path - OIDC
+
+/// Happy path - OIDC
 #[tokio::test]
 async fn test_create_backup_with_oidc_token() {
     let oidc_server = MockOidcServer::new().await;

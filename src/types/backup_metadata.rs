@@ -1,8 +1,8 @@
-use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
+use crate::types::encryption_key::BackupEncryptionKey;
 use crate::{factor_lookup::FactorToLookup, mask_email};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -277,7 +277,6 @@ pub enum ExportedFactorKind {
 
 /// Exported version of the OIDC account. Allows the mobile app to render that some account was
 /// added, but for now, it doesn't contain which account it is.
-/// TODO/FIXME: Figure out if we should export email and sub here or not.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum ExportedOidcAccountKind {
@@ -292,7 +291,7 @@ mod tests {
     use backup_service_test_utils::{
         get_mock_passkey_client, make_credential_from_passkey_challenge,
     };
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use p256::SecretKey;
     use rand::rngs::OsRng;
     use serde_json::json;

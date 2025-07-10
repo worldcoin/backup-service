@@ -13,6 +13,7 @@ use openidconnect::SubjectIdentifier;
 use serde_json::json;
 use uuid::Uuid;
 
+/// Retrieves a backup with an OIDC account and ensures replays are not allowed for OIDC nonces.
 #[tokio::test]
 async fn test_retrieve_backup_with_oidc_account() {
     let subject = Uuid::new_v4().to_string();
