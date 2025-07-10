@@ -8,8 +8,6 @@ use crate::common::{
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::http::StatusCode;
-use backup_service::factor_lookup::FactorLookup;
-use backup_service::factor_lookup::FactorLookupError;
 use backup_service::factor_lookup::FactorScope;
 use backup_service::factor_lookup::FactorToLookup;
 use backup_service::types::Environment;
