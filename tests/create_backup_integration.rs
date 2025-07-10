@@ -706,7 +706,9 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
     // Get a sync factor challenge
     let (mut sync_factor, sync_challenge_token, _) = make_sync_factor().await;
 
-    sync_factor["signature"] = json!(sync_factor["signature"].as_str().unwrap().to_string().pop());
+    let mut sig = sync_factor["signature"].as_str().unwrap().to_string();
+    sig.pop();
+    sync_factor["signature"] = json!(sig);
 
     // Send the keypair signature to the server to create a backup
     let response = send_post_request_with_multipart(
