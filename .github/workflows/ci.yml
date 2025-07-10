@@ -8,12 +8,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Format & Clippy
     runs-on: arc-large-amd64-runner
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -44,8 +45,6 @@ jobs:
   build-release:
     name: Build Release
     runs-on: arc-large-amd64-runner
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -73,8 +72,6 @@ jobs:
   test:
     name: Tests
     runs-on: arc-4xlarge-amd64-runner
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -101,8 +98,6 @@ jobs:
   docker:
     name: Test Docker build
     runs-on: arc-4xlarge-amd64-runner
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -147,8 +142,6 @@ jobs:
   deny:
     name: Cargo deny
     runs-on: arc-large-amd64-runner
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
