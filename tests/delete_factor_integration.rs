@@ -7,14 +7,18 @@ use crate::common::{
 };
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::Client as S3Client;
 use axum::http::StatusCode;
 use backup_service::factor_lookup::FactorScope;
 use backup_service::factor_lookup::FactorToLookup;
+use backup_service::types::backup_metadata::FactorKind;
 use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use futures::future;
 use http_body_util::BodyExt;
 use serde_json::json;
+use uuid::Uuid;
 
 /// Happy path - delete the last `Main` factor with a sync keypair.
 /// Deleting the last factor also deletes the backup.
@@ -269,4 +273,147 @@ async fn test_delete_factor_with_incorrect_factor_id() {
     let metadata = verify_s3_metadata_exists(backup_id).await;
     let factors = metadata["factors"].as_array().unwrap();
     assert_eq!(factors.len(), 1);
+}
+
+/// Validates that a race condition does not occur when removing sync factors concurrently.
+#[tokio::test]
+async fn test_remove_sync_factor_etag_concurrency() {
+    // Setup test environment
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+    let backup_storage = Arc::new(backup_service::backup_storage::BackupStorage::new(
+        environment,
+        s3_client.clone(),
+    ));
+
+    // Create a backup with multiple sync factors
+    let backup_id = Uuid::new_v4().to_string();
+    let test_backup_data = vec![1, 2, 3, 4, 5];
+
+    // Create three sync factors
+    let sync_factor1 =
+        backup_service::types::backup_metadata::Factor::new_ec_keypair("public-key-1".to_string());
+    let sync_factor2 =
+        backup_service::types::backup_metadata::Factor::new_ec_keypair("public-key-2".to_string());
+    let sync_factor3 =
+        backup_service::types::backup_metadata::Factor::new_ec_keypair("public-key-3".to_string());
+
+    let initial_metadata = backup_service::types::backup_metadata::BackupMetadata {
+        id: backup_id.clone(),
+        factors: vec![],
+        sync_factors: vec![
+            sync_factor1.clone(),
+            sync_factor2.clone(),
+            sync_factor3.clone(),
+        ],
+        keys: vec![],
+    };
+
+    // Create the backup
+    backup_storage
+        .create(test_backup_data.clone(), &initial_metadata)
+        .await
+        .unwrap();
+
+    // Clone the necessary data for the concurrent operations
+    let backup_storage_clone1 = backup_storage.clone();
+    let backup_storage_clone2 = backup_storage.clone();
+    let backup_storage_clone3 = backup_storage.clone();
+    let backup_id_clone1 = backup_id.clone();
+    let backup_id_clone2 = backup_id.clone();
+    let backup_id_clone3 = backup_id.clone();
+    let factor_id1 = sync_factor1.id.clone();
+    let factor_id2 = sync_factor2.id.clone();
+    let factor_id3 = sync_factor3.id.clone();
+
+    // Launch three concurrent operations to remove different sync factors
+    let handle1 = tokio::spawn(async move {
+        backup_storage_clone1
+            .remove_sync_factor(&backup_id_clone1, &factor_id1)
+            .await
+    });
+
+    let handle2 = tokio::spawn(async move {
+        backup_storage_clone2
+            .remove_sync_factor(&backup_id_clone2, &factor_id2)
+            .await
+    });
+
+    let handle3 = tokio::spawn(async move {
+        backup_storage_clone3
+            .remove_sync_factor(&backup_id_clone3, &factor_id3)
+            .await
+    });
+
+    // Wait for all operations to complete
+    let results = future::join_all([handle1, handle2, handle3]).await;
+
+    // Extract the results
+    let result1 = results[0].as_ref().unwrap();
+    let result2 = results[1].as_ref().unwrap();
+    let result3 = results[2].as_ref().unwrap();
+
+    // Count successes and failures
+    let successes = [result1, result2, result3]
+        .iter()
+        .filter(|r| r.is_ok())
+        .count();
+    let failures = [result1, result2, result3]
+        .iter()
+        .filter(|r| r.is_err())
+        .count();
+
+    // Exactly one operation should succeed, the others should fail due to eTag mismatch
+    assert_eq!(successes, 1, "Expected exactly one operation to succeed");
+    assert_eq!(
+        failures, 2,
+        "Expected exactly two operations to fail due to eTag mismatch"
+    );
+
+    // Verify that the failed operations are due to PutObjectError with PreconditionFailed
+    for result in [result1, result2, result3] {
+        if let Err(err) = result {
+            match err {
+                backup_service::backup_storage::BackupManagerError::PutObjectError(sdk_err) => {
+                    match sdk_err {
+                        aws_sdk_s3::error::SdkError::ServiceError(service_err) => {
+                            assert_eq!(service_err.err().code(), Some("PreconditionFailed"));
+                        }
+                        _ => panic!(
+                            "Expected ServiceError with PreconditionFailed, got: {:?}",
+                            sdk_err
+                        ),
+                    }
+                }
+                _ => panic!("Expected PutObjectError, got: {:?}", err),
+            }
+        }
+    }
+
+    // Verify that exactly two sync factors remain in the backup
+    let final_metadata = backup_storage
+        .get_metadata_by_backup_id(&backup_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+
+    assert_eq!(final_metadata.sync_factors.len(), 2);
+
+    // print remaining factors
+    // high likelihood that the removed factor is the one with the public key "public-key-1", but we don't assert as it's not deterministic
+    let remaining_factors = final_metadata
+        .sync_factors
+        .iter()
+        .map(|f| {
+            let kind = f.kind.clone();
+            match kind {
+                FactorKind::EcKeypair { public_key } => public_key,
+                _ => panic!("Expected EcKeypair, got: {:?}", kind),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    println!("remaining factors: {:?}", remaining_factors);
 }

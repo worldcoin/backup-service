@@ -10,8 +10,10 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
+use serial_test::serial;
 
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_ec_keypair() {
     // Create a backup with EC keypair
     let ((public_key, secret_key), create_response) =
@@ -67,6 +69,7 @@ async fn test_retrieve_backup_with_ec_keypair() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
     // Create a backup with EC keypair
     let ((public_key, secret_key), create_response) =
@@ -120,6 +123,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_wrong_keypair() {
     // Create a backup with first keypair
     let ((public_key1, _), create_response) =
@@ -176,6 +180,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_nonexistent_keypair() {
     // Generate a keypair but don't create a backup with it
     let (public_key, secret_key) = common::generate_keypair();
@@ -227,6 +232,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_sync_keypair() {
     // Create a backup with EC keypair and get the sync keypair's secret key
     let ((_, _), create_response, sync_secret_key) =

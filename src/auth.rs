@@ -130,7 +130,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some(backup_metadata) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("webauthn_error"));
                 };
@@ -209,7 +209,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some(backup_metadata) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("oidc_account_error"));
                 };
@@ -279,7 +279,7 @@ impl AuthHandler {
                     .backup_storage
                     .get_metadata_by_backup_id(&not_verified_backup_id)
                     .await?;
-                let Some(backup_metadata) = backup_metadata else {
+                let Some((backup_metadata, _e_tag)) = backup_metadata else {
                     tracing::info!(message = "No backup metadata found for the given backup ID");
                     return Err(ErrorResponse::bad_request("backup_not_found"));
                 };
