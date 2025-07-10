@@ -1,24 +1,29 @@
 mod common;
 
 use crate::common::{
-    generate_keypair, get_keypair_challenge, get_passkey_challenge,
-    make_credential_from_passkey_challenge, make_sync_factor, send_post_request_with_multipart,
-    sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
+    generate_keypair, get_keypair_challenge, get_passkey_challenge, make_sync_factor,
+    send_post_request_with_multipart, sign_keypair_challenge, verify_s3_backup_exists,
+    verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use backup_service::mock_oidc_server::MockOidcServer;
-use backup_service::types::{Environment, OidcProvider};
+use backup_service::types::Environment;
+use backup_service_test_utils::{
+    get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
+    MockOidcServer,
+};
 use http_body_util::BodyExt;
 use serde_json::json;
 
 // Happy path - passkey
 #[tokio::test]
 async fn test_create_backup_with_passkey() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
+
+    dbg!(&challenge_response);
 
     // Register a credential by solving the challenge
     let credential =
@@ -116,8 +121,7 @@ async fn test_create_backup_with_oidc_token() {
     let (public_key, secret_key) = generate_keypair();
 
     // Generate OIDC token
-    let oidc_token =
-        oidc_server.generate_token(environment, OidcProvider::Google, None, &public_key);
+    let oidc_token = oidc_server.generate_token(&MockOidcProvider::Google, None, &public_key);
     let signature = sign_keypair_challenge(
         &secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -215,7 +219,7 @@ async fn test_create_backup_with_ec_keypair() {
 
 #[tokio::test]
 async fn test_create_backup_with_incorrect_token() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -267,7 +271,7 @@ async fn test_create_backup_with_incorrect_token() {
 
 #[tokio::test]
 async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -328,7 +332,7 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
 
 #[tokio::test]
 async fn test_create_backup_with_empty_file() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -380,7 +384,7 @@ async fn test_create_backup_with_empty_file() {
 
 #[tokio::test]
 async fn test_create_backup_with_large_file() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Get a challenge from the server
     let challenge_response = get_passkey_challenge().await;
@@ -440,7 +444,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
     let challenge_response = get_keypair_challenge().await;
 
     // Generate invalid OIDC token
-    let oidc_token = oidc_server.generate_expired_token(environment, OidcProvider::Google);
+    let oidc_token = oidc_server.generate_expired_token(&MockOidcProvider::Google);
 
     // Generate temporary keypair for OIDC authentication and sign the challenge
     let (public_key, secret_key) = generate_keypair();
@@ -508,12 +512,8 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
     let (public_key, secret_key) = generate_keypair();
 
     // Generate OIDC token with incorrect nonce
-    let incorrect_nonce_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
-        None,
-        &generate_keypair().0,
-    );
+    let incorrect_nonce_token =
+        oidc_server.generate_token(&MockOidcProvider::Google, None, &generate_keypair().0);
 
     // Sign the challenge correctly
     let signature = sign_keypair_challenge(

@@ -1,12 +1,16 @@
 mod common;
 
 use crate::common::{
-    authenticate_with_passkey_challenge, create_test_backup, generate_test_attestation_token,
-    get_passkey_challenge, get_passkey_retrieval_challenge, get_test_router,
-    make_credential_from_passkey_challenge, send_post_request_with_bypass_attestation_token,
+    create_test_backup, generate_test_attestation_token, get_passkey_challenge,
+    get_passkey_retrieval_challenge, get_test_router,
+    send_post_request_with_bypass_attestation_token,
 };
 use axum::{extract::Request, http::StatusCode};
 use backup_service::attestation_gateway::ATTESTATION_GATEWAY_HEADER;
+use backup_service_test_utils::{
+    authenticate_with_passkey_challenge, get_mock_passkey_client,
+    make_credential_from_passkey_challenge,
+};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -16,7 +20,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_backup() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Create a backup
     let (_, create_response) = create_test_backup(&mut passkey_client, b"TEST BACKUP DATA").await;
@@ -94,7 +98,7 @@ async fn test_retrieve_backup() {
 
 #[tokio::test]
 async fn test_retrieve_backup_with_incorrect_token() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Create a backup first
     let (_, create_response) = create_test_backup(&mut passkey_client, b"TEST BACKUP DATA").await;
@@ -145,7 +149,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
 
 #[tokio::test]
 async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Create a backup first
     let (_, create_response) = create_test_backup(&mut passkey_client, b"TEST BACKUP DATA").await;
@@ -204,8 +208,8 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
 
 #[tokio::test]
 async fn test_retrieve_backup_with_nonexistent_credential() {
-    let mut passkey_client_1 = common::get_mock_passkey_client();
-    let mut passkey_client_2 = common::get_mock_passkey_client();
+    let mut passkey_client_1 = get_mock_passkey_client();
+    let mut passkey_client_2 = get_mock_passkey_client();
 
     // Create backup for first client
     let (_, create_response) = create_test_backup(&mut passkey_client_1, b"TEST BACKUP DATA").await;

@@ -755,12 +755,12 @@ version = "0.1.0"
 dependencies = [
  "aide",
  "anyhow",
- "async-trait",
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-kms",
  "aws-sdk-s3",
  "axum",
+ "backup-service-test-utils",
  "base64 0.22.1",
  "chrono",
  "dotenvy",
@@ -772,11 +772,8 @@ dependencies = [
  "mockito",
  "openidconnect",
  "p256 0.13.2",
- "passkey",
- "public-suffix",
  "rand 0.8.5",
  "reqwest",
- "rsa",
  "schemars",
  "serde",
  "serde_json",
@@ -789,9 +786,28 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "url",
  "uuid",
  "webauthn-rs",
+]
+
+[[package]]
+name = "backup-service-test-utils"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "mockito",
+ "openidconnect",
+ "passkey",
+ "public-suffix",
+ "rand 0.8.5",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1003,7 +1019,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
- "half 2.5.0",
+ "half 2.6.0",
 ]
 
 [[package]]
@@ -1147,9 +1163,9 @@ dependencies = [
 
 [[package]]
 name = "crunchy"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-bigint"
@@ -1755,9 +1771,9 @@ checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
 
 [[package]]
 name = "half"
-version = "2.5.0"
+version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7db2ff139bba50379da6aa0766b52fdcb62cb5b263009b09ed58ba604e14bbd1"
+checksum = "459196ed295495a68f7d7fe1d84f6c4b7ff0e21fe3017b2f283c6fac3ad803c9"
 dependencies = [
  "cfg-if",
  "crunchy",

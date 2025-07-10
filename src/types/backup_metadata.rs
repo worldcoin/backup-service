@@ -81,7 +81,7 @@ impl Factor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 #[allow(clippy::large_enum_variant)]
 pub enum FactorKind {
@@ -103,6 +103,43 @@ pub enum FactorKind {
     },
     #[serde(rename_all = "camelCase")]
     EcKeypair { public_key: String },
+}
+
+impl PartialEq for FactorKind {
+    fn eq(&self, other: &Self) -> bool {
+        use FactorKind::{EcKeypair, OidcAccount, Passkey};
+        match (self, other) {
+            // compare only the passkey (through the credential ID), ignore the registration
+            // note `Passkey` implements `PartialEq` correctly based on the `cred_id` field
+            (
+                Passkey {
+                    webauthn_credential: a,
+                    ..
+                },
+                Passkey {
+                    webauthn_credential: b,
+                    ..
+                },
+            ) => a == b,
+
+            // compare the rest of the fields regularly
+            (
+                OidcAccount {
+                    account: a0,
+                    turnkey_provider_id: a1,
+                },
+                OidcAccount {
+                    account: b0,
+                    turnkey_provider_id: b1,
+                },
+            ) => a0 == b0 && a1 == b1,
+
+            (EcKeypair { public_key: a }, EcKeypair { public_key: b }) => a == b,
+
+            // Different variants are never equal
+            _ => false,
+        }
+    }
 }
 
 impl Factor {
@@ -216,4 +253,123 @@ pub enum ExportedOidcAccountKind {
     Google { masked_email: String },
     #[serde(rename_all = "camelCase")]
     Apple { masked_email: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use backup_service_test_utils::{
+        get_mock_passkey_client, make_credential_from_passkey_challenge,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use p256::SecretKey;
+    use rand::rngs::OsRng;
+    use serde_json::json;
+
+    use crate::types::Environment;
+
+    use super::*;
+
+    #[test]
+    fn test_factor_kind_comparison_keypair() {
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+        let factor_1 = FactorKind::EcKeypair {
+            public_key: public_key.clone(),
+        };
+        let factor_2 = FactorKind::EcKeypair {
+            public_key: public_key.clone(),
+        };
+
+        let factor_3 = FactorKind::EcKeypair {
+            public_key: public_key[..public_key.len() - 1].to_string(),
+        };
+
+        assert_eq!(factor_1, factor_2);
+        assert_ne!(factor_1, factor_3);
+    }
+
+    #[test]
+    fn test_factor_kind_comparison_oidc_account() {
+        let factor_1 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_2 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_3 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567891".to_string(), // different provider ID
+        };
+
+        let factor_4 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "1234567891".to_string(), // different sub
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        let factor_5 = FactorKind::OidcAccount {
+            account: OidcAccountKind::Apple {
+                // different `OidcAccountKind`
+                sub: "1234567890".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            turnkey_provider_id: "1234567890".to_string(),
+        };
+
+        assert_eq!(factor_1, factor_2);
+        assert_ne!(factor_1, factor_3);
+        assert_ne!(factor_1, factor_4);
+        assert_ne!(factor_1, factor_5);
+    }
+
+    #[tokio::test]
+    async fn test_factor_kind_comparison_passkey() {
+        let mut client = get_mock_passkey_client();
+
+        let (challenge, registration) = Environment::development(None)
+            .webauthn_config()
+            .start_passkey_registration(Uuid::new_v4(), "test", "test", None)
+            .unwrap();
+
+        let challenge = json!({
+            "challenge": challenge,
+        });
+
+        let passkey = Environment::development(None)
+            .webauthn_config()
+            .finish_passkey_registration(
+                &serde_json::from_value(
+                    make_credential_from_passkey_challenge(&mut client, &challenge).await,
+                )
+                .unwrap(),
+                &registration,
+            )
+            .unwrap();
+
+        let factor_1 = FactorKind::Passkey {
+            webauthn_credential: passkey.clone(),
+            registration: json!([1]),
+        };
+        let factor_2 = FactorKind::Passkey {
+            webauthn_credential: passkey,
+            registration: json!([2]),
+        };
+
+        assert_eq!(factor_1, factor_2);
+    }
 }

@@ -187,7 +187,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing kinds
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == factor.kind)
             || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
         {
@@ -239,9 +239,7 @@ impl BackupStorage {
             return Err(BackupManagerError::BackupNotFound);
         };
 
-        // Check if this factor already exists by comparing `FactorKind`
-        // For the sake of avoiding confusion, `FactorKind` includes the entire public credential,
-        // it is not comparing just the "kind", but the entire factor.
+        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
             || metadata
                 .sync_factors

@@ -11,10 +11,14 @@ RUN apt-get update && apt-get install -y \
 
 # Copy manifests
 COPY Cargo.toml Cargo.toml
+COPY test-utils/Cargo.toml test-utils/Cargo.toml
+# test-utils won't actually be included in the final image
 
 # Cache dependencies
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
+    mkdir -p test-utils/src && \
+    echo "fn main() {}" > test-utils/src/main.rs && \
     cargo build --release && \
     rm -rf src
 

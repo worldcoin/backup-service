@@ -1,19 +1,19 @@
 mod common;
 
 use crate::common::{
-    authenticate_with_passkey_challenge, create_test_backup, generate_keypair,
-    get_passkey_retrieval_challenge, send_post_request,
+    create_test_backup, generate_keypair, get_passkey_retrieval_challenge, send_post_request,
     send_post_request_with_bypass_attestation_token, send_post_request_with_multipart,
     sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
+use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
 use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
 async fn test_add_sync_factor_happy_path() {
-    let mut passkey_client = common::get_mock_passkey_client();
+    let mut passkey_client = get_mock_passkey_client();
 
     // Create a backup first
     let (_credential, create_response) =

@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-mod passkey_client;
-
 use aws_sdk_s3::Client as S3Client;
 use axum::body::{Body, Bytes};
 use axum::http::Request;
@@ -15,7 +13,10 @@ use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
-use backup_service::types::{Environment, OidcProvider};
+use backup_service::types::Environment;
+use backup_service_test_utils::{
+    make_credential_from_passkey_challenge, MockOidcProvider, MockOidcServer, MockPasskeyClient,
+};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{Duration, Utc};
@@ -30,12 +31,9 @@ use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
-#[allow(unused_imports)]
-pub use passkey_client::*;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
-use url::Url;
 use uuid::Uuid;
 
 pub async fn get_test_s3_client() -> S3Client {
@@ -283,24 +281,6 @@ pub async fn get_keypair_retrieve_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
-/// Create a new passkey credential by solving a challenge. Returns the credential as a JSON value.
-pub async fn make_credential_from_passkey_challenge(
-    passkey_client: &mut MockPasskeyClient,
-    challenge_response: &serde_json::Value,
-) -> serde_json::Value {
-    let credential_input: passkey::types::webauthn::CredentialCreationOptions =
-        serde_json::from_value(challenge_response["challenge"].clone()).unwrap();
-    let credential = passkey_client
-        .register(
-            Url::parse("https://keys.world.app").unwrap(),
-            credential_input,
-            passkey::client::DefaultClientData,
-        )
-        .await
-        .unwrap();
-    serde_json::to_value(credential).unwrap()
-}
-
 // Get sync factor as keypair that signs a challenge from the server.
 // Returns (factor, challenge token, secret key).
 pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
@@ -347,24 +327,6 @@ pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
         .unwrap()
         .to_bytes();
     serde_json::from_slice(&challenge_response).unwrap()
-}
-
-/// Authenticate using a passkey client with a retrieval challenge. Returns the credential as a JSON value.
-pub async fn authenticate_with_passkey_challenge(
-    passkey_client: &mut MockPasskeyClient,
-    challenge_response: &serde_json::Value,
-) -> serde_json::Value {
-    let credential_request_options: passkey::types::webauthn::CredentialRequestOptions =
-        serde_json::from_value(challenge_response["challenge"].clone()).unwrap();
-    let credential = passkey_client
-        .authenticate(
-            &Url::parse("https://keys.world.app").unwrap(),
-            credential_request_options,
-            passkey::client::DefaultClientData,
-        )
-        .await
-        .unwrap();
-    serde_json::to_value(credential).unwrap()
 }
 
 /// Create a test backup with a passkey credential. Returns both the credential JSON and the create response.
@@ -500,7 +462,7 @@ pub struct TestBackupWithOidcAccount {
     pub oidc_token: String,
     pub environment: Environment,
     pub response: Response,
-    pub oidc_server: backup_service::mock_oidc_server::MockOidcServer,
+    pub oidc_server: MockOidcServer,
 }
 
 /// Create a test backup with an OIDC account.
@@ -509,7 +471,7 @@ pub async fn create_test_backup_with_oidc_account(
     backup_data: &[u8],
 ) -> TestBackupWithOidcAccount {
     // Setup OIDC server
-    let oidc_server = backup_service::mock_oidc_server::MockOidcServer::new().await;
+    let oidc_server = MockOidcServer::new().await;
     let environment =
         Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
@@ -521,8 +483,7 @@ pub async fn create_test_backup_with_oidc_account(
 
     // Generate OIDC token
     let oidc_token = oidc_server.generate_token(
-        environment,
-        OidcProvider::Google,
+        &MockOidcProvider::Google,
         Some(SubjectIdentifier::new(subject.to_string())),
         &public_key,
     );
