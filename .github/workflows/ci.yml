@@ -12,6 +12,8 @@ jobs:
   lint:
     name: Format & Clippy
     runs-on: arc-large-amd64-runner
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -42,6 +44,8 @@ jobs:
   build-release:
     name: Build Release
     runs-on: arc-large-amd64-runner
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -69,6 +73,8 @@ jobs:
   test:
     name: Tests
     runs-on: arc-4xlarge-amd64-runner
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -95,6 +101,8 @@ jobs:
   docker:
     name: Test Docker build
     runs-on: arc-4xlarge-amd64-runner
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -109,8 +117,6 @@ jobs:
           push: false
           load: true
           tags: backup-service-ci:latest
-          secrets: |
-            GITHUB_TOKEN=${{ secrets.GIT_HUB_TOKEN }}
           cache-from: type=gha
           cache-to: "type=gha,mode=max"
           platforms: linux/amd64
@@ -141,6 +147,8 @@ jobs:
   deny:
     name: Cargo deny
     runs-on: arc-large-amd64-runner
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
