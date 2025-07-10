@@ -25,7 +25,7 @@ pub struct DeleteFactorRequest {
 pub struct DeleteFactorResponse {}
 
 /// Request to delete a factor from backup metadata using a solved challenge.
-/// If it is the last `Main`factor, this will also delete the entire backup (as the backup becomes inaccessible).
+/// If it is the last `Main` factor, this will also delete the entire backup (as the backup becomes inaccessible).
 ///
 /// This endpoint allows deleting both `Main` and `Sync` factors:
 /// 1. `Main` factors are deleted manually by the user.
