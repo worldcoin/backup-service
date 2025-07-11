@@ -105,7 +105,11 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/delete-factor/challenge/keypair",
             post(keypair_challenge::handler::<DeleteFactorChallengeKeypairRequest>),
         )
-        .api_route("/delete-factor", post(delete_factor::handler))
+        .api_route(
+            "/delete-factor",
+            post_with(delete_factor::handler, delete_factor::docs)
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
         // Delete backup
         .api_route(
             "/delete-backup/challenge/keypair",

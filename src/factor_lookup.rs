@@ -2,7 +2,9 @@ use crate::types::Environment;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
-use std::sync::Arc;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::{str::FromStr, sync::Arc};
 use strum_macros::{Display, EnumString};
 
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,
@@ -22,7 +24,7 @@ pub struct FactorLookup {
 /// Some factors are used as main factors for recovery, while others are used for just syncing.
 /// This enum is used to distinguish between the two types of factors and only query the specific
 /// type of factor.
-#[derive(Debug, Clone, Copy, Display, EnumString, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Display, EnumString, PartialEq, Eq, JsonSchema)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum FactorScope {
     /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup
@@ -32,6 +34,26 @@ pub enum FactorScope {
     /// new data, view metadata and delete factors. Sync factors cannot be used to recover the backup
     /// or add new factors.
     Sync,
+}
+
+// Serde serialization implementation for `FactorScope` (to use strum serialization)
+impl Serialize for FactorScope {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for FactorScope {
+    fn deserialize<D>(deserializer: D) -> Result<FactorScope, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        FactorScope::from_str(&s).map_err(<D::Error as serde::de::Error>::custom)
+    }
 }
 
 impl FactorLookup {

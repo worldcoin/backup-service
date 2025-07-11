@@ -6,6 +6,7 @@ use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
+use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,18 +14,30 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFactorRequest {
+    /// The authorization for the request (from a `Sync` factor).
     authorization: Authorization,
+    /// The challenge token that will be authenticated against the factor to delete.
     challenge_token: String,
+    /// The ID of the factor to delete.
     factor_id: String,
     /// Key that should be deleted from encryption key list in the metadata as part of this request
     encryption_key: Option<BackupEncryptionKey>,
+    /// The scope of the factor to delete.
+    scope: Option<FactorScope>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFactorResponse {}
 
-/// Request to delete a factor from backup metadata using a solved challenge.
+pub fn docs(op: TransformOperation) -> TransformOperation {
+    op.description(
+        "Request to delete a factor (main or sync) with an authenticated challenge. This endpoint requires Attestation Gateway checks (through the `attestation-token` header).",
+    )
+    .security_requirement("AttestationToken")
+}
+
+/// Request to delete a factor (main or sync) from backup metadata using a solved challenge.
 /// If it is the last `Main` factor, this will also delete the entire backup (as the backup becomes inaccessible).
 ///
 /// This endpoint allows deleting both `Main` and `Sync` factors:
@@ -40,6 +53,12 @@ pub async fn handler(
     // Step 1: Extract the factor IDs from the request
     let factor_id = request.factor_id.clone();
     let encryption_key = request.encryption_key.clone();
+    let scope = request.scope.unwrap_or(FactorScope::Main);
+
+    // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
+    if scope == FactorScope::Sync && encryption_key.is_some() {
+        return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
+    }
 
     // Step 2: Auth. Verify the solved challenge
     let (backup_id, backup_metadata) = auth_handler
@@ -57,33 +76,21 @@ pub async fn handler(
         .await?;
 
     // Step 3: Find the factor to delete from the backup (either Main or Sync). Main will be searched first.
-    let factor_to_delete = {
-        // First check main factors
-        if let Some(factor) = backup_metadata.factors.iter().find(|f| f.id == factor_id) {
-            Some((factor.as_factor_to_lookup(&environment), FactorScope::Main))
-        }
-        // Then check sync factors
-        else {
-            backup_metadata
-                .sync_factors
-                .iter()
-                .find(|f| f.id == factor_id)
-                .map(|factor| (factor.as_factor_to_lookup(&environment), FactorScope::Sync))
-        }
+    let factor_to_delete = match scope {
+        FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
+        FactorScope::Sync => backup_metadata
+            .sync_factors
+            .iter()
+            .find(|f| f.id == factor_id),
     };
 
-    let Some((factor_to_delete, factor_scope)) = factor_to_delete else {
+    let Some(factor_to_delete) = factor_to_delete else {
         tracing::info!(message = "Factor not found in backup metadata");
         return Err(ErrorResponse::bad_request("factor_not_found"));
     };
 
-    // Step 3.1 Validate there is no encryption key if deleting a `Sync` factor
-    if factor_scope == FactorScope::Sync && encryption_key.is_some() {
-        return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
-    }
-
     // Step 4: Delete the factor from the backup storage
-    match factor_scope {
+    match scope {
         FactorScope::Main => {
             backup_storage
                 .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
@@ -103,7 +110,7 @@ pub async fn handler(
 
     // Step 5: Delete the factor from the factor lookup
     factor_lookup
-        .delete(factor_scope, &factor_to_delete)
+        .delete(scope, &factor_to_delete.as_factor_to_lookup(&environment))
         .await?;
 
     Ok(Json(DeleteFactorResponse {}))
