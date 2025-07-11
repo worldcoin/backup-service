@@ -14,6 +14,10 @@ on:
           - patch
           - minor
           - major
+
+permissions:
+  contents: read
+
 jobs:
   initiate-release:
     runs-on: ubuntu-latest

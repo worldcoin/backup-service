@@ -50,15 +50,6 @@ jobs:
         id: rust_version
         run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
 
-      - name: Restore and cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Build the project
         run: cargo build --release
 
