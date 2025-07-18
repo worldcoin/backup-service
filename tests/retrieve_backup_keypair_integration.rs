@@ -31,7 +31,7 @@ async fn test_retrieve_backup_with_ec_keypair() {
 
     // Retrieve the backup using the solved challenge
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -87,7 +87,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
 
     // Retrieve the backup using an incorrect token
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -144,7 +144,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
 
     // Attempt to retrieve the backup using the second keypair's signature but first keypair's public key
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -196,7 +196,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
 
     // Attempt to retrieve a backup that doesn't exist
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -253,7 +253,7 @@ async fn test_retrieve_backup_with_sync_keypair() {
 
     // Attempt to retrieve the backup using the sync factor
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",

@@ -40,7 +40,7 @@ async fn test_delete_last_factor_happy_path() {
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
-        "/delete-factor/challenge/keypair",
+        "/v1/delete-factor/challenge/keypair",
         json!({
             "factorId": factor_id
         }),
@@ -65,7 +65,7 @@ async fn test_delete_last_factor_happy_path() {
 
     // Delete the factor (which should delete the backup)
     let response = common::send_post_request(
-        "/delete-factor",
+        "/v1/delete-factor",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -147,7 +147,7 @@ async fn test_delete_sync_factor_happy_path() {
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
-        "/delete-factor/challenge/keypair",
+        "/v1/delete-factor/challenge/keypair",
         json!({
             "factorId": factor_id
         }),
@@ -172,7 +172,7 @@ async fn test_delete_sync_factor_happy_path() {
 
     // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
     let response = common::send_post_request(
-        "/delete-factor",
+        "/v1/delete-factor",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -225,7 +225,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
 
     // Get a delete factor challenge with the incorrect factor ID
     let challenge_response = common::send_post_request(
-        "/delete-factor/challenge/keypair",
+        "/v1/delete-factor/challenge/keypair",
         json!({
             "factorId": incorrect_factor_id
         }),
@@ -249,7 +249,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
 
     // Try to delete the actual factor ID with a challenge for the incorrect factor ID
     let response = common::send_post_request(
-        "/delete-factor",
+        "/v1/delete-factor",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",

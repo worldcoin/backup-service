@@ -240,7 +240,7 @@ pub async fn send_post_request_with_bypass_attestation_token(
 // Get a passkey challenge response from the server
 pub async fn get_passkey_challenge() -> serde_json::Value {
     let challenge_response = send_post_request(
-        "/create/challenge/passkey",
+        "/v1/create/challenge/passkey",
         json!({
             "name": "MOCK USERNAME",
             "displayName": "MOCK DISPLAY NAME",
@@ -259,7 +259,7 @@ pub async fn get_passkey_challenge() -> serde_json::Value {
 
 // Get a keypair challenge response from the server that's used for OIDC and Keypair registration
 pub async fn get_keypair_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/create/challenge/keypair", json!({})).await;
+    let challenge_response = send_post_request("/v1/create/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -271,7 +271,7 @@ pub async fn get_keypair_challenge() -> serde_json::Value {
 
 // Get a keypair challenge response from the server that's used for OIDC and Keypair authentication
 pub async fn get_keypair_retrieve_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let challenge_response = send_post_request("/v1/retrieve/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -307,7 +307,7 @@ pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
 
 /// Get a passkey retrieval challenge response from the server.
 pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let challenge_response = send_post_request("/v1/retrieve/challenge/passkey", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -319,7 +319,7 @@ pub async fn get_passkey_retrieval_challenge() -> serde_json::Value {
 
 /// Get a keypair retrieval challenge response from the server.
 pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let challenge_response = send_post_request("/v1/retrieve/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
         .into_body()
         .collect()
@@ -346,7 +346,7 @@ pub async fn create_test_backup(
 
     // Send the credential to the server to create a backup
     let create_response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -387,7 +387,7 @@ pub async fn create_test_backup_with_keypair(
 
     // Send the keypair signature to the server to create a backup
     let create_response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -433,7 +433,7 @@ pub async fn create_test_backup_with_sync_keypair(
 
     // Send the keypair signature to the server to create a backup
     let create_response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -498,7 +498,7 @@ pub async fn create_test_backup_with_oidc_account(
 
     // Send the OIDC token to the server to create a backup
     let create_response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",

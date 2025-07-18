@@ -8,7 +8,7 @@ use serde_json::json;
 #[tokio::test]
 async fn test_create_challenge() {
     let response = send_post_request(
-        "/create/challenge/passkey",
+        "/v1/create/challenge/passkey",
         json!({
             "name": "MOCK USERNAME",
             "displayName": "MOCK DISPLAY NAME",

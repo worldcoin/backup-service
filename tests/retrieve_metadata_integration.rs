@@ -21,7 +21,7 @@ async fn test_retrieve_metadata_happy_path() {
 
     // Get a metadata challenge
     let challenge_response =
-        common::send_post_request("/retrieve-metadata/challenge/keypair", json!({})).await;
+        common::send_post_request("/v1/retrieve-metadata/challenge/keypair", json!({})).await;
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
@@ -40,7 +40,7 @@ async fn test_retrieve_metadata_happy_path() {
 
     // Retrieve the backup metadata
     let response = common::send_post_request(
-        "/retrieve-metadata",
+        "/v1/retrieve-metadata",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -95,7 +95,7 @@ async fn test_retrieve_metadata_with_incorrect_authorization() {
 
     // Get a metadata challenge
     let challenge_response =
-        common::send_post_request("/retrieve-metadata/challenge/keypair", json!({})).await;
+        common::send_post_request("/v1/retrieve-metadata/challenge/keypair", json!({})).await;
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
@@ -119,7 +119,7 @@ async fn test_retrieve_metadata_with_incorrect_authorization() {
 
     // Try to retrieve the metadata with signature from a different key
     let response = common::send_post_request(
-        "/retrieve-metadata",
+        "/v1/retrieve-metadata",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
