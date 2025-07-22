@@ -24,7 +24,8 @@ async fn test_sync_backup_happy_path() {
     let backup_id = response["backupId"].as_str().unwrap();
 
     // Get a sync challenge
-    let challenge_response = common::send_post_request("/sync/challenge/keypair", json!({})).await;
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
@@ -43,7 +44,7 @@ async fn test_sync_backup_happy_path() {
 
     // Sync the backup with new content
     let response = common::send_post_request_with_multipart(
-        "/sync",
+        "/v1/sync",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -80,7 +81,8 @@ async fn test_sync_backup_with_incorrect_authorization() {
     let _backup_id = response["backupId"].as_str().unwrap();
 
     // Get a sync challenge
-    let challenge_response = common::send_post_request("/sync/challenge/keypair", json!({})).await;
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
@@ -104,7 +106,7 @@ async fn test_sync_backup_with_incorrect_authorization() {
 
     // Try to sync the backup with signature from a different key
     let response = common::send_post_request_with_multipart(
-        "/sync",
+        "/v1/sync",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",

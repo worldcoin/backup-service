@@ -14,7 +14,8 @@ use serde_json::json;
 
 /// Helper function to get a delete backup challenge
 async fn get_delete_backup_challenge() -> serde_json::Value {
-    let challenge_response = send_post_request("/delete-backup/challenge/keypair", json!({})).await;
+    let challenge_response =
+        send_post_request("/v1/delete-backup/challenge/keypair", json!({})).await;
     assert_eq!(challenge_response.status(), StatusCode::OK);
     let challenge_body = challenge_response
         .into_body()
@@ -91,7 +92,7 @@ async fn test_delete_backup_happy_path() {
 
     // Delete the backup
     let delete_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -135,7 +136,7 @@ async fn test_delete_backup_with_incorrect_signature() {
 
     // Attempt to delete the backup with wrong signature
     let delete_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -187,7 +188,7 @@ async fn test_delete_backup_with_main_factor() {
 
     // Attempt to delete the backup with main factor
     let delete_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -222,7 +223,7 @@ async fn test_delete_backup_with_non_existent_backup() {
 
     // Attempt to delete a backup with non-existent factor
     let delete_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -268,7 +269,7 @@ async fn test_delete_backup_challenge_token_reuse() {
 
     // First delete attempt (should succeed)
     let delete_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -294,7 +295,7 @@ async fn test_delete_backup_challenge_token_reuse() {
     );
 
     let reuse_response = send_post_request(
-        "/delete-backup",
+        "/v1/delete-backup",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
