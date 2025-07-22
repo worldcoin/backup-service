@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{Extension, Json};
 use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+use http::HeaderMap;
 use rand::RngCore;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -11,7 +12,7 @@ use crate::{
     challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType},
     dynamo_cache::DynamoCacheManager,
     factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
-    types::{backup_metadata::BackupMetadata, ErrorResponse},
+    types::{backup_metadata::BackupMetadata, Environment, ErrorResponse},
 };
 
 #[derive(Serialize)]
@@ -30,11 +31,25 @@ const TEST_BACKUP_ID: &str = "canary_backup";
 ///
 /// This endpoint is intended to only be run internally, and will generally not be publicly accessible.
 pub async fn handler(
+    Extension(environment): Extension<Environment>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
+    headers: HeaderMap,
 ) -> Result<Json<ReadyResponse>, ErrorResponse> {
+    // Step 0: Check if the request is authenticated
+    let auth_token = environment.internal_endpoint_auth_token();
+    let auth_header = headers
+        .get("Authorization")
+        .ok_or(ErrorResponse::unauthorized())?
+        .to_str()
+        .map_err(|_| ErrorResponse::unauthorized())?;
+
+    if auth_header.replace("Bearer ", "") != auth_token {
+        return Err(ErrorResponse::unauthorized());
+    }
+
     // Step 1: Check Dynamo Cache Manager (PutItem)
     let token = dynamo_cache_manager
         .create_sync_factor_token(TEST_BACKUP_ID.to_string())
