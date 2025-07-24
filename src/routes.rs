@@ -120,5 +120,6 @@ pub fn handler(environment: Environment) -> ApiRouter {
     ApiRouter::new()
         .merge(docs::handler())
         .api_route("/health", get(health::handler))
+        .api_route("/ready", post(ready::handler))
         .nest("/v1", v1_routes)
 }
