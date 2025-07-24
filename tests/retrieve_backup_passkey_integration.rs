@@ -61,7 +61,7 @@ async fn test_retrieve_backup() {
     let retrieve_response = router
         .oneshot(
             Request::builder()
-                .uri("/retrieve/from-challenge")
+                .uri("/v1/retrieve/from-challenge")
                 .method("POST")
                 .header("Content-Type", "application/json")
                 .header(ATTESTATION_GATEWAY_HEADER, jwt)
@@ -113,7 +113,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
 
     // Attempt to retrieve the backup using an incorrect token
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -172,7 +172,7 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
 
     // Attempt to retrieve the backup using the tampered credential
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -228,7 +228,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
 
     // Attempt to retrieve a backup that doesn't exist
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "PASSKEY",

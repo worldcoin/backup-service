@@ -32,7 +32,7 @@ async fn test_create_backup_with_passkey() {
 
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -70,7 +70,7 @@ async fn test_create_backup_with_passkey() {
 
     // check challenge_token cannot be reused
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -151,7 +151,7 @@ async fn test_create_backup_with_oidc_token() {
 
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         request_body,
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
@@ -186,7 +186,7 @@ async fn test_create_backup_with_ec_keypair() {
 
     // Send the keypair signature to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -232,7 +232,7 @@ async fn test_create_backup_with_incorrect_token() {
 
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -293,7 +293,7 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
 
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -345,7 +345,7 @@ async fn test_create_backup_with_empty_file() {
 
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -397,7 +397,7 @@ async fn test_create_backup_with_large_file() {
 
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -457,7 +457,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
 
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -525,7 +525,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
 
     // Send the OIDC token to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -586,7 +586,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
 
     // Pass the public key from the second keypair, but the signature from the first keypair
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -651,7 +651,7 @@ async fn test_create_backup_with_invalid_sync_factor() {
 
     // Send the keypair signature to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -712,7 +712,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
 
     // Send the keypair signature to the server to create a backup
     let response = send_post_request_with_multipart(
-        "/create",
+        "/v1/create",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",

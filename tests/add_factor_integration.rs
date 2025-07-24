@@ -21,6 +21,7 @@ use http_body_util::BodyExt;
 use openidconnect::SubjectIdentifier;
 use p256::SecretKey;
 use serde_json::{json, Value};
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 
 /// Sets up a test environment with OIDC server, mock passkey client and a backup
@@ -45,7 +46,7 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
 /// Gets challenges for adding a new factor (both existing passkey and new keypair challenges)
 async fn get_add_factor_challenges(oidc_token: &str) -> Value {
     let challenge_response = common::send_post_request(
-        "/add-factor/challenge",
+        "/v1/add-factor/challenge",
         json!({
             "newFactor": {
                 "kind": "OIDC_ACCOUNT",
@@ -95,6 +96,7 @@ async fn parse_response_body(response: Response) -> Value {
 
 // Happy path - add a new OIDC account factor to an existing backup using a passkey
 #[tokio::test]
+#[serial]
 async fn test_add_factor_happy_path() {
     // Setup test environment
     let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
@@ -126,7 +128,7 @@ async fn test_add_factor_happy_path() {
 
     // Add the new factor
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -189,7 +191,7 @@ async fn test_add_factor_happy_path() {
 
     // Attempt to retrieve the backup using the OIDC factor
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -234,6 +236,7 @@ async fn test_add_factor_happy_path() {
 
 // Mismatch between OIDC token when getting the challenge and when adding the factor
 #[tokio::test]
+#[serial]
 async fn test_add_factor_with_mismatched_oidc_token() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
@@ -268,7 +271,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
 
     // Attempt to add the new factor but use a different OIDC token than what was used for the challenge
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -316,6 +319,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
 
 // No challenge in the Turnkey activity
 #[tokio::test]
+#[serial]
 async fn test_add_factor_without_challenge_in_turnkey_activity() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
@@ -358,7 +362,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
 
     // Attempt to add the new factor with the invalid Turnkey activity
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -428,7 +432,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
 
     // Attempt to add the new factor with the modified activity
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -461,6 +465,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
 
 // Incorrectly signed challenge for new keypair
 #[tokio::test]
+#[serial]
 async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
@@ -485,7 +490,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
 
     // Add the new factor
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -533,6 +538,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
 
 // Attempt to add a new factor with a passkey credential for a different user
 #[tokio::test]
+#[serial]
 async fn test_add_factor_with_passkey_credential_for_different_user() {
     let (oidc_server, environment, _, _) = setup_test_environment().await;
     let mut passkey_client_1 = get_mock_passkey_client();
@@ -571,7 +577,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
 
     // Attempt to add the new factor with the modified passkey assertion
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",
@@ -619,6 +625,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
 
 // Different account ID in the Turnkey activity and encrypted backup key
 #[tokio::test]
+#[serial]
 async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encrypted_backup_key() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
@@ -645,7 +652,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
 
     // Attempt to add the new factor with a different account ID in the encrypted backup key
     let response = common::send_post_request_with_environment(
-        "/add-factor",
+        "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "PASSKEY",

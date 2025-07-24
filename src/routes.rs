@@ -40,10 +40,7 @@ mod sync_backup;
 mod sync_challenge_keypair;
 
 pub fn handler(environment: Environment) -> ApiRouter {
-    ApiRouter::new()
-        .merge(docs::handler())
-        .api_route("/health", get(health::handler))
-        .api_route("/ready", post(ready::handler))
+    let v1_routes = ApiRouter::new()
         // Create new backup
         .api_route(
             "/create/challenge/passkey",
@@ -107,11 +104,21 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/delete-factor/challenge/keypair",
             post(keypair_challenge::handler::<DeleteFactorChallengeKeypairRequest>),
         )
-        .api_route("/delete-factor", post(delete_factor::handler))
+        .api_route(
+            "/delete-factor",
+            post_with(delete_factor::handler, delete_factor::docs)
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
         // Delete backup
         .api_route(
             "/delete-backup/challenge/keypair",
             post(keypair_challenge::handler::<DeleteBackupChallengeKeypairRequest>),
         )
-        .api_route("/delete-backup", post(delete_backup::handler))
+        .api_route("/delete-backup", post(delete_backup::handler));
+
+    // Compose the final router: keep docs & health at root, nest business logic under /v1
+    ApiRouter::new()
+        .merge(docs::handler())
+        .api_route("/health", get(health::handler))
+        .nest("/v1", v1_routes)
 }

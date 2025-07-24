@@ -9,7 +9,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_retrieve_challenge_passkey() {
-    let response = send_post_request("/retrieve/challenge/passkey", json!({})).await;
+    let response = send_post_request("/v1/retrieve/challenge/passkey", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -45,7 +45,7 @@ async fn test_retrieve_challenge_passkey() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_keypair() {
-    let response = send_post_request("/retrieve/challenge/keypair", json!({})).await;
+    let response = send_post_request("/v1/retrieve/challenge/keypair", json!({})).await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -65,7 +65,7 @@ async fn test_retrieve_challenge_keypair() {
 #[ignore = "FIXME: Remove ignore. We are temporarily not enforcing the presence of attestation-token, while the roll out of attestation is in progress."]
 #[tokio::test]
 async fn test_retrieve_challenge_without_attestation() {
-    let endpoints = ["/retrieve/from-challenge"];
+    let endpoints = ["/v1/retrieve/from-challenge"];
 
     for endpoint in endpoints {
         let response = send_post_request(endpoint, json!({})).await;
@@ -95,7 +95,7 @@ async fn test_retrieve_challenge_without_attestation() {
 
 #[tokio::test]
 async fn test_retrieve_challenge_with_incorrect_attestation() {
-    let endpoints = ["/retrieve/from-challenge"];
+    let endpoints = ["/v1/retrieve/from-challenge"];
 
     for endpoint in endpoints {
         let app = get_test_router(None, None).await;

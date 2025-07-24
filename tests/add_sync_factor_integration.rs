@@ -37,7 +37,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Retrieve the backup to get a sync factor token
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "PASSKEY",
@@ -61,7 +61,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Get a challenge for adding a sync factor
     let sync_factor_challenge_response =
-        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
+        send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
 
     assert_eq!(sync_factor_challenge_response.status(), StatusCode::OK);
     let challenge_body = sync_factor_challenge_response
@@ -81,7 +81,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Add the sync factor
     let add_sync_factor_response = send_post_request(
-        "/add-sync-factor",
+        "/v1/add-sync-factor",
         json!({
             "challengeToken": challenge_response["token"],
             "syncFactor": {
@@ -121,7 +121,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Try to use the same token again - should fail as tokens are one-time use
     let second_challenge_response =
-        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
+        send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
     assert_eq!(second_challenge_response.status(), StatusCode::OK);
     let challenge_body = second_challenge_response
         .into_body()
@@ -137,7 +137,7 @@ async fn test_add_sync_factor_happy_path() {
         second_challenge["challenge"].as_str().unwrap(),
     );
     let reuse_token_response = send_post_request(
-        "/add-sync-factor",
+        "/v1/add-sync-factor",
         json!({
             "challengeToken": second_challenge["token"],
             "syncFactor": {
@@ -165,7 +165,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Now verify we can use the newly added sync factor to sync a backup
     // Get a sync challenge
-    let sync_challenge_response = send_post_request("/sync/challenge/keypair", json!({})).await;
+    let sync_challenge_response = send_post_request("/v1/sync/challenge/keypair", json!({})).await;
     let sync_challenge_body = sync_challenge_response
         .into_body()
         .collect()
@@ -180,7 +180,7 @@ async fn test_add_sync_factor_happy_path() {
 
     // Sync the backup with new content
     let sync_response = send_post_request_with_multipart(
-        "/sync",
+        "/v1/sync",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
@@ -212,7 +212,7 @@ async fn test_add_sync_factor_happy_path() {
 async fn test_add_sync_factor_with_invalid_token() {
     // Get a challenge for adding a sync factor
     let sync_factor_challenge_response =
-        send_post_request("/add-sync-factor/challenge/keypair", json!({})).await;
+        send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
     assert_eq!(sync_factor_challenge_response.status(), StatusCode::OK);
     let challenge_body = sync_factor_challenge_response
         .into_body()
@@ -231,7 +231,7 @@ async fn test_add_sync_factor_with_invalid_token() {
 
     // Try to add the sync factor with an invalid token
     let add_sync_factor_response = send_post_request(
-        "/add-sync-factor",
+        "/v1/add-sync-factor",
         json!({
             "challengeToken": challenge_response["token"],
             "syncFactor": {

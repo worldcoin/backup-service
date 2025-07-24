@@ -11,10 +11,12 @@ use base64::Engine;
 use http_body_util::BodyExt;
 use openidconnect::SubjectIdentifier;
 use serde_json::json;
+use serial_test::serial;
 use uuid::Uuid;
 
 /// Retrieves a backup with an OIDC account and ensures replays are not allowed for OIDC nonces.
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_oidc_account() {
     let subject = Uuid::new_v4().to_string();
 
@@ -53,7 +55,7 @@ async fn test_retrieve_backup_with_oidc_account() {
         "challengeToken": retrieve_challenge["token"],
     });
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json_body.clone(),
         // Must be sent to the same JWT issuer as the one used to create the backup
         Some(test_backup.environment),
@@ -85,7 +87,7 @@ async fn test_retrieve_backup_with_oidc_account() {
 
     // Ensure the OIDC nonce cannot be re-used
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json_body,
         // Must be sent to the same JWT issuer as the one used to create the backup
         Some(test_backup.environment),
@@ -140,7 +142,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
 
     // Retrieve the backup using the solved challenge with a different OIDC account
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -182,6 +184,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_retrieve_backup_with_different_keypair() {
     let subject = Uuid::new_v4().to_string();
@@ -212,7 +215,7 @@ async fn test_retrieve_backup_with_different_keypair() {
 
     // Retrieve the backup using the solved challenge with different signature
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -280,7 +283,7 @@ async fn test_retrieve_backup_with_incorrect_nonce() {
 
     // Retrieve the backup using the solved challenge but with incorrect nonce in token
     let retrieve_response = send_post_request_with_bypass_attestation_token(
-        "/retrieve/from-challenge",
+        "/v1/retrieve/from-challenge",
         json!({
             "authorization": {
                 "kind": "OIDC_ACCOUNT",
