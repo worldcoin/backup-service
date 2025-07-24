@@ -322,7 +322,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
-        "/delete-factor/challenge/keypair",
+        "/v1/delete-factor/challenge/keypair",
         json!({
             "factorId": factor_id
         }),
@@ -347,7 +347,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
 
     // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
     let response = common::send_post_request(
-        "/delete-factor",
+        "/v1/delete-factor",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
