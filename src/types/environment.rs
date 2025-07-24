@@ -278,20 +278,4 @@ impl Environment {
             Err(_) => false,
         }
     }
-
-    /// Static token used to authenticate requests against internal endpoints:
-    /// - `/ready`
-    ///
-    /// # Panics
-    /// Panics if the `INTERNAL_ENDPOINT_AUTH_TOKEN` environment variable is not set.
-    #[must_use]
-    pub fn internal_endpoint_auth_token(&self) -> String {
-        match self {
-            Self::Production | Self::Staging | Self::Development { .. } => {
-                env::var("INTERNAL_ENDPOINT_AUTH_TOKEN")
-                    .expect("INTERNAL_ENDPOINT_AUTH_TOKEN environment variable is not set")
-                    .to_string()
-            }
-        }
-    }
 }

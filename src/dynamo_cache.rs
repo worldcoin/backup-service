@@ -300,6 +300,25 @@ impl DynamoCacheManager {
             })?;
         Ok(())
     }
+
+    pub async fn is_ready(&self) -> bool {
+        let result = self
+            .dynamodb_client
+            .describe_table()
+            .table_name(self.environment.cache_table_name())
+            .send()
+            .await;
+
+        if let Ok(result) = result {
+            result.table().is_some()
+        } else {
+            tracing::error!(
+                "System is not ready. DynamoChacheManager (DescribeTable): {:?}",
+                result.err()
+            );
+            false
+        }
+    }
 }
 
 /// Hashes a token using SHA-256 and returns the hex representation

@@ -152,6 +152,25 @@ impl FactorLookup {
 
         Ok(())
     }
+
+    pub async fn is_ready(&self) -> bool {
+        let result = self
+            .dynamodb_client
+            .describe_table()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .send()
+            .await;
+
+        if let Ok(result) = result {
+            result.table().is_some()
+        } else {
+            tracing::error!(
+                "System is not ready. FactorLookup (DescribeTable): {:?}",
+                result.err()
+            );
+            false
+        }
+    }
 }
 
 fn factor_primary_key(

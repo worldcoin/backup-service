@@ -60,9 +60,6 @@ pub async fn handler(
             .delete(FactorScope::Main, &factor.as_factor_to_lookup(&environment))
             .await;
 
-        dbg!("hello");
-        dbg!(&result);
-
         if let Err(e) = result {
             tracing::warn!(
                 message = "[DeleteBackup] - Failed to delete `Main` factor from FactorLookup, but continuing.",
