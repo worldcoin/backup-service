@@ -74,6 +74,7 @@ async fn test_delete_last_factor_happy_path() {
             },
             "challengeToken": challenge_response["token"],
             "factorId": factor_id,
+            "scope": "MAIN",
         }),
     )
     .await;
@@ -181,6 +182,7 @@ async fn test_delete_sync_factor_happy_path() {
             },
             "challengeToken": challenge_response["token"],
             "factorId": factor_id,
+            "scope": "SYNC",
         }),
     )
     .await;
@@ -273,6 +275,104 @@ async fn test_delete_factor_with_incorrect_factor_id() {
     let metadata = verify_s3_metadata_exists(backup_id).await;
     let factors = metadata["factors"].as_array().unwrap();
     assert_eq!(factors.len(), 1);
+}
+
+#[tokio::test]
+async fn test_cannot_delete_sync_with_incorrect_scope() {
+    // Setup test environment
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup =
+        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
+
+    // Create a backup with a keypair and a sync factor
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID and the main factor ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_response["backupId"].as_str().unwrap();
+
+    // Get the metadata to extract the factor ID
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+
+    let factor_id = metadata["syncFactors"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // check the factor exists in DynamoDB
+    let factor_to_lookup = FactorToLookup::from_ec_keypair(
+        metadata["syncFactors"][0]["kind"]["publicKey"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    );
+    let observed_backup_id = factor_lookup
+        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(backup_id, &observed_backup_id);
+
+    // Get a delete factor challenge
+    let challenge_response = common::send_post_request(
+        "/delete-factor/challenge/keypair",
+        json!({
+            "factorId": factor_id
+        }),
+    )
+    .await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
+    let response = common::send_post_request(
+        "/delete-factor",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "factorId": factor_id,
+            "scope": "MAIN", // note we're trying to delete a sync factor with a `Main` scope
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error_response["error"]["code"], "factor_not_found");
+
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+
+    let factors = metadata["factors"].as_array().unwrap();
+    assert_eq!(factors.len(), 1);
+
+    let sync_factors = metadata["syncFactors"].as_array().unwrap();
+    assert_eq!(sync_factors.len(), 1);
 }
 
 /// Validates that a race condition does not occur when removing sync factors concurrently.

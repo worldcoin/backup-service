@@ -11,10 +11,12 @@ use base64::Engine;
 use http_body_util::BodyExt;
 use openidconnect::SubjectIdentifier;
 use serde_json::json;
+use serial_test::serial;
 use uuid::Uuid;
 
 /// Retrieves a backup with an OIDC account and ensures replays are not allowed for OIDC nonces.
 #[tokio::test]
+#[serial]
 async fn test_retrieve_backup_with_oidc_account() {
     let subject = Uuid::new_v4().to_string();
 
@@ -182,6 +184,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
     );
 }
 
+#[serial]
 #[tokio::test]
 async fn test_retrieve_backup_with_different_keypair() {
     let subject = Uuid::new_v4().to_string();
