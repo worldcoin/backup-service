@@ -260,6 +260,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
             },
             "challengeToken": challenge_response["token"],
             "factorId": factor_id, // Mismatching factor ID
+            "scope": "MAIN",
         }),
     )
     .await;
@@ -322,12 +323,13 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
-        "/delete-factor/challenge/keypair",
+        "/v1/delete-factor/challenge/keypair",
         json!({
             "factorId": factor_id
         }),
     )
     .await;
+    assert_eq!(challenge_response.status(), StatusCode::OK);
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
@@ -347,7 +349,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
 
     // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
     let response = common::send_post_request(
-        "/delete-factor",
+        "/v1/delete-factor",
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
