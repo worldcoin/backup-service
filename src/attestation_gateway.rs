@@ -358,16 +358,7 @@ impl AttestationGateway {
         let body_str = String::from_utf8(body_bytes.to_vec())
             .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
 
-        let attestation_token = parts.headers.attestation_token();
-
-        // FIXME: Remove. We are temporarily not enforcing the presence of attestation-token, while the roll out of attestation is in progress.
-        if let Err(e) = &attestation_token {
-            if e.error == "missing_attestation_token_header" {
-                let req = Request::from_parts(parts, Body::from(body_bytes));
-                return Ok(next.run(req).await);
-            }
-        };
-        let attestation_token = attestation_token?;
+        let attestation_token = parts.headers.attestation_token()?;
 
         let hash_input = GenerateRequestHashInput {
             path_uri: parts.uri.path().to_string(),
