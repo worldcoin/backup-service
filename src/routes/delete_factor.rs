@@ -23,7 +23,7 @@ pub struct DeleteFactorRequest {
     /// Key that should be deleted from encryption key list in the metadata as part of this request
     encryption_key: Option<BackupEncryptionKey>,
     /// The scope of the factor to delete.
-    scope: Option<FactorScope>,
+    scope: FactorScope,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -53,10 +53,9 @@ pub async fn handler(
     // Step 1: Extract the factor IDs from the request
     let factor_id = request.factor_id.clone();
     let encryption_key = request.encryption_key.clone();
-    let scope = request.scope.unwrap_or(FactorScope::Main);
 
     // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
-    if scope == FactorScope::Sync && encryption_key.is_some() {
+    if request.scope == FactorScope::Sync && encryption_key.is_some() {
         return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
     }
 
@@ -75,8 +74,8 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Find the factor to delete from the backup (either Main or Sync). Main will be searched first.
-    let factor_to_delete = match scope {
+    // Step 3: Find the factor to delete from the backup
+    let factor_to_delete = match request.scope {
         FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
         FactorScope::Sync => backup_metadata
             .sync_factors
@@ -90,7 +89,7 @@ pub async fn handler(
     };
 
     // Step 4: Delete the factor from the backup storage
-    match scope {
+    match request.scope {
         FactorScope::Main => {
             backup_storage
                 .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
@@ -110,7 +109,10 @@ pub async fn handler(
 
     // Step 5: Delete the factor from the factor lookup
     factor_lookup
-        .delete(scope, &factor_to_delete.as_factor_to_lookup(&environment))
+        .delete(
+            request.scope,
+            &factor_to_delete.as_factor_to_lookup(&environment),
+        )
         .await?;
 
     Ok(Json(DeleteFactorResponse {}))

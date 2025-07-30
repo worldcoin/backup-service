@@ -260,6 +260,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
             },
             "challengeToken": challenge_response["token"],
             "factorId": factor_id, // Mismatching factor ID
+            "scope": "MAIN",
         }),
     )
     .await;
@@ -328,6 +329,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
         }),
     )
     .await;
+    assert_eq!(challenge_response.status(), StatusCode::OK);
     let challenge_response_body = challenge_response
         .into_body()
         .collect()
