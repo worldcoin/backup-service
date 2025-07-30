@@ -64,7 +64,7 @@ async fn test_delete_last_factor_happy_path() {
     );
 
     // Delete the factor (which should delete the backup)
-    let response = common::send_post_request(
+    let response = common::send_post_request_with_bypass_attestation_token(
         "/v1/delete-factor",
         json!({
             "authorization": {
@@ -76,6 +76,7 @@ async fn test_delete_last_factor_happy_path() {
             "factorId": factor_id,
             "scope": "MAIN",
         }),
+        None,
     )
     .await;
 
@@ -172,7 +173,7 @@ async fn test_delete_sync_factor_happy_path() {
     );
 
     // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
-    let response = common::send_post_request(
+    let response = common::send_post_request_with_bypass_attestation_token(
         "/v1/delete-factor",
         json!({
             "authorization": {
@@ -184,6 +185,7 @@ async fn test_delete_sync_factor_happy_path() {
             "factorId": factor_id,
             "scope": "SYNC",
         }),
+        None,
     )
     .await;
 
@@ -250,7 +252,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
     );
 
     // Try to delete the actual factor ID with a challenge for the incorrect factor ID
-    let response = common::send_post_request(
+    let response = common::send_post_request_with_bypass_attestation_token(
         "/v1/delete-factor",
         json!({
             "authorization": {
@@ -262,6 +264,7 @@ async fn test_delete_factor_with_incorrect_factor_id() {
             "factorId": factor_id, // Mismatching factor ID
             "scope": "MAIN",
         }),
+        None,
     )
     .await;
 
@@ -348,7 +351,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
     );
 
     // Delete the factor (which should **NOT** delete the backup as there are still `Main` factors)
-    let response = common::send_post_request(
+    let response = common::send_post_request_with_bypass_attestation_token(
         "/v1/delete-factor",
         json!({
             "authorization": {
@@ -360,6 +363,7 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
             "factorId": factor_id,
             "scope": "MAIN", // note we're trying to delete a sync factor with a `Main` scope
         }),
+        None,
     )
     .await;
 
