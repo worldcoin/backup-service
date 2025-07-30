@@ -1,9 +1,9 @@
 use crate::types::{Environment, OidcProvider};
-use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
@@ -299,6 +299,25 @@ impl DynamoCacheManager {
                 DynamoCacheError::DynamoDbPutError(err)
             })?;
         Ok(())
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        let result = self
+            .dynamodb_client
+            .describe_table()
+            .table_name(self.environment.cache_table_name())
+            .send()
+            .await;
+
+        if let Ok(result) = result {
+            result.table().and_then(|t| t.table_status()).cloned() == Some(TableStatus::Active)
+        } else {
+            tracing::error!(
+                "System is not ready. DynamoChacheManager (DescribeTable): {:?}",
+                result.err()
+            );
+            false
+        }
     }
 }
 

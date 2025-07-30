@@ -30,6 +30,7 @@ mod delete_factor_challenge_keypair;
 mod docs;
 mod health;
 mod keypair_challenge;
+mod ready;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
@@ -119,5 +120,6 @@ pub fn handler(environment: Environment) -> ApiRouter {
     ApiRouter::new()
         .merge(docs::handler())
         .api_route("/health", get(health::handler))
+        .api_route("/ready", post(ready::handler))
         .nest("/v1", v1_routes)
 }

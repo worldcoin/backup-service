@@ -40,6 +40,14 @@ impl ErrorResponse {
             status: StatusCode::BAD_REQUEST,
         }
     }
+
+    #[must_use]
+    pub fn unauthorized() -> Self {
+        Self {
+            error: "unauthorized".to_string(),
+            status: StatusCode::UNAUTHORIZED,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

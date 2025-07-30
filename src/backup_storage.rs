@@ -396,6 +396,23 @@ impl BackupStorage {
 
         Ok(())
     }
+
+    pub async fn is_ready(&self) -> bool {
+        let result = self
+            .s3_client
+            .head_bucket()
+            .bucket(self.environment.s3_bucket())
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => true,
+            Err(err) => {
+                tracing::error!("System is not ready. BackupStorage (HeadBucket): {:?}", err);
+                false
+            }
+        }
+    }
 }
 
 pub struct FoundBackup {
