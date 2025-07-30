@@ -1,7 +1,7 @@
 use crate::types::Environment;
-use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
+use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{str::FromStr, sync::Arc};
@@ -184,7 +184,7 @@ impl FactorLookup {
             .await;
 
         if let Ok(result) = result {
-            result.table().is_some()
+            result.table().and_then(|t| t.table_status()).cloned() == Some(TableStatus::Active)
         } else {
             tracing::error!(
                 "System is not ready. FactorLookup (DescribeTable): {:?}",

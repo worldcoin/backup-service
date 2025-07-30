@@ -25,18 +25,15 @@ pub async fn handler(
     Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
 ) -> Result<Json<ReadyResponse>, ErrorResponse> {
-    // Step 1: Check `DynamoCacheManager` is ready
-    if !dynamo_cache_manager.is_ready().await {
-        return Err(ErrorResponse::internal_server_error());
-    }
+    // Run all ready checks in parallel
+    let (dynamo_ready, factor_lookup_ready, backup_storage_ready) = tokio::join!(
+        dynamo_cache_manager.is_ready(),
+        factor_lookup.is_ready(),
+        backup_storage.is_ready()
+    );
 
-    // Step 2: Check `FactorLookup` is ready
-    if !factor_lookup.is_ready().await {
-        return Err(ErrorResponse::internal_server_error());
-    }
-
-    // Step 3: Check `BackupStorage` is ready
-    if !backup_storage.is_ready().await {
+    // Check if any of the services are not ready
+    if !dynamo_ready || !factor_lookup_ready || !backup_storage_ready {
         return Err(ErrorResponse::internal_server_error());
     }
 

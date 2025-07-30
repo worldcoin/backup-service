@@ -44,6 +44,9 @@ async fn test_end_to_end_readiness() {
 
     const TEST_BACKUP_ID: &str = "canary_backup";
 
+    // Step 0: Delete the `TEST_BACKUP` if it exists (this is clean up in case a previous test failed mid-way)
+    let _ = backup_storage.delete_backup(TEST_BACKUP_ID).await; // we ignore the result because it's fine (even expected) that there's no backup to delete
+
     // Step 1: Check Dynamo Cache Manager (PutItem)
     let token = dynamo_cache_manager
         .create_sync_factor_token(TEST_BACKUP_ID.to_string())

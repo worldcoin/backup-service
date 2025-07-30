@@ -400,19 +400,17 @@ impl BackupStorage {
     pub async fn is_ready(&self) -> bool {
         let result = self
             .s3_client
-            .get_bucket_location()
+            .head_bucket()
             .bucket(self.environment.s3_bucket())
             .send()
             .await;
 
-        if let Ok(result) = result {
-            result.location_constraint().is_some()
-        } else {
-            tracing::error!(
-                "System is not ready. BackupStorage (GetBucketPolicy): {:?}",
-                result.err()
-            );
-            false
+        match result {
+            Ok(_) => true,
+            Err(err) => {
+                tracing::error!("System is not ready. BackupStorage (HeadBucket): {:?}", err);
+                false
+            }
         }
     }
 }
