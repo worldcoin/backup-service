@@ -38,7 +38,7 @@ anyhow = "1.0.98"
 aws-config = "1.6.1"
 aws-sdk-dynamodb = "1.71.2"
 aws-sdk-kms = "1.63.0"
-aws-sdk-s3 = "1.79.0"
+aws-sdk-s3 = "1.82.0"
 axum = { version = "0.8.1", features = ["macros", "multipart"] }
 base64 = { workspace = true }
 chrono = { workspace = true }
