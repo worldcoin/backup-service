@@ -365,6 +365,21 @@ pub async fn create_test_backup(
     )
     .await;
 
+    if create_response.status() != 200 {
+        let body = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+
+        println!(
+            "create_test_backup failure: {:?}",
+            String::from_utf8(body.to_vec()).unwrap()
+        );
+        panic!("create_test_backup failure");
+    }
+
     (credential, create_response)
 }
 
