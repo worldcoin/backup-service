@@ -26,6 +26,7 @@ pub struct FactorLookup {
 /// type of factor.
 #[derive(Debug, Clone, Copy, Display, EnumString, PartialEq, Eq, JsonSchema)]
 #[strum(serialize_all = "UPPERCASE")]
+#[serde(rename_all = "UPPERCASE")] // for `JsonSchema` serialization
 pub enum FactorScope {
     /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup
     /// or add new factors.
