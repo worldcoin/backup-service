@@ -122,7 +122,7 @@ async fn test_ready_endpoint() {
         .oneshot(
             Request::builder()
                 .uri("/ready")
-                .method("POST")
+                .method("GET")
                 .header("Content-Type", "application/json")
                 .body(json!({}).to_string())
                 .unwrap(),
