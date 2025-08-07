@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
+use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::challenge_manager::ChallengeContext;
 use crate::dynamo_cache::DynamoCacheManager;
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::types::backup_metadata::Factor;
+use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::{Authorization, ErrorResponse};
-use crate::verify_signature::verify_signature;
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,47 +29,27 @@ pub struct AddSyncFactorResponse {
     pub backup_id: String,
 }
 
-/// Request to retrieve a backup using a solved challenge.
+/// Adds a new sync factor to an existing backup.
 pub async fn handler(
-    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
+    Extension(auth_handler): Extension<Arc<AuthHandler>>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
-    // Step 1: Verify the sync factor is a valid EC keypair and transform it to a factor object
-    let (sync_factor, sync_factor_to_lookup) = match &request.sync_factor {
-        Authorization::EcKeypair {
-            public_key,
-            signature,
-        } => {
-            // Step 1.1: Get the challenge payload from the challenge token
-            let (trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(ChallengeType::Keypair, request.challenge_token.to_string())
-                .await?;
-            if challenge_context != (ChallengeContext::AddSyncFactor {}) {
-                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
-            }
+    // Step 1: Validate the new sync factor using AuthHandler
+    let validation_result = auth_handler
+        .validate_registration(
+            &request.sync_factor,
+            request.challenge_token.to_string(),
+            ChallengeContext::AddSyncFactor {},
+            None,
+            true, // is_sync_factor
+        )
+        .await?;
 
-            // Step 1.2: Verify the signature using the public key
-            verify_signature(public_key, signature, trusted_challenge.as_ref())?;
-
-            // Step 1.3: Track used challenges to prevent replay attacks
-            dynamo_cache_manager
-                .use_challenge_token(request.challenge_token.to_string())
-                .await?;
-
-            // Step 1.4: Create a factor that's going to be saved in the metadata and a factor to lookup
-            (
-                Factor::new_ec_keypair(public_key.to_string()),
-                FactorToLookup::from_ec_keypair(public_key.to_string()),
-            )
-        }
-        Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
-            tracing::info!(message = "Invalid sync factor type");
-            return Err(ErrorResponse::bad_request("invalid_sync_factor"));
-        }
-    };
+    let sync_factor = validation_result.factor;
+    let sync_factor_to_lookup = validation_result.factor_to_lookup;
 
     // Step 2: Verify the sync factor token and extract the backup ID
     let backup_id = dynamo_cache_manager
