@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
+use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
-use crate::types::backup_metadata::{Factor, FactorKind, OidcAccountKind};
+use crate::types::backup_metadata::FactorKind;
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, ErrorResponse, OidcToken};
-use crate::verify_signature::verify_signature;
+use crate::types::{Authorization, ErrorResponse};
 use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -63,7 +62,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
-    Extension(oidc_token_verifier): Extension<Arc<OidcTokenVerifier>>,
+    Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     // Step 1: Check authorization for the existing factor and get the backup ID
@@ -201,30 +200,19 @@ pub async fn handler(
         }
     };
 
-    // Step 2: Check authorization for the new factor and create the appropriate factor
-    let (new_factor, factor_to_lookup) = match &request.new_factor_authorization {
-        Authorization::OidcAccount {
-            oidc_token,
-            public_key,
-            signature,
-        } => {
-            // Step 2A.0: Get the Turnkey API OIDC provider ID from the request. We should save it
-            // to metadata and allow client to look it up later.
-            let turnkey_provider_id = request
-                .turnkey_provider_id
-                .clone()
-                .ok_or_else(|| ErrorResponse::bad_request("missing_turnkey_provider_id"))?;
-
-            // Step 2A.1: Verify the OIDC token is the same as in the verified challenge context
-            // for existing factor. It asserts that the existing factor signed this particular
-            // OIDC token.
+    // Step 2: Validate the new factor using AuthHandler
+    // First, we need to verify that the new factor type matches what was expected from the existing factor's challenge
+    match &request.new_factor_authorization {
+        Authorization::OidcAccount { oidc_token, .. } => {
+            // Step 2A.1: Verify the OIDC token matches what was expected from the existing factor's challenge
             #[allow(irrefutable_let_patterns)]
             if let NewFactorType::OidcAccount {
                 oidc_token: expected_oidc_token,
             } = &expected_new_factor
             {
                 let raw_oidc_token = match &oidc_token {
-                    OidcToken::Google { token } | OidcToken::Apple { token } => token,
+                    crate::types::OidcToken::Google { token }
+                    | crate::types::OidcToken::Apple { token } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
                     return Err(ErrorResponse::bad_request("invalid_oidc_token"));
@@ -232,62 +220,27 @@ pub async fn handler(
             } else {
                 return Err(ErrorResponse::bad_request("invalid_new_factor_type"));
             }
-
-            // Step 2A.2: Get the challenge payload from the challenge token
-            let (trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(
-                    ChallengeType::Keypair,
-                    request.new_factor_challenge_token.clone(),
-                )
-                .await?;
-            let ChallengeContext::AddFactorByNewFactor {} = challenge_context else {
-                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
-            };
-
-            // Step 2A.3: Verify the signature of the challenge using the public key
-            let claims = oidc_token_verifier
-                .verify_token(oidc_token, public_key.clone())
-                .await?;
-
-            // Step 2A.4: Verify the signature using the public key
-            verify_signature(public_key, signature, trusted_challenge.as_ref())?;
-
-            // Step 2A.5: Track used challenges to prevent replay attacks
-            // TODO/FIXME
-
-            // Step 2A.6: Create a new factor and factor lookup
-            let email = claims
-                .email()
-                .ok_or_else(|| {
-                    tracing::info!(message = "Missing email in OIDC token");
-                    ErrorResponse::bad_request("missing_email")
-                })?
-                .to_string();
-            let oidc_account = match &oidc_token {
-                OidcToken::Google { .. } => OidcAccountKind::Google {
-                    sub: claims.subject().to_string(),
-                    email,
-                },
-                OidcToken::Apple { .. } => OidcAccountKind::Apple {
-                    sub: claims.subject().to_string(),
-                    email,
-                },
-            };
-            (
-                Factor::new_oidc_account(oidc_account, turnkey_provider_id),
-                FactorToLookup::from_oidc_account(
-                    claims.issuer().to_string(),
-                    claims.subject().to_string(),
-                ),
-            )
         }
         _ => {
-            // Only OIDC account is supported at this time
             return Err(ErrorResponse::bad_request(
                 "invalid_new_factor_authorization_type",
             ));
         }
-    };
+    }
+
+    // Step 2A.2: Use AuthHandler to validate the new factor
+    let validation_result = auth_handler
+        .validate_factor_registration(
+            &request.new_factor_authorization,
+            request.new_factor_challenge_token.clone(),
+            ChallengeContext::AddFactorByNewFactor {},
+            request.turnkey_provider_id.clone(),
+            false, // not a sync factor
+        )
+        .await?;
+
+    let new_factor = validation_result.factor;
+    let factor_to_lookup = validation_result.factor_to_lookup;
 
     // Step 3.1: Update the factor lookup with the new factor
     factor_lookup

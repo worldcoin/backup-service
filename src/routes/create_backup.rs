@@ -37,7 +37,7 @@ pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
-    Extension(auth_handler): Extension<Arc<AuthHandler>>,
+    Extension(auth_handler): Extension<AuthHandler>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -70,7 +70,7 @@ pub async fn handler(
     // This validates the primary factor used to authenticate the user creating the backup
 
     let validation_result = auth_handler
-        .validate_registration(
+        .validate_factor_registration(
             &request.authorization,
             request.challenge_token.to_string(),
             ChallengeContext::Create {},
@@ -85,7 +85,7 @@ pub async fn handler(
     // Step 3: Verify the initial sync factor
     // This validates the sync factor (EC keypair) that will be used for cross-device synchronization
     let sync_validation_result = auth_handler
-        .validate_registration(
+        .validate_factor_registration(
             &request.initial_sync_factor,
             request.initial_sync_challenge_token.to_string(),
             ChallengeContext::Create {},

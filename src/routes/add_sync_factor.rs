@@ -34,12 +34,12 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
-    Extension(auth_handler): Extension<Arc<AuthHandler>>,
+    Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
     // Step 1: Validate the new sync factor using AuthHandler
     let validation_result = auth_handler
-        .validate_registration(
+        .validate_factor_registration(
             &request.sync_factor,
             request.challenge_token.to_string(),
             ChallengeContext::AddSyncFactor {},

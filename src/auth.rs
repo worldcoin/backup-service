@@ -71,8 +71,7 @@ impl AuthHandler {
         challenge_token: String,
     ) -> Result<(String, BackupMetadata), ErrorResponse> {
         // Step 1: Verify that the authorization type is supported
-        // `ECKeyPair` is the only supported factor type for `Sync` scope. When
-        //  only `Sync` factors are allowed, other factors are rejected.
+        // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
         if expected_factor_scope == FactorScope::Sync {
             match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
@@ -82,18 +81,18 @@ impl AuthHandler {
             }
         }
 
-        // Step 2: Extract challenge token
+        // Step 2: Extract challenge token (ensures the server actually issued a challenge for the request being performed)
         let (challenge_token_payload, challenge_context) = self
             .challenge_manager
             .extract_token_payload(authorization.into(), challenge_token.clone())
             .await?;
 
-        // Step 3: Verify the challenge context
+        // Step 3: Verify the challenge context (i.e. the purpose of the challenge is correct)
         if challenge_context != expected_challenge_context {
             return Err(ErrorResponse::bad_request("invalid_challenge_context"));
         }
 
-        // Step 4: Verify specific `Authorization` type
+        // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
         let (backup_id, backup_metadata) = match authorization {
             Authorization::Passkey { credential } => {
                 self.validate_passkey_authentication(
@@ -121,7 +120,7 @@ impl AuthHandler {
                 public_key,
                 signature,
             } => {
-                self.validate_ec_keypair_authentication(
+                self.authenticate_ec_keypair(
                     public_key,
                     signature,
                     &challenge_token_payload,
@@ -139,12 +138,13 @@ impl AuthHandler {
         Ok((backup_id, backup_metadata))
     }
 
-    /// Validates factor creation during backup creation or factor addition.
-    /// Verifies cryptographic proofs without checking against existing backup metadata.
+    /// Validates a candidate **new** factor (`Sync` or `Main`) is valid for registration in the user's backup.
+    ///
+    /// This is called when creating a new backup with fresh factors or when adding a new `Sync` or `Main` factor to an existing backup.
     ///
     /// # Errors
-    /// Returns error if registration validation fails.
-    pub async fn validate_registration(
+    /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
+    pub async fn validate_factor_registration(
         &self,
         authorization: &Authorization,
         challenge_token: String,
@@ -152,7 +152,8 @@ impl AuthHandler {
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
     ) -> Result<ValidationResult, ErrorResponse> {
-        // Sync factors must be EC keypairs
+        // Step 1: Verify that the authorization type is valid for the factor scope
+        // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
         if is_sync_factor {
             match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
@@ -163,15 +164,21 @@ impl AuthHandler {
             }
         }
 
+        // Step 2: Extract and verify the challenge token
+        // This ensures the challenge was issued by us and hasn't expired
         let (challenge_token_payload, challenge_context) = self
             .challenge_manager
             .extract_token_payload(authorization.into(), challenge_token.clone())
             .await?;
 
+        // Step 3: Verify the challenge context matches what we expect
+        // This ensures the challenge was issued for the correct purpose (Create, AddSyncFactor, etc.)
         if challenge_context != expected_challenge_context {
             return Err(ErrorResponse::bad_request("invalid_challenge_context"));
         }
 
+        // Step 4: Validate the specific authorization type and create the factor
+        // Each factor type has its own validation rules for registration
         let (factor, factor_to_lookup) = match authorization {
             Authorization::Passkey { credential } => {
                 self.validate_passkey_registration(credential, &challenge_token_payload)?
@@ -201,10 +208,14 @@ impl AuthHandler {
             )?,
         };
 
+        // Step 5: Mark the challenge token as used to prevent replay attacks
+        // This ensures each challenge can only be used once
         self.dynamo_cache_manager
             .use_challenge_token(challenge_token)
             .await?;
 
+        // Step 6: Return the validated factor and its lookup key
+        // The caller will use these to store the factor in the backup metadata and lookup table
         Ok(ValidationResult {
             factor,
             factor_to_lookup,
@@ -215,7 +226,10 @@ impl AuthHandler {
     // Internal: Passkey Validation
     //------------------------------------------------------------------------------------------------
 
-    /// Validates passkey registration by verifying credential against challenge state.
+    /// Validates a **new** passkey is valid for registration as a factor.
+    ///
+    /// To allow a new passkey to be registered, we check:
+    /// - The trusted challenge token we issued is properly signed by the passkey following the `WebAuthn` spec.
     fn validate_passkey_registration(
         &self,
         credential: &serde_json::Value,
@@ -251,7 +265,11 @@ impl AuthHandler {
         Ok((factor, factor_to_lookup))
     }
 
-    /// Validates passkey authentication by verifying credential against stored backup metadata.
+    /// Validates an action is authenticated and authorized for an **existing** backup with a passkey.
+    ///
+    /// To allow an action to be performed, we check:
+    /// - The trusted challenge token we issued is properly signed by the passkey following the `WebAuthn` spec.
+    /// - The passkey is in the backup factors (by matching the credential ID).
     async fn validate_passkey_authentication(
         &self,
         credential: &serde_json::Value,
@@ -323,10 +341,24 @@ impl AuthHandler {
                 &reference_credentials,
             )?;
 
-        Ok((not_verified_backup_id, backup_metadata))
+        // At this point the backup is now authenticated and authorized.
+        let verified_backup_id = not_verified_backup_id;
+
+        Ok((verified_backup_id, backup_metadata))
     }
 
-    /// Validates OIDC token signature and extracts claims for factor creation.
+    //------------------------------------------------------------------------------------------------
+    // Internal: OIDC Account Validation
+    //------------------------------------------------------------------------------------------------
+
+    /// Validates a **new** OIDC account is valid for registration as a factor.
+    ///
+    /// To allow a new OIDC account to be registered, we check:
+    /// - The OIDC token is valid (following standard OIDC specs; signature, expiration, etc.)
+    /// - The nonce of the OIDC token is equal to the SHA256 hash of the ephemeral "OIDC Session Keypair".
+    /// - The trusted challenge token we issued is properly signed by the private key of the ephemeral "OIDC Session Keypair".
+    ///
+    /// We use an ephemeral keypair so that the user can authenticate once with the OIDC provider for both this service and Turnkey.
     async fn validate_oidc_registration(
         &self,
         oidc_token: &OidcToken,
@@ -370,7 +402,13 @@ impl AuthHandler {
         Ok((factor, factor_to_lookup))
     }
 
-    /// Validates OIDC account by verifying token and matching against backup factors.
+    /// Validates an action is authenticated and authorized for an **existing** backup with an OIDC account.
+    ///
+    /// To allow a new OIDC account to be registered, we check:
+    /// - The OIDC token is valid (following standard OIDC specs; signature, expiration, etc.)
+    /// - The nonce of the OIDC token is equal to the SHA256 hash of the ephemeral "OIDC Session Keypair".
+    /// - The trusted challenge token we issued is properly signed by the private key of the ephemeral "OIDC Session Keypair".
+    /// - The OIDC account is in the backup factors (by matching the subject and email address).
     async fn validate_oidc_authentication(
         &self,
         oidc_token: &OidcToken,
@@ -399,6 +437,7 @@ impl AuthHandler {
             .factor_lookup
             .lookup(expected_factor_scope, &oidc_factor)
             .await?;
+
         let Some(not_verified_backup_id) = not_verified_backup_id else {
             tracing::info!(message = "No backup ID found for the given OIDC account");
             return Err(ErrorResponse::bad_request("backup_not_found"));
@@ -408,6 +447,7 @@ impl AuthHandler {
             .backup_storage
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
+
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
             tracing::info!(message = "No backup metadata found for the given backup ID");
             return Err(ErrorResponse::bad_request("oidc_account_error"));
@@ -443,12 +483,19 @@ impl AuthHandler {
         });
 
         if !is_oidc_account_in_factors {
-            tracing::info!(message = "OIDC account not found in backup factors");
+            tracing::info!(message = "OIDC account not found in backup factors. This should be a rare case where the FactorLookup is out of sync.");
             return Err(ErrorResponse::bad_request("oidc_account_error"));
         }
 
-        Ok((not_verified_backup_id, backup_metadata))
+        // At this point the backup is now authenticated and authorized.
+        let verified_backup_id = not_verified_backup_id;
+
+        Ok((verified_backup_id, backup_metadata))
     }
+
+    //------------------------------------------------------------------------------------------------
+    // Internal: Elliptic Curve Keypair Validation
+    //------------------------------------------------------------------------------------------------
 
     /// Validates a **new** EC keypair is valid for registration.
     ///
@@ -466,8 +513,10 @@ impl AuthHandler {
         Ok((factor, factor_to_lookup))
     }
 
-    /// Validates EC keypair by verifying signature and matching public key in backup.
-    async fn validate_ec_keypair_authentication(
+    /// Validates an action is authenticated and authorized for an **existing** backup with an EC keypair.
+    ///
+    /// To allow an action to be performed, we check that the issued challenge is properly signed by the keypair authorized **in the user's backup**.
+    async fn authenticate_ec_keypair(
         &self,
         public_key: &str,
         signature: &str,
@@ -485,7 +534,7 @@ impl AuthHandler {
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
-            tracing::info!(message = "No backup ID found for the given EC keypair");
+            tracing::info!(message = "No backup ID found for the given EC keypair.");
             return Err(ErrorResponse::bad_request("backup_not_found"));
         };
 
@@ -517,10 +566,13 @@ impl AuthHandler {
         });
 
         if !is_public_key_in_factors {
-            tracing::info!(message = "Public key not found in backup factors");
+            tracing::warn!(message = "Public key not found in backup factors. This should be a rare case where the FactorLookup is out of sync.");
             return Err(ErrorResponse::bad_request("keypair_error"));
         }
 
-        Ok((not_verified_backup_id, backup_metadata))
+        // At this point the backup is now authenticated and authorized.
+        let verified_backup_id = not_verified_backup_id;
+
+        Ok((verified_backup_id, backup_metadata))
     }
 }
