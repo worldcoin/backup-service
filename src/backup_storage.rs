@@ -174,19 +174,15 @@ impl BackupStorage {
         // Check that we are not accidentally removing a file that was previously included in the backup.
         let current_files = metadata.file_list.clone();
         let files_to_remove = files_to_remove.unwrap_or_default(); // Explicit removals are allowed.
-        let files_to_maintain = current_files
-            .iter()
-            .filter(|d| !files_to_remove.contains(d))
-            .cloned()
-            .collect();
-
-        if files_to_maintain != file_list {
-            return Err(BackupManagerError::FileLossPrevention {
-                designator: file_list
-                    .difference(&files_to_maintain)
-                    .next()
-                    .map_or("unknown".to_string(), std::string::ToString::to_string),
-            });
+        
+        // Check if any file that was in the backup is missing from the new file_list
+        // (unless it was explicitly marked for removal)
+        for file in &current_files {
+            if !files_to_remove.contains(file) && !file_list.contains(file) {
+                return Err(BackupManagerError::FileLossPrevention {
+                    designator: file.to_string(),
+                });
+            }
         }
 
         metadata.file_list = file_list;

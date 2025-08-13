@@ -188,6 +188,7 @@ async fn test_add_sync_factor_happy_path() {
                 "signature": sync_signature,
             },
             "challengeToken": sync_challenge["token"],
+            "fileList": [],
         }),
         Bytes::from(b"UPDATED BACKUP DATA".as_slice()),
         None,

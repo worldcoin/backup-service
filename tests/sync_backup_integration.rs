@@ -52,6 +52,7 @@ async fn test_sync_backup_happy_path() {
                 "signature": signature,
             },
             "challengeToken": challenge_response["token"],
+            "fileList": [],
         }),
         Bytes::from(b"UPDATED BACKUP".as_slice()),
         None,
@@ -114,6 +115,7 @@ async fn test_sync_backup_with_incorrect_authorization() {
                 "signature": wrong_signature,
             },
             "challengeToken": challenge_response["token"],
+            "fileList": [],
         }),
         Bytes::from(b"UPDATED BACKUP".as_slice()),
         None,
@@ -127,5 +129,399 @@ async fn test_sync_backup_with_incorrect_authorization() {
     assert_eq!(
         error_response["error"]["code"],
         "signature_verification_error"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_backup_with_file_list_happy_path() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["orb_personal_custody"],
+        }),
+        Bytes::from(b"UPDATED BACKUP WITH FILES".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["backupId"], backup_id);
+
+    verify_s3_backup_exists(backup_id, b"UPDATED BACKUP WITH FILES").await;
+}
+
+#[tokio::test]
+async fn test_sync_backup_prevents_accidental_file_removal() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["orb_personal_custody", "document_personal_custody"],
+        }),
+        Bytes::from(b"FIRST UPDATE WITH TWO FILES".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let challenge_response2 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body2 = challenge_response2
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response2: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body2).unwrap();
+
+    let signature2 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response2["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature2,
+            },
+            "challengeToken": challenge_response2["token"],
+            "fileList": ["orb_personal_custody"],
+        }),
+        Bytes::from(b"SECOND UPDATE MISSING A FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        error_response["error"]["code"],
+        "file_loss_prevention_document_personal_custody"
+    );
+}
+
+#[tokio::test]
+async fn test_sync_backup_allows_explicit_file_removal() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["orb_personal_custody", "document_personal_custody"],
+        }),
+        Bytes::from(b"FIRST UPDATE WITH TWO FILES".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let challenge_response2 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body2 = challenge_response2
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response2: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body2).unwrap();
+
+    let signature2 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response2["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature2,
+            },
+            "challengeToken": challenge_response2["token"],
+            "fileList": ["orb_personal_custody"],
+            "filesToRemove": ["document_personal_custody"],
+        }),
+        Bytes::from(b"SECOND UPDATE WITH EXPLICIT REMOVAL".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["backupId"], backup_id);
+
+    verify_s3_backup_exists(backup_id, b"SECOND UPDATE WITH EXPLICIT REMOVAL").await;
+}
+
+#[tokio::test]
+async fn test_sync_backup_maintains_file_list_when_unchanged() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["orb_personal_custody"],
+        }),
+        Bytes::from(b"FIRST UPDATE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let challenge_response2 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body2 = challenge_response2
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response2: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body2).unwrap();
+
+    let signature2 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response2["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature2,
+            },
+            "challengeToken": challenge_response2["token"],
+            "fileList": ["orb_personal_custody"],
+        }),
+        Bytes::from(b"SECOND UPDATE WITH SAME FILES".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["backupId"], backup_id);
+
+    verify_s3_backup_exists(backup_id, b"SECOND UPDATE WITH SAME FILES").await;
+}
+
+#[tokio::test]
+async fn test_sync_backup_rejects_empty_file_list_after_files_added() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["orb_personal_custody"],
+        }),
+        Bytes::from(b"FIRST UPDATE WITH A FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let challenge_response2 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body2 = challenge_response2
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response2: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body2).unwrap();
+
+    let signature2 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response2["challenge"].as_str().unwrap(),
+    );
+
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature2,
+            },
+            "challengeToken": challenge_response2["token"],
+            "fileList": [],
+        }),
+        Bytes::from(b"SECOND UPDATE WITH NO FILES".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        error_response["error"]["code"],
+        "file_loss_prevention_orb_personal_custody"
     );
 }

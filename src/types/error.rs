@@ -150,7 +150,10 @@ impl From<BackupManagerError> for ErrorResponse {
         match &err {
             BackupManagerError::FileLossPrevention { designator } => {
                 tracing::info!(message = "File loss prevention", designator = ?designator);
-                ErrorResponse::bad_request(&format!("file_loss_prevention_{designator}"))
+                ErrorResponse {
+                    error: format!("file_loss_prevention_{designator}"),
+                    status: StatusCode::CONFLICT,
+                }
             }
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
