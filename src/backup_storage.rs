@@ -174,7 +174,7 @@ impl BackupStorage {
         // Check that we are not accidentally removing a file that was previously included in the backup.
         let current_files = metadata.file_list.clone();
         let files_to_remove = files_to_remove.unwrap_or_default(); // Explicit removals are allowed.
-        
+
         // Check if any file that was in the backup is missing from the new file_list
         // (unless it was explicitly marked for removal)
         for file in &current_files {
