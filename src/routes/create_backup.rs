@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
@@ -103,6 +104,7 @@ pub async fn handler(
         factors: vec![backup_factor],
         sync_factors: vec![initial_sync_factor],
         keys: vec![request.initial_encryption_key.clone()],
+        file_list: HashSet::new(), // When creating the backup, there are no files.
     };
 
     // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery

@@ -1,5 +1,6 @@
 mod common;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{
@@ -414,6 +415,7 @@ async fn test_remove_sync_factor_etag_concurrency() {
             sync_factor3.clone(),
         ],
         keys: vec![],
+        file_list: HashSet::new(),
     };
 
     // Create the backup

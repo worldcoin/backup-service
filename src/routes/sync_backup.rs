@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
@@ -5,6 +6,7 @@ use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
+use crate::types::backup_metadata::FileDesignator;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
@@ -16,6 +18,10 @@ use serde::{Deserialize, Serialize};
 pub struct SyncBackupRequest {
     authorization: Authorization,
     challenge_token: String,
+    /// The list of file designators that are contained in the backup to be synced. This is used to prevent accidental file removals on a user's backup.
+    file_list: HashSet<FileDesignator>,
+    /// The list of file designators that are explicitly being removed from the backup. Should only be passed when explicitly triggering a file removal.
+    files_to_remove: Option<HashSet<FileDesignator>>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -68,7 +74,12 @@ pub async fn handler(
 
     // Step 3: Update the backup with the new backup file
     backup_storage
-        .update_backup(&backup_id, backup.to_vec())
+        .update_backup(
+            &backup_id,
+            backup.to_vec(),
+            request.file_list,
+            request.files_to_remove,
+        )
         .await?;
 
     Ok(Json(SyncBackupResponse { backup_id }))

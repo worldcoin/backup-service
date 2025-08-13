@@ -148,6 +148,10 @@ impl From<ChallengeManagerError> for ErrorResponse {
 impl From<BackupManagerError> for ErrorResponse {
     fn from(err: BackupManagerError) -> Self {
         match &err {
+            BackupManagerError::FileLossPrevention { designator } => {
+                tracing::info!(message = "File loss prevention", designator = ?designator);
+                ErrorResponse::bad_request(&format!("file_loss_prevention_{designator}"))
+            }
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)

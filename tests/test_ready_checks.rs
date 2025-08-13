@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::extract::Request;
 use backup_service::{
@@ -85,6 +85,7 @@ async fn test_end_to_end_readiness() {
         factors: vec![],
         sync_factors: vec![],
         keys: vec![],
+        file_list: HashSet::new(),
     };
 
     backup_storage

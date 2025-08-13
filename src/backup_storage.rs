@@ -1,9 +1,10 @@
-use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
+use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, FileDesignator};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
@@ -159,12 +160,51 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Vec<u8>,
+        file_list: HashSet<FileDesignator>,
+        files_to_remove: Option<HashSet<FileDesignator>>,
     ) -> Result<(), BackupManagerError> {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
+        };
+
+        // Check that we are not accidentally removing a file that was previously included in the backup.
+        let current_files = metadata.file_list.clone();
+        let files_to_remove = files_to_remove.unwrap_or_default(); // Explicit removals are allowed.
+        let files_to_maintain = current_files
+            .iter()
+            .filter(|d| !files_to_remove.contains(d))
+            .cloned()
+            .collect();
+
+        if files_to_maintain != file_list {
+            return Err(BackupManagerError::FileLossPrevention {
+                designator: file_list
+                    .difference(&files_to_maintain)
+                    .next()
+                    .map_or("unknown".to_string(), std::string::ToString::to_string),
+            });
+        }
+
+        metadata.file_list = file_list;
+
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
+            .send()
+            .await?;
+
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
 
@@ -452,6 +492,10 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
+    #[error(
+        "File loss prevention: {designator} which was previously included is no longer present."
+    )]
+    FileLossPrevention { designator: String },
 }
 
 #[cfg(test)]
@@ -464,6 +508,7 @@ mod tests {
     use aws_sdk_s3::Client as S3Client;
     use chrono::DateTime;
     use serde_json::json;
+    use std::collections::HashSet;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -523,6 +568,7 @@ mod tests {
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
+            file_list: HashSet::new(),
         };
 
         // Create a backup
@@ -600,6 +646,7 @@ mod tests {
                     factors: vec![],
                     sync_factors: vec![],
                     keys: vec![],
+                    file_list: HashSet::new(),
                 },
             )
             .await
@@ -607,7 +654,12 @@ mod tests {
 
         // Update the backup
         backup_storage
-            .update_backup(&test_backup_id, updated_backup_data.clone())
+            .update_backup(
+                &test_backup_id,
+                updated_backup_data.clone(),
+                HashSet::new(),
+                None,
+            )
             .await
             .unwrap();
 
@@ -635,6 +687,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            file_list: HashSet::new(),
         };
 
         // Create a backup
@@ -707,6 +760,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![initial_key],
+            file_list: HashSet::new(),
         };
 
         // Create a backup
@@ -769,6 +823,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            file_list: HashSet::new(),
         };
 
         // Create a backup
@@ -864,6 +919,7 @@ mod tests {
             factors: vec![factor1.clone(), factor2.clone()],
             sync_factors: vec![],
             keys: vec![],
+            file_list: HashSet::new(),
         };
         backup_storage
             .create(test_backup_data.clone(), &initial_metadata)

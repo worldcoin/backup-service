@@ -5,9 +5,39 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
+use std::str::FromStr;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
+
+/// A unique global identifier that identifies the type of file. This is used to prevent accidental overwrites to a user's backup.
+#[derive(strum::Display, strum::EnumString, Debug, Clone, PartialEq, Eq, JsonSchema, Hash)]
+#[strum(serialize_all = "snake_case")]
+pub enum FileDesignator {
+    OrbPersonalCustody,
+    DocumentPersonalCustody,
+}
+
+impl Serialize for FileDesignator {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for FileDesignator {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(D::Error::custom)
+    }
+}
 
 /// Backup metadata is stored alongside every backup in the backup bucket. It's used to
 /// store information about entities and keys that are allowed to access the backup.
@@ -25,6 +55,10 @@ pub struct BackupMetadata {
     pub sync_factors: Vec<Factor>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
     pub keys: Vec<BackupEncryptionKey>,
+    /// Stores the list of file designators that are contained in the backup. This is used on `sync_backup` validation
+    /// to prevent accidental file removals on a user's backup.
+    #[serde(default = "HashSet::new")]
+    pub file_list: HashSet<FileDesignator>,
 }
 
 impl BackupMetadata {
@@ -36,6 +70,7 @@ impl BackupMetadata {
             keys: self.keys.clone(),
             factors: self.factors.iter().map(Factor::exported).collect(),
             sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
+            file_list: self.file_list.clone(),
         }
     }
 }
@@ -241,6 +276,8 @@ pub struct ExportedBackupMetadata {
     /// Allows user to see if they already have the sync factor keypair or they should generate a
     /// new one.
     sync_factors: Vec<ExportedFactor>,
+    /// The list of file designators that are contained in the backup.
+    file_list: HashSet<FileDesignator>,
 }
 
 /// See [`Factor`] for more details. Exported version of the factor that contains only the fields
