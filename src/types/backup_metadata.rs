@@ -16,8 +16,9 @@ use webauthn_rs::prelude::Passkey;
 #[derive(strum::Display, strum::EnumString, Debug, Clone, PartialEq, Eq, JsonSchema, Hash)]
 #[strum(serialize_all = "snake_case")]
 pub enum FileDesignator {
-    OrbPersonalCustody,
-    DocumentPersonalCustody,
+    OrbPkg,
+    DocumentPkg,
+    SecureDocumentPkg,
 }
 
 impl Serialize for FileDesignator {
