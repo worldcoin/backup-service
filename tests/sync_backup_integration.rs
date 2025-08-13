@@ -265,7 +265,7 @@ async fn test_sync_backup_prevents_accidental_file_removal() {
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         error_response["error"]["code"],
-        "file_loss_prevention_document_personal_custody"
+        "file_loss_prevention_document_pkg"
     );
 }
 
