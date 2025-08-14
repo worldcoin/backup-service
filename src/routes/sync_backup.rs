@@ -1,20 +1,17 @@
 use std::collections::HashSet;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
+use crate::types::backup_metadata::FileChecksum;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use regex::Regex;
 use schemars::JsonSchema;
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
-
-static CHECKSUM_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{64}$").unwrap());
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -27,38 +24,9 @@ pub struct SyncBackupRequest {
     ///
     /// This is used to prevent accidental file removals on a user's backup. If a file checksum is included in a previous backup
     /// and not included in this backup (without specifying a deliberate removal), the update will be rejected.
-    #[serde(deserialize_with = "deserialize_file_list_cksum")]
-    file_list: HashSet<String>,
+    file_list: HashSet<FileChecksum>,
     /// The list of file checksums that are explicitly being removed from the backup. Signals the client's intent to remove a file from the backup.
-    files_to_remove: Option<HashSet<String>>,
-}
-
-fn deserialize_file_list_cksum<'de, D>(deserializer: D) -> Result<HashSet<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let file_list = HashSet::<String>::deserialize(deserializer)?;
-    let mut validated_list = HashSet::with_capacity(file_list.len());
-
-    for file in file_list {
-        let file_lower = file.to_lowercase();
-
-        if !file_lower.starts_with("cksum:") {
-            return Err(D::Error::custom("file_list_cksum_incorrect_format"));
-        }
-        let cksum = file_lower
-            .split(':')
-            .nth(1)
-            .ok_or_else(|| D::Error::custom("file_list_cksum_incorrect_format"))?;
-
-        if !CHECKSUM_REGEX.is_match(cksum) {
-            return Err(D::Error::custom("file_list_cksum_incorrect_format"));
-        }
-
-        validated_list.insert(file_lower);
-    }
-
-    Ok(validated_list)
+    files_to_remove: Option<HashSet<FileChecksum>>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]

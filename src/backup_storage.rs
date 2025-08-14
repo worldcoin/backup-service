@@ -1,4 +1,4 @@
-use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
+use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, FileChecksum};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
@@ -160,8 +160,8 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Vec<u8>,
-        file_list: HashSet<String>,
-        files_to_remove: Option<HashSet<String>>,
+        file_list: HashSet<FileChecksum>,
+        files_to_remove: Option<HashSet<FileChecksum>>,
     ) -> Result<(), BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -181,9 +181,7 @@ impl BackupStorage {
         // (unless it was explicitly marked for removal)
         for file in &current_files {
             if !files_to_remove.contains(file) && !file_list.contains(file) {
-                return Err(BackupManagerError::FileLossPrevention {
-                    designator: file.to_string(),
-                });
+                return Err(BackupManagerError::FileLossPrevention);
             }
         }
 
@@ -490,10 +488,8 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
-    #[error(
-        "File loss prevention: {designator} which was previously included is no longer present."
-    )]
-    FileLossPrevention { designator: String },
+    #[error("File loss prevention")]
+    FileLossPrevention,
 }
 
 #[cfg(test)]

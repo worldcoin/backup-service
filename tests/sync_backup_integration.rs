@@ -263,10 +263,7 @@ async fn test_sync_backup_prevents_accidental_file_removal() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_response["error"]["code"],
-        "file_loss_prevention_cksum:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-    );
+    assert_eq!(error_response["error"]["code"], "file_loss_prevention");
 }
 
 #[tokio::test]
@@ -523,10 +520,7 @@ async fn test_sync_backup_rejects_empty_file_list_after_files_added() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        error_response["error"]["code"],
-        "file_loss_prevention_cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-    );
+    assert_eq!(error_response["error"]["code"], "file_loss_prevention");
 }
 
 #[tokio::test]

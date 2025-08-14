@@ -4,11 +4,34 @@ use crate::{factor_lookup::FactorToLookup, mask_email};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use schemars::JsonSchema;
+use serde::de::{Deserializer, Error as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
+
+static CHECKSUM_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^cksum:[0-9a-f]{64}$").unwrap());
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash, JsonSchema)]
+pub struct FileChecksum(String);
+
+impl<'de> Deserialize<'de> for FileChecksum {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?.to_lowercase();
+        if !CHECKSUM_REGEX.is_match(&s) {
+            return Err(D::Error::custom("invalid_checksum_format"));
+        }
+
+        Ok(FileChecksum(s))
+    }
+}
 
 /// Backup metadata is stored alongside every backup in the backup bucket. It's used to
 /// store information about entities and keys that are allowed to access the backup.
@@ -29,7 +52,7 @@ pub struct BackupMetadata {
     /// Stores the list of file designators that are contained in the backup. This is used on `sync_backup` validation
     /// to prevent accidental file removals on a user's backup.
     #[serde(default = "HashSet::new")]
-    pub file_list: HashSet<String>,
+    pub file_list: HashSet<FileChecksum>,
 }
 
 impl BackupMetadata {
@@ -248,7 +271,7 @@ pub struct ExportedBackupMetadata {
     /// new one.
     sync_factors: Vec<ExportedFactor>,
     /// The list of file designators that are contained in the backup.
-    file_list: HashSet<String>,
+    file_list: HashSet<FileChecksum>,
 }
 
 /// See [`Factor`] for more details. Exported version of the factor that contains only the fields
