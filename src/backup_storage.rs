@@ -1,4 +1,4 @@
-use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, FileDesignator};
+use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
@@ -160,8 +160,8 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Vec<u8>,
-        file_list: HashSet<FileDesignator>,
-        files_to_remove: Option<HashSet<FileDesignator>>,
+        file_list: HashSet<String>,
+        files_to_remove: Option<HashSet<String>>,
     ) -> Result<(), BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -173,7 +173,9 @@ impl BackupStorage {
 
         // Check that we are not accidentally removing a file that was previously included in the backup.
         let current_files = metadata.file_list.clone();
-        let files_to_remove = files_to_remove.unwrap_or_default(); // Explicit removals are allowed.
+
+        // To remove previously added files from the backup, the client can explicitly indicate they intend to remove a file
+        let files_to_remove = files_to_remove.unwrap_or_default();
 
         // Check if any file that was in the backup is missing from the new file_list
         // (unless it was explicitly marked for removal)

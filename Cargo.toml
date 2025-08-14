@@ -50,6 +50,7 @@ josekit = { version = "0.10.1", features = ["vendored"] }
 openidconnect = { workspace = true }
 p256 = { version = "0.13.2", features = ["ecdsa"] }
 rand = { workspace = true }
+regex = "1.11.1"
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
 schemars = "0.8.21"
 serde = { version = "1.0.219", features = ["derive"] }

@@ -776,6 +776,7 @@ dependencies = [
  "openidconnect",
  "p256 0.13.2",
  "rand 0.8.5",
+ "regex",
  "reqwest",
  "schemars 0.8.22",
  "serde",

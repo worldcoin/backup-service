@@ -167,7 +167,7 @@ async fn test_sync_backup_with_file_list_happy_path() {
                 "signature": signature,
             },
             "challengeToken": challenge_response["token"],
-            "fileList": ["orb_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
         }),
         Bytes::from(b"UPDATED BACKUP WITH FILES".as_slice()),
         None,
@@ -218,7 +218,7 @@ async fn test_sync_backup_prevents_accidental_file_removal() {
                 "signature": signature.clone(),
             },
             "challengeToken": challenge_response["token"],
-            "fileList": ["orb_pkg", "document_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "cksum:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"],
         }),
         Bytes::from(b"FIRST UPDATE WITH TWO FILES".as_slice()),
         None,
@@ -252,7 +252,7 @@ async fn test_sync_backup_prevents_accidental_file_removal() {
                 "signature": signature2,
             },
             "challengeToken": challenge_response2["token"],
-            "fileList": ["orb_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
         }),
         Bytes::from(b"SECOND UPDATE MISSING A FILE".as_slice()),
         None,
@@ -265,7 +265,7 @@ async fn test_sync_backup_prevents_accidental_file_removal() {
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         error_response["error"]["code"],
-        "file_loss_prevention_document_pkg"
+        "file_loss_prevention_cksum:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
     );
 }
 
@@ -304,7 +304,10 @@ async fn test_sync_backup_allows_explicit_file_removal() {
                 "signature": signature.clone(),
             },
             "challengeToken": challenge_response["token"],
-            "fileList": ["orb_pkg", "document_pkg"],
+            "fileList": [
+                "cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "cksum:0000000000000000000000000000000000000000000000000000000000000000"
+            ],
         }),
         Bytes::from(b"FIRST UPDATE WITH TWO FILES".as_slice()),
         None,
@@ -338,8 +341,8 @@ async fn test_sync_backup_allows_explicit_file_removal() {
                 "signature": signature2,
             },
             "challengeToken": challenge_response2["token"],
-            "fileList": ["orb_pkg"],
-            "filesToRemove": ["document_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+            "filesToRemove": ["cksum:0000000000000000000000000000000000000000000000000000000000000000"],
         }),
         Bytes::from(b"SECOND UPDATE WITH EXPLICIT REMOVAL".as_slice()),
         None,
@@ -390,7 +393,7 @@ async fn test_sync_backup_maintains_file_list_when_unchanged() {
                 "signature": signature.clone(),
             },
             "challengeToken": challenge_response["token"],
-            "fileList": ["orb_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
         }),
         Bytes::from(b"FIRST UPDATE".as_slice()),
         None,
@@ -424,7 +427,7 @@ async fn test_sync_backup_maintains_file_list_when_unchanged() {
                 "signature": signature2,
             },
             "challengeToken": challenge_response2["token"],
-            "fileList": ["orb_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
         }),
         Bytes::from(b"SECOND UPDATE WITH SAME FILES".as_slice()),
         None,
@@ -475,7 +478,7 @@ async fn test_sync_backup_rejects_empty_file_list_after_files_added() {
                 "signature": signature.clone(),
             },
             "challengeToken": challenge_response["token"],
-            "fileList": ["orb_pkg"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
         }),
         Bytes::from(b"FIRST UPDATE WITH A FILE".as_slice()),
         None,
@@ -522,6 +525,161 @@ async fn test_sync_backup_rejects_empty_file_list_after_files_added() {
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         error_response["error"]["code"],
-        "file_loss_prevention_orb_pkg"
+        "file_loss_prevention_cksum:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     );
+}
+
+#[tokio::test]
+async fn test_sync_backup_rejects_invalid_checksum_format() {
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupId"].as_str().unwrap();
+
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Test with missing cksum: prefix
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "fileList": ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+        }),
+        Bytes::from(b"UPDATE WITH INVALID FORMAT".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Get another challenge for the next test
+    let challenge_response2 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body2 = challenge_response2
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response2: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body2).unwrap();
+
+    let signature2 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response2["challenge"].as_str().unwrap(),
+    );
+
+    // Test with invalid checksum length (32 chars instead of 64)
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature2.clone(),
+            },
+            "challengeToken": challenge_response2["token"],
+            "fileList": ["cksum:0123456789abcdef0123456789abcdef"],
+        }),
+        Bytes::from(b"UPDATE WITH SHORT CHECKSUM".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Get another challenge for the next test
+    let challenge_response3 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body3 = challenge_response3
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response3: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body3).unwrap();
+
+    let signature3 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response3["challenge"].as_str().unwrap(),
+    );
+
+    // Test with non-hex characters in checksum
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key.clone(),
+                "signature": signature3.clone(),
+            },
+            "challengeToken": challenge_response3["token"],
+            "fileList": ["cksum:ZZZZ456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+        }),
+        Bytes::from(b"UPDATE WITH NON-HEX CHECKSUM".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Get another challenge for the next test
+    let challenge_response4 =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body4 = challenge_response4
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response4: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body4).unwrap();
+
+    let signature4 = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response4["challenge"].as_str().unwrap(),
+    );
+
+    // Test with uppercase hex (should work due to lowercasing)
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature4,
+            },
+            "challengeToken": challenge_response4["token"],
+            "fileList": ["CKSUM:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"],
+        }),
+        Bytes::from(b"UPDATE WITH UPPERCASE".as_slice()),
+        None,
+    )
+    .await;
+
+    // Should succeed because the function lowercases the input
+    assert_eq!(response.status(), StatusCode::OK);
 }
