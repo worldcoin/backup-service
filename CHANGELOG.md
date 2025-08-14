@@ -1,6 +1,40 @@
 # Changelog
 
 
+# [0.6.0] - 2025-08-13
+
+## What's Changed
+* feat: attestation token in backup retrieval by @paolodamico in https://github.com/worldcoin/backup-service/pull/60
+* feat: add build version to health check by @paolodamico in https://github.com/worldcoin/backup-service/pull/62
+* feat: add changelog and deliberate release process by @paolodamico in https://github.com/worldcoin/backup-service/pull/63
+* feat: general clean up, linting & housekeeping by @paolodamico in https://github.com/worldcoin/backup-service/pull/64
+* feat: abstract test utils by @paolodamico in https://github.com/worldcoin/backup-service/pull/65
+* chore: add git revision build arg by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/68
+* feat: slimify docker, single statically linked binary by @paolodamico in https://github.com/worldcoin/backup-service/pull/66
+* feat: delete sync factor by @paolodamico in https://github.com/worldcoin/backup-service/pull/67
+* feat: ensure atomicity of updating backup metadata with etags by @paolodamico in https://github.com/worldcoin/backup-service/pull/69
+* feat: security best practices by @paolodamico in https://github.com/worldcoin/backup-service/pull/71
+* feat: sync factor integration failure tests & todo clean up by @paolodamico in https://github.com/worldcoin/backup-service/pull/70
+* chore(deps): bump public-suffix from 0.1.2 to 0.1.3 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/77
+* chore(deps): bump reqwest from 0.12.20 to 0.12.22 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/74
+* chore(deps): bump aws-config from 1.6.0 to 1.6.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/76
+* feat: delete backup endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/78
+* chore(deps): bump anyhow from 1.0.97 to 1.0.98 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/73
+* feat: api versioning by @aurel-fr in https://github.com/worldcoin/backup-service/pull/80
+* feat: improvements to delete factor by @paolodamico in https://github.com/worldcoin/backup-service/pull/79
+* feat!: enforce explicit scope in /delete-factor by @paolodamico in https://github.com/worldcoin/backup-service/pull/83
+* feat!: release attestation enforcement by @paolodamico in https://github.com/worldcoin/backup-service/pull/82
+* feat: ready endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/81
+* fix: factor scope serialization in docs by @paolodamico in https://github.com/worldcoin/backup-service/pull/87
+* fix: /ready endpoint should be GET by @paolodamico in https://github.com/worldcoin/backup-service/pull/88
+* feat: refactor auth handling to remove duplicated logic by @paolodamico in https://github.com/worldcoin/backup-service/pull/89
+
+## New Contributors
+* @dependabot[bot] made their first contribution in https://github.com/worldcoin/backup-service/pull/77
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.5.0...0.6.0
+
+
 # [0.5.0] - 2025-06-24
 
 ## What's Changed
