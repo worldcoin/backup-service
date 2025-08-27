@@ -17,6 +17,17 @@ use serde::{Deserialize, Serialize};
 pub struct SyncBackupRequest {
     authorization: Authorization,
     challenge_token: String,
+    /// The hex-encoded representation of the current manifest hash of the backup.
+    ///
+    /// This is the hash of the backup manifest file which all backups should include internally.
+    ///
+    /// When a client performs backup updates (i.e. this /sync), it declares it's updating the backup from
+    /// the current state. This ensures that any updates to the backup performed client-side are performed on the latest state of the backup.
+    ///
+    /// In particular this prevents accidental data loss, where a client may lose a file from the backup and not be aware it should
+    /// be included. If the client is not operating on the latest state of the backup, it needs to fetch the current backup and perform updates from there.
+    ///
+    /// More details on <https://github.com/toolsforhumanity/docs/tree/main/world-app/backup>
     #[serde(deserialize_with = "deserialize_hex_32")]
     current_manifest_hash: [u8; 32],
     #[serde(deserialize_with = "deserialize_hex_32")]
