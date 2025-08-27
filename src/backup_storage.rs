@@ -632,6 +632,7 @@ mod tests {
                     factors: vec![],
                     sync_factors: vec![],
                     keys: vec![],
+                    manifest_hash: [1u8; 32],
                 },
             )
             .await
@@ -639,7 +640,12 @@ mod tests {
 
         // Update the backup
         backup_storage
-            .update_backup(&test_backup_id, updated_backup_data.clone())
+            .update_backup(
+                &test_backup_id,
+                updated_backup_data.clone(),
+                [1u8; 32],
+                [2u8; 32],
+            )
             .await
             .unwrap();
 
@@ -650,6 +656,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, updated_backup_data);
+        assert_eq!(found_backup.metadata.manifest_hash, [2u8; 32]);
     }
 
     #[tokio::test]
@@ -667,6 +674,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: [1u8; 32],
         };
 
         // Create a backup
@@ -699,6 +707,7 @@ mod tests {
 
         assert_eq!(updated_backup.metadata.factors.len(), 1);
         assert_eq!(updated_backup.metadata.factors[0].kind, google_account.kind);
+        assert_eq!(updated_backup.metadata.manifest_hash, [1u8; 32]);
 
         // Try to add the same factor again - should fail with FactorAlreadyExists
         let result = backup_storage
@@ -739,6 +748,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![initial_key],
+            manifest_hash: [1u8; 32],
         };
 
         // Create a backup
@@ -801,6 +811,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: [1u8; 32],
         };
 
         // Create a backup
@@ -896,6 +907,7 @@ mod tests {
             factors: vec![factor1.clone(), factor2.clone()],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: [1u8; 32],
         };
         backup_storage
             .create(test_backup_data.clone(), &initial_metadata)
