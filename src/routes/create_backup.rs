@@ -4,8 +4,8 @@ use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::deserialize_hex_32;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::normalize_hex_32;
 use crate::types::backup_metadata::BackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
@@ -27,8 +27,8 @@ pub struct CreateBackupRequest {
     /// Provider ID from Turnkey ID. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
     turnkey_provider_id: Option<String>,
     /// The initial manifest hash of the backup.
-    #[serde(deserialize_with = "deserialize_hex_32")]
-    manifest_hash: [u8; 32],
+    #[serde(deserialize_with = "normalize_hex_32")]
+    manifest_hash: String,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]

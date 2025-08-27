@@ -159,8 +159,8 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Vec<u8>,
-        current_manifest_hash: [u8; 32],
-        new_manifest_hash: [u8; 32],
+        current_manifest_hash: String,
+        new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -553,7 +553,7 @@ mod tests {
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
-            manifest_hash: [1u8; 32],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -570,7 +570,7 @@ mod tests {
             .expect("Backup not found");
         assert_eq!(found_backup.backup, test_backup_data);
         assert_eq!(found_backup.metadata, backup_metadata);
-        assert_eq!(found_backup.metadata.manifest_hash, [1u8; 32]);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([1u8; 32]));
 
         // Try to get a non-existing backup - should return None
         let found_backup = backup_storage
@@ -632,7 +632,7 @@ mod tests {
                     factors: vec![],
                     sync_factors: vec![],
                     keys: vec![],
-                    manifest_hash: [1u8; 32],
+                    manifest_hash: hex::encode([1u8; 32]),
                 },
             )
             .await
@@ -643,8 +643,8 @@ mod tests {
             .update_backup(
                 &test_backup_id,
                 updated_backup_data.clone(),
-                [1u8; 32],
-                [2u8; 32],
+                hex::encode([1u8; 32]),
+                hex::encode([2u8; 32]),
             )
             .await
             .unwrap();
@@ -656,7 +656,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, updated_backup_data);
-        assert_eq!(found_backup.metadata.manifest_hash, [2u8; 32]);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([2u8; 32]));
     }
 
     #[tokio::test]
@@ -674,7 +674,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
-            manifest_hash: [1u8; 32],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -707,7 +707,10 @@ mod tests {
 
         assert_eq!(updated_backup.metadata.factors.len(), 1);
         assert_eq!(updated_backup.metadata.factors[0].kind, google_account.kind);
-        assert_eq!(updated_backup.metadata.manifest_hash, [1u8; 32]);
+        assert_eq!(
+            updated_backup.metadata.manifest_hash,
+            hex::encode([1u8; 32])
+        );
 
         // Try to add the same factor again - should fail with FactorAlreadyExists
         let result = backup_storage
@@ -748,7 +751,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![initial_key],
-            manifest_hash: [1u8; 32],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -811,7 +814,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
-            manifest_hash: [1u8; 32],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -907,7 +910,7 @@ mod tests {
             factors: vec![factor1.clone(), factor2.clone()],
             sync_factors: vec![],
             keys: vec![],
-            manifest_hash: [1u8; 32],
+            manifest_hash: hex::encode([1u8; 32]),
         };
         backup_storage
             .create(test_backup_data.clone(), &initial_metadata)

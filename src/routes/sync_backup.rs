@@ -4,8 +4,8 @@ use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::deserialize_hex_32;
 use crate::factor_lookup::FactorScope;
+use crate::normalize_hex_32;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
@@ -28,11 +28,11 @@ pub struct SyncBackupRequest {
     /// be included. If the client is not operating on the latest state of the backup, it needs to fetch the current backup and perform updates from there.
     ///
     /// More details on <https://github.com/toolsforhumanity/docs/tree/main/world-app/backup>
-    #[serde(deserialize_with = "deserialize_hex_32")]
-    current_manifest_hash: [u8; 32],
+    #[serde(deserialize_with = "normalize_hex_32")]
+    current_manifest_hash: String,
     /// The hex-encoded representation of the new manifest hash of the backup. This is the state post-update.
-    #[serde(deserialize_with = "deserialize_hex_32")]
-    new_manifest_hash: [u8; 32],
+    #[serde(deserialize_with = "normalize_hex_32")]
+    new_manifest_hash: String,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]

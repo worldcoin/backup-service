@@ -85,7 +85,7 @@ async fn test_end_to_end_readiness() {
         factors: vec![],
         sync_factors: vec![],
         keys: vec![],
-        manifest_hash: [1u8; 32],
+        manifest_hash: hex::encode([1u8; 32]),
     };
 
     backup_storage

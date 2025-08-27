@@ -25,8 +25,11 @@ pub struct BackupMetadata {
     pub sync_factors: Vec<Factor>,
     /// Stores versions of backup encryption key that were encrypted with different methods.
     pub keys: Vec<BackupEncryptionKey>,
-    /// Stores the hash of the backup manifest which represents the current state of the backup. A client must do a backup update (sync) starting from this current state.
-    pub manifest_hash: [u8; 32],
+    /// Stores the hash of the backup manifest which represents the current state of the backup.
+    /// A client must do a backup update (sync) starting from this current state.
+    ///
+    /// We store this as a string to reflect the delegation of this attribute is the client's responsibility
+    pub manifest_hash: String,
 }
 
 impl BackupMetadata {
@@ -38,7 +41,7 @@ impl BackupMetadata {
             keys: self.keys.clone(),
             factors: self.factors.iter().map(Factor::exported).collect(),
             sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
-            manifest_hash: hex::encode(self.manifest_hash),
+            manifest_hash: self.manifest_hash.clone(),
         }
     }
 }

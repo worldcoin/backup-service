@@ -193,18 +193,11 @@ async fn test_sync_backup_with_wrong_current_manifest_hash() {
     assert_eq!(error_response["error"]["code"], "update_conflict");
 
     // Verify the backup content hasn't been updated (still contains original content)
-    verify_s3_backup_exists(&backup_id, b"INITIAL BACKUP").await;
+    verify_s3_backup_exists(backup_id, b"INITIAL BACKUP").await;
 
     // Verify the manifest hash hasn't been updated (still contains original manifest hash)
-    let metadata = verify_s3_metadata_exists(&backup_id).await;
-    // The manifestHash is stored as an array of bytes in the raw metadata
-    let manifest_hash_bytes: Vec<u8> = metadata["manifestHash"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap() as u8)
-        .collect();
-    assert_eq!(manifest_hash_bytes, vec![1u8; 32]); // The original manifest hash from create_test_backup_with_sync_keypair
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+    assert_eq!(metadata["manifestHash"], hex::encode([1u8; 32])); // The original manifest hash from create_test_backup_with_sync_keypair
 }
 
 // Test with invalid manifest hash format - should fail with validation error

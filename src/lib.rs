@@ -46,24 +46,23 @@ pub fn mask_email(email: &str) -> Option<String> {
 
 use serde::{de, Deserialize, Deserializer};
 
-/// Deserializes a hex string into a byte array.
+/// Deserializes a hex string into a byte array and verifies it's exactly 32 bytes long.
 ///
 /// # Errors
 ///
 /// Returns an error if the hex string is not a valid hex-encoded byte array
 /// or if the hex string is not exactly 32 bytes long.
-pub fn deserialize_hex_32<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+pub fn normalize_hex_32<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    let bytes = hex::decode(s.trim_start_matches("0x")).map_err(de::Error::custom)?;
+    let s = s.trim_start_matches("0x");
+    let bytes = hex::decode(s).map_err(de::Error::custom)?;
     if bytes.len() != 32 {
         return Err(de::Error::custom("Expected 32 bytes"));
     }
-    let mut array = [0u8; 32];
-    array.copy_from_slice(&bytes);
-    Ok(array)
+    Ok(s.to_string())
 }
 
 #[cfg(test)]
