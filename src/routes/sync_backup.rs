@@ -30,6 +30,7 @@ pub struct SyncBackupRequest {
     /// More details on <https://github.com/toolsforhumanity/docs/tree/main/world-app/backup>
     #[serde(deserialize_with = "deserialize_hex_32")]
     current_manifest_hash: [u8; 32],
+    /// The hex-encoded representation of the new manifest hash of the backup. This is the state post-update.
     #[serde(deserialize_with = "deserialize_hex_32")]
     new_manifest_hash: [u8; 32],
 }
