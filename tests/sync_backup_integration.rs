@@ -194,7 +194,7 @@ async fn test_sync_backup_with_wrong_current_manifest_hash() {
 
     // Verify the backup content hasn't been updated (still contains original content)
     verify_s3_backup_exists(&backup_id, b"INITIAL BACKUP").await;
-    
+
     // Verify the manifest hash hasn't been updated (still contains original manifest hash)
     let metadata = verify_s3_metadata_exists(&backup_id).await;
     // The manifestHash is stored as an array of bytes in the raw metadata
