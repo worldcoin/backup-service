@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
+use crate::deserialize_hex_32;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::backup_metadata::BackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -25,6 +26,9 @@ pub struct CreateBackupRequest {
     initial_sync_challenge_token: String,
     /// Provider ID from Turnkey ID. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
     turnkey_provider_id: Option<String>,
+    /// The initial manifest hash of the backup.
+    #[serde(deserialize_with = "deserialize_hex_32")]
+    manifest_hash: [u8; 32],
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -103,6 +107,7 @@ pub async fn handler(
         factors: vec![backup_factor],
         sync_factors: vec![initial_sync_factor],
         keys: vec![request.initial_encryption_key.clone()],
+        manifest_hash: request.manifest_hash,
     };
 
     // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery

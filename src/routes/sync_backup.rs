@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
+use crate::deserialize_hex_32;
 use crate::factor_lookup::FactorScope;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use axum::extract::Multipart;
@@ -16,6 +17,10 @@ use serde::{Deserialize, Serialize};
 pub struct SyncBackupRequest {
     authorization: Authorization,
     challenge_token: String,
+    #[serde(deserialize_with = "deserialize_hex_32")]
+    current_manifest_hash: [u8; 32],
+    #[serde(deserialize_with = "deserialize_hex_32")]
+    new_manifest_hash: [u8; 32],
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -68,7 +73,12 @@ pub async fn handler(
 
     // Step 3: Update the backup with the new backup file
     backup_storage
-        .update_backup(&backup_id, backup.to_vec())
+        .update_backup(
+            &backup_id,
+            backup.to_vec(),
+            request.current_manifest_hash,
+            request.new_manifest_hash,
+        )
         .await?;
 
     Ok(Json(SyncBackupResponse { backup_id }))
