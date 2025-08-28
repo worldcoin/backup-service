@@ -188,6 +188,8 @@ async fn test_add_sync_factor_happy_path() {
                 "signature": sync_signature,
             },
             "challengeToken": sync_challenge["token"],
+            "currentManifestHash": hex::encode([1u8; 32]), // this is the one created in the test create backup
+            "newManifestHash": hex::encode([2u8; 32]),
         }),
         Bytes::from(b"UPDATED BACKUP DATA".as_slice()),
         None,

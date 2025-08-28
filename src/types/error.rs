@@ -180,6 +180,13 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Encryption key not found", error = ?err);
                 ErrorResponse::bad_request("encryption_key_not_found")
             }
+            BackupManagerError::UpdateConflict => {
+                tracing::info!(message = "Update conflict. Provided manifest hash does not match the current manifest hash.");
+                ErrorResponse {
+                    error: "update_conflict".to_string(),
+                    status: StatusCode::CONFLICT,
+                }
+            }
         }
     }
 }

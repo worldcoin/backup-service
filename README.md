@@ -1,6 +1,6 @@
 # Backup Service
 
-* Staging: https://api-tfh-backup-dev.nethermind.io/docs
+* Staging: https://tfh-backup-api.dev-nethermind.xyz/docs
 * Production: https://api-tfh-backup-prod.nethermind.io/docs
 * Mobile flows: https://excalidraw.com/#json=pJTLrSff6hYYAI0fztR2v,F8_Z-kkzbVN1Icd37CMV6Q
 

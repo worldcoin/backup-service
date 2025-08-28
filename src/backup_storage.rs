@@ -159,12 +159,40 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Vec<u8>,
+        current_manifest_hash: String,
+        new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
+        };
+
+        if metadata.manifest_hash != current_manifest_hash {
+            return Err(BackupManagerError::UpdateConflict);
+        }
+
+        metadata.manifest_hash = new_manifest_hash;
+
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
+            .send()
+            .await?;
+
+        // Save the new metadata
+        // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
+        // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
 
@@ -452,6 +480,8 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
+    #[error("Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first.")]
+    UpdateConflict,
 }
 
 #[cfg(test)]
@@ -523,6 +553,7 @@ mod tests {
             keys: vec![BackupEncryptionKey::Prf {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -539,6 +570,7 @@ mod tests {
             .expect("Backup not found");
         assert_eq!(found_backup.backup, test_backup_data);
         assert_eq!(found_backup.metadata, backup_metadata);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([1u8; 32]));
 
         // Try to get a non-existing backup - should return None
         let found_backup = backup_storage
@@ -600,6 +632,7 @@ mod tests {
                     factors: vec![],
                     sync_factors: vec![],
                     keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
                 },
             )
             .await
@@ -607,7 +640,12 @@ mod tests {
 
         // Update the backup
         backup_storage
-            .update_backup(&test_backup_id, updated_backup_data.clone())
+            .update_backup(
+                &test_backup_id,
+                updated_backup_data.clone(),
+                hex::encode([1u8; 32]),
+                hex::encode([2u8; 32]),
+            )
             .await
             .unwrap();
 
@@ -618,6 +656,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, updated_backup_data);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([2u8; 32]));
     }
 
     #[tokio::test]
@@ -635,6 +674,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -667,6 +707,10 @@ mod tests {
 
         assert_eq!(updated_backup.metadata.factors.len(), 1);
         assert_eq!(updated_backup.metadata.factors[0].kind, google_account.kind);
+        assert_eq!(
+            updated_backup.metadata.manifest_hash,
+            hex::encode([1u8; 32])
+        );
 
         // Try to add the same factor again - should fail with FactorAlreadyExists
         let result = backup_storage
@@ -707,6 +751,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![initial_key],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -769,6 +814,7 @@ mod tests {
             factors: vec![],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
         };
 
         // Create a backup
@@ -864,6 +910,7 @@ mod tests {
             factors: vec![factor1.clone(), factor2.clone()],
             sync_factors: vec![],
             keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
         };
         backup_storage
             .create(test_backup_data.clone(), &initial_metadata)
