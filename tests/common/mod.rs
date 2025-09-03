@@ -36,6 +36,50 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Generic retry helper for S3 operations with exponential backoff.
+/// Executes the provided future up to max_attempts times, with exponential backoff on failure.
+async fn retry_with_backoff<T, E, F, Fut>(
+    operation_name: &str,
+    resource_id: &str,
+    mut operation: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempts = 0;
+    let max_attempts = 5;
+    let mut delay_ms = 100;
+
+    loop {
+        match operation().await {
+            Ok(result) => {
+                if attempts > 0 {
+                    tracing::info!(
+                        "Successfully got {operation_name} for {resource_id} after {attempts} attempts"
+                    );
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts >= max_attempts {
+                    tracing::error!(
+                        "❌ Failed to get {operation_name} for {resource_id} after {max_attempts} attempts: {e}",
+                    );
+                    return Err(e);
+                }
+                tracing::warn!(
+                    "{operation_name} not yet available for {resource_id}, attempt {attempts}/{max_attempts}, retrying in {delay_ms}ms..."
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms *= 2; // Exponential backoff
+            }
+        }
+    }
+}
+
 pub async fn get_test_s3_client() -> S3Client {
     let environment = Environment::development(None);
     S3Client::from_conf(environment.s3_client_config().await)
@@ -571,42 +615,63 @@ pub fn sign_keypair_challenge(secret_key: &SecretKey, challenge: &str) -> String
 
 /// Checks that a backup file with the given ID and expected content exists in S3.
 /// Returns the actual backup content as a vector of bytes.
+/// Includes retry logic to handle S3 eventual consistency.
 pub async fn verify_s3_backup_exists(backup_id: &str, expected_content: &[u8]) -> Vec<u8> {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
     let backup_key = format!("{}/backup", backup_id);
 
-    let backup = s3_client
-        .get_object()
-        .bucket(bucket_name)
-        .key(&backup_key)
-        .send()
+    let operation = || async {
+        let result = s3_client
+            .get_object()
+            .bucket(bucket_name)
+            .key(&backup_key)
+            .send()
+            .await;
+
+        match result {
+            Ok(backup) => {
+                let backup_content = backup.body.collect().await.unwrap().to_vec();
+                assert_eq!(backup_content, expected_content);
+                Ok(backup_content)
+            }
+            Err(e) => Err(e),
+        }
+    };
+
+    retry_with_backoff("S3 backup", backup_id, operation)
         .await
-        .unwrap();
-
-    let backup_content = backup.body.collect().await.unwrap().to_vec();
-    assert_eq!(backup_content, expected_content);
-
-    backup_content
+        .unwrap_or_else(|e| panic!("Failed to get S3 backup: {}", e))
 }
 
 /// Checks that a backup metadata file with the given ID exists in S3.
 /// Returns the metadata as a serde_json::Value.
+/// Includes retry logic to handle S3 eventual consistency.
 pub async fn verify_s3_metadata_exists(backup_id: &str) -> serde_json::Value {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
     let metadata_key = format!("{}/metadata", backup_id);
 
-    let metadata_response = s3_client
-        .get_object()
-        .bucket(bucket_name)
-        .key(&metadata_key)
-        .send()
-        .await
-        .unwrap();
+    let operation = || async {
+        let result = s3_client
+            .get_object()
+            .bucket(bucket_name)
+            .key(&metadata_key)
+            .send()
+            .await;
 
-    let metadata_content = metadata_response.body.collect().await.unwrap().to_vec();
-    serde_json::from_slice(&metadata_content).unwrap()
+        match result {
+            Ok(metadata_response) => {
+                let metadata_content = metadata_response.body.collect().await.unwrap().to_vec();
+                Ok(serde_json::from_slice(&metadata_content).unwrap())
+            }
+            Err(e) => Err(e),
+        }
+    };
+
+    retry_with_backoff("S3 metadata", backup_id, operation)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to get S3 metadata: {}", e))
 }
 
 pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> (Jwk, String) {
