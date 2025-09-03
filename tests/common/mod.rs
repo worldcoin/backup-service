@@ -56,7 +56,7 @@ where
         match operation().await {
             Ok(result) => {
                 if attempts > 0 {
-                    println!(
+                    tracing::info!(
                         "Successfully got {operation_name} for {resource_id} after {attempts} attempts"
                     );
                 }
@@ -65,13 +65,13 @@ where
             Err(e) => {
                 attempts += 1;
                 if attempts >= max_attempts {
-                    println!(
+                    tracing::error!(
                         "❌ Failed to get {operation_name} for {resource_id} after {max_attempts} attempts: {e}",
                     );
                     return Err(e);
                 }
-                println!(
-                    "🟡 {operation_name} not yet available for {resource_id}, attempt {attempts}/{max_attempts}, retrying in {delay_ms}ms..."
+                tracing::warn!(
+                    "{operation_name} not yet available for {resource_id}, attempt {attempts}/{max_attempts}, retrying in {delay_ms}ms..."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 delay_ms *= 2; // Exponential backoff
