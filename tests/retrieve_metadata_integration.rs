@@ -57,15 +57,14 @@ async fn test_retrieve_metadata_happy_path() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // Verify the response contains the correct backup ID and metadata
-    assert_eq!(response["backupId"], backup_id);
-    assert!(response["metadata"]["id"].is_string());
-    assert!(response["metadata"]["factors"].is_array());
-    assert!(response["metadata"]["syncFactors"].is_array());
-    assert!(response["metadata"]["keys"].is_array());
+    // Verify the response contains the correct metadata
+    assert_eq!(response["id"], backup_id);
+    assert!(response["factors"].is_array());
+    assert!(response["syncFactors"].is_array());
+    assert!(response["keys"].is_array());
 
     // Verify that the sync factor is included in the metadata
-    let sync_factor_found = response["metadata"]["syncFactors"]
+    let sync_factor_found = response["syncFactors"]
         .as_array()
         .unwrap()
         .iter()
