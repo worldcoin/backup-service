@@ -122,6 +122,12 @@ async fn test_delete_sync_factor_happy_path() {
     // Extract the backup ID and the main factor ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    if create_response["backupId"].is_null() {
+        panic!(
+            "Failed to create backup received response: {:?}",
+            create_response
+        );
+    }
     let backup_id = create_response["backupId"].as_str().unwrap();
 
     // Get the metadata to extract the factor ID
