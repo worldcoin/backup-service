@@ -151,6 +151,8 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
+            | BackupManagerError::HeadObjectError(_)
+            | BackupManagerError::CopyObjectError(_)
             | BackupManagerError::ByteStreamError(_)
             | BackupManagerError::DeleteObjectError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
@@ -164,6 +166,23 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Backup not found", error = ?err);
                 ErrorResponse::bad_request("backup_not_found")
             }
+            BackupManagerError::MetadataNotFound => {
+                tracing::error!(message = "Metadata not found in object metadata", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            BackupManagerError::MetadataTooLarge(size) => {
+                tracing::info!(message = "Compressed metadata is too large", size = size, error = ?err);
+                ErrorResponse::bad_request("limit_exceeded_metadata")
+            }
+            BackupManagerError::CompressionError(msg) => {
+                tracing::error!(message = "Compression error", msg = msg, error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            BackupManagerError::LimitExceeded { attr, current, max } => {
+                tracing::info!(message = format!("Limit exceeded on {attr}"), attr = attr, current = current, max = max, error = ?err);
+                ErrorResponse::bad_request(&format!("limit_exceeded_{attr}"))
+            }
+
             BackupManagerError::ETagNotFound => {
                 tracing::info!(message = "ETag not found", error = ?err);
                 ErrorResponse::internal_server_error()

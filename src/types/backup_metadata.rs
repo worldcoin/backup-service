@@ -1,9 +1,15 @@
+use std::io::{Read, Write};
+
+use crate::backup_storage::BackupManagerError;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
 use crate::{factor_lookup::FactorToLookup, mask_email};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -43,6 +49,56 @@ impl BackupMetadata {
             sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
             manifest_hash: self.manifest_hash.clone(),
         }
+    }
+
+    /// Serializes the metadata as CBOR and compresses it using gzip.
+    ///
+    /// Returns a base64 encoded string (which must be UTF-8 for S3 storage)
+    ///
+    /// # Errors
+    /// Will error if there is an error compressing the metadata or encoding it. Generally not expected.
+    /// Will error if the compressed metadata is too large (>2KB), `BackupManagerError::MetadataTooLarge` is returned.
+    pub fn to_compressed_metadata(&self) -> Result<String, BackupManagerError> {
+        let mut cbor = Vec::new();
+        ciborium::into_writer(self, &mut cbor).map_err(|e| {
+            BackupManagerError::CompressionError(format!("CBOR serialization error: {e}"))
+        })?;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder
+            .write_all(&cbor)
+            .map_err(|e| BackupManagerError::CompressionError(e.to_string()))?;
+        let compressed = encoder
+            .finish()
+            .map_err(|e| BackupManagerError::CompressionError(e.to_string()))?;
+
+        let encoded_meta = BASE64_STANDARD.encode(&compressed);
+
+        if encoded_meta.len() > 2000 {
+            return Err(BackupManagerError::MetadataTooLarge(encoded_meta.len()));
+        }
+
+        Ok(encoded_meta)
+    }
+
+    /// Decompresses and deserializes the metadata from a base64 encoded string.
+    ///
+    /// # Errors
+    /// Will error if there is an error decompressing the metadata or decoding it. Generally not expected.
+    pub fn from_compressed_metadata(compressed_metadata: &str) -> Result<Self, BackupManagerError> {
+        let compressed = BASE64_STANDARD.decode(compressed_metadata).map_err(|e| {
+            BackupManagerError::CompressionError(format!("Base64 decode error: {e}"))
+        })?;
+
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut cbor = Vec::new();
+        decoder.read_to_end(&mut cbor).map_err(|e| {
+            BackupManagerError::CompressionError(format!("Decompression error: {e}"))
+        })?;
+
+        ciborium::from_reader(&cbor[..]).map_err(|e| {
+            BackupManagerError::CompressionError(format!("CBOR deserialization error: {e}"))
+        })
     }
 }
 

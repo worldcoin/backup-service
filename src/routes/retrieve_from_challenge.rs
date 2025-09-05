@@ -57,8 +57,8 @@ pub async fn handler(
         .await?;
 
     // Step 2: Fetch the backup from S3
-    let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;
-    let Some(backup) = backup else {
+    let found_backup = backup_storage.get_by_backup_id(&backup_id).await?;
+    let Some(found_backup) = found_backup else {
         tracing::error!(message = "No backup found for the verified backup ID.");
         return Err(ErrorResponse::internal_server_error());
     };
@@ -70,7 +70,7 @@ pub async fn handler(
 
     // Step 4: Return the backup and metadata
     Ok(Json(RetrieveBackupFromChallengeResponse {
-        backup: STANDARD.encode(backup),
+        backup: STANDARD.encode(found_backup.backup),
         metadata: backup_metadata.exported(),
         sync_factor_token,
     }))

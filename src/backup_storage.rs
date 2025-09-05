@@ -4,7 +4,15 @@ use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+
 use std::sync::Arc;
+
+// Limits for factors and keys. Serves as general client limits, incentivize housekeeping and
+// to ensure metadata fits within S3 object metadata (2KB limit)
+const MAX_MAIN_FACTORS: usize = 10; // `MainFactor`
+const MAX_SYNC_FACTORS: usize = 10; // `SyncFactor`
+const MAX_BACKUP_ENCRYPTION_KEYS: usize = 10; // `BackupEncryptionKey`
+const MAX_PASSKEYS: usize = 2; // Specific limit for passkeys due to their size
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
 /// limits.
@@ -25,11 +33,12 @@ impl BackupStorage {
         }
     }
 
-    /// Creates a backup and metadata in S3.
+    /// Creates a backup with metadata stored as object metadata in S3.
     ///
     /// # Errors
-    /// * If the backup or metadata cannot be serialized to JSON, `BackupManagerError::SerdeJsonError` is returned.
-    /// * If the backup or metadata cannot be uploaded to S3 (e.g. due to internal error or because
+    /// * If the metadata cannot be serialized to CBOR, `BackupManagerError::CompressionError` is returned.
+    /// * If the compressed metadata is too large (>2KB), `BackupManagerError::MetadataTooLarge` is returned.
+    /// * If the backup cannot be uploaded to S3 (e.g. due to internal error or because
     ///   this backup ID is already used), `BackupManagerError::PutObjectError` is returned.
     ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
@@ -37,22 +46,19 @@ impl BackupStorage {
         backup: Vec<u8>,
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
-        // Save encrypted backup to S3
+        // Validate factor limits
+        Self::validate_factor_limits(backup_metadata)?;
+
+        // Serialize and compress metadata
+        let compressed_metadata = backup_metadata.to_compressed_metadata()?;
+
+        // Save encrypted backup to S3 with compressed metadata
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
-            .if_none_match("*")
-            .send()
-            .await?;
-
-        // Save metadata to S3
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(&backup_metadata.id))
-            .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
+            .metadata("backup-metadata", compressed_metadata)
             .if_none_match("*")
             .send()
             .await?;
@@ -63,76 +69,17 @@ impl BackupStorage {
     /// Retrieves a backup and metadata from S3 by backup ID, which is linked to credential using
     /// separate `FactorLookup` service.
     ///
-    /// If the backup or metadata does not exist, None is returned.
+    /// If the backup does not exist, None is returned.
     ///
     /// # Errors
     /// * If the metadata cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
-    /// * If the backup or metadata cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
-    /// * If the backup or metadata cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
+    /// * If the backup cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
+    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
     pub async fn get_by_backup_id(
         &self,
         backup_id: &str,
     ) -> Result<Option<FoundBackup>, BackupManagerError> {
-        // Get encrypted backup from S3
-        let backup = self.get_backup_by_backup_id(backup_id).await?;
-
-        // Get metadata from S3
-        let metadata = self.get_metadata_by_backup_id(backup_id).await?;
-
-        match (backup, metadata) {
-            // If both the backup and metadata exist, return them
-            (Some(backup), Some((metadata, _))) => Ok(Some(FoundBackup { backup, metadata })),
-            // If either the backup or metadata does not exist, return None
-            _ => Ok(None),
-        }
-    }
-
-    /// Retrieves metadata from S3 by backup ID, which is linked to credential using
-    /// separate `FactorLookup` service.
-    ///
-    /// If the metadata does not exist, None is returned.
-    ///
-    /// # Errors
-    /// * If the metadata cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
-    /// * If the metadata cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
-    /// * If the metadata cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
-    pub async fn get_metadata_by_backup_id(
-        &self,
-        backup_id: &str,
-    ) -> Result<Option<(BackupMetadata, ETag)>, BackupManagerError> {
         let result = self
-            .s3_client
-            .get_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .send()
-            .await;
-
-        match result {
-            Ok(result) => {
-                let metadata = result.body.collect().await?.into_bytes().to_vec();
-                let metadata: BackupMetadata = serde_json::from_slice(&metadata)?;
-                Ok(Some((metadata, result.e_tag)))
-            }
-            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
-            Err(err) => Err(BackupManagerError::GetObjectError(err)),
-        }
-    }
-
-    /// Retrieves a backup from S3 by backup ID, which is linked to credential using
-    /// separate `FactorLookup` service.
-    ///
-    /// If the backup does not exist, None is returned.
-    ///
-    /// # Errors
-    /// * If the backup cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
-    /// * If the backup cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
-    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
-    pub async fn get_backup_by_backup_id(
-        &self,
-        backup_id: &str,
-    ) -> Result<Option<Vec<u8>>, BackupManagerError> {
-        let backup = self
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
@@ -140,13 +87,55 @@ impl BackupStorage {
             .send()
             .await;
 
-        match backup {
-            Ok(backup) => {
-                let backup = backup.body.collect().await?.into_bytes().to_vec();
-                Ok(Some(backup))
+        match result {
+            Ok(result) => {
+                let backup = result.body.collect().await?.into_bytes().to_vec();
+
+                let compressed_metadata = result
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("backup-metadata"))
+                    .ok_or(BackupManagerError::MetadataNotFound)?;
+                let metadata = BackupMetadata::from_compressed_metadata(compressed_metadata)?;
+
+                Ok(Some(FoundBackup { backup, metadata }))
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
             Err(err) => Err(BackupManagerError::GetObjectError(err)),
+        }
+    }
+
+    /// Retrieves metadata from S3 by backup ID using HEAD request to get object metadata.
+    ///
+    /// If the backup does not exist, None is returned.
+    ///
+    /// # Errors
+    /// * If the metadata cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
+    /// * If the backup cannot be accessed from S3, `BackupManagerError::HeadObjectError` is returned.
+    pub async fn get_metadata_by_backup_id(
+        &self,
+        backup_id: &str,
+    ) -> Result<Option<(BackupMetadata, ETag)>, BackupManagerError> {
+        let result = self
+            .s3_client
+            .head_object() // note HEAD to avoid loading the entire object
+            .bucket(self.environment.s3_bucket())
+            .key(get_backup_key(backup_id))
+            .send()
+            .await;
+
+        match result {
+            Ok(result) => {
+                let compressed_metadata = result
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("backup-metadata"))
+                    .ok_or(BackupManagerError::MetadataNotFound)?;
+                let metadata = BackupMetadata::from_compressed_metadata(compressed_metadata)?;
+                Ok(Some((metadata, result.e_tag)))
+            }
+            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(None),
+            Err(err) => Err(BackupManagerError::HeadObjectError(err)),
         }
     }
 
@@ -154,7 +143,7 @@ impl BackupStorage {
     ///
     /// # Errors
     /// * If the backup cannot be uploaded to S3, `BackupManagerError::PutObjectError` is returned.
-    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
+    /// * If the metadata is too large (>2KB), `BackupManagerError::MetadataTooLarge` is returned.
     pub async fn update_backup(
         &self,
         backup_id: &str,
@@ -176,23 +165,16 @@ impl BackupStorage {
 
         metadata.manifest_hash = new_manifest_hash;
 
+        let compressed_metadata = metadata.to_compressed_metadata()?;
+
+        // Update backup with new compressed metadata (atomic update)
         self.s3_client
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
-            .send()
-            .await?;
-
-        // Save the new metadata
-        // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
-        // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
+            .metadata("backup-metadata", compressed_metadata)
             .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
             .await?;
 
@@ -236,17 +218,11 @@ impl BackupStorage {
             metadata.keys.push(encryption_key);
         }
 
-        // Save the updated metadata
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
-            .send()
-            .await?;
+        // Validate factor limits after adding
+        Self::validate_factor_limits(&metadata)?;
 
-        Ok(())
+        self.update_backup_metadata(backup_id, &e_tag, &metadata)
+            .await
     }
 
     /// Adds a sync factor to the backup metadata in S3.
@@ -291,17 +267,11 @@ impl BackupStorage {
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
 
-        // Save the updated metadata
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
-            .send()
-            .await?;
+        // Validate factor limits after adding
+        Self::validate_factor_limits(&metadata)?;
 
-        Ok(())
+        self.update_backup_metadata(backup_id, &e_tag, &metadata)
+            .await
     }
 
     /// Removes a `Main` factor from the backup metadata in S3 by factor ID.
@@ -353,16 +323,8 @@ impl BackupStorage {
             }
         }
 
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
-            .send()
-            .await?;
-
-        Ok(())
+        self.update_backup_metadata(backup_id, &e_tag, &metadata)
+            .await
     }
 
     /// Removes a `Sync` factor from the backup metadata in S3 by factor ID.
@@ -391,22 +353,14 @@ impl BackupStorage {
 
         metadata.sync_factors.remove(index);
 
-        self.s3_client
-            .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
-            .send()
-            .await?;
-
-        Ok(())
+        self.update_backup_metadata(backup_id, &e_tag, &metadata)
+            .await
     }
 
-    /// Deletes a backup and its metadata from S3.
+    /// Deletes a backup from S3.
     ///
     /// # Errors
-    /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
+    /// - Will return S3 errors if the backup does not exist or something else goes wrong deleting from S3.
     pub async fn delete_backup(&self, backup_id: &str) -> Result<(), BackupManagerError> {
         self.s3_client
             .delete_object()
@@ -415,12 +369,78 @@ impl BackupStorage {
             .send()
             .await?;
 
+        Ok(())
+    }
+
+    /// Updates the backup metadata in S3 by backup ID.
+    ///
+    /// Uses COPY to preserve backup content.
+    async fn update_backup_metadata(
+        &self,
+        backup_id: &str,
+        e_tag: &str,
+        metadata: &BackupMetadata,
+    ) -> Result<(), BackupManagerError> {
+        let compressed_metadata = metadata.to_compressed_metadata()?;
+
         self.s3_client
-            .delete_object()
+            .copy_object()
             .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
+            .key(get_backup_key(backup_id))
+            .copy_source(format!(
+                "{}/{}",
+                self.environment.s3_bucket(),
+                get_backup_key(backup_id)
+            ))
+            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace)
+            .metadata("backup-metadata", compressed_metadata)
+            .copy_source_if_match(e_tag)
             .send()
-            .await?;
+            .await
+            .map_err(BackupManagerError::CopyObjectError)?;
+
+        Ok(())
+    }
+
+    /// Validates that factor limits are not exceeded
+    fn validate_factor_limits(metadata: &BackupMetadata) -> Result<(), BackupManagerError> {
+        let passkey_count = metadata
+            .factors
+            .iter()
+            .filter(|f| matches!(f.kind, FactorKind::Passkey { .. }))
+            .count();
+
+        if passkey_count > MAX_PASSKEYS {
+            return Err(BackupManagerError::LimitExceeded {
+                attr: "passkey".to_string(),
+                current: passkey_count,
+                max: MAX_PASSKEYS,
+            });
+        }
+
+        if metadata.factors.len() > MAX_MAIN_FACTORS {
+            return Err(BackupManagerError::LimitExceeded {
+                attr: "main factor".to_string(),
+                current: metadata.factors.len(),
+                max: MAX_MAIN_FACTORS,
+            });
+        }
+
+        if metadata.sync_factors.len() > MAX_SYNC_FACTORS {
+            return Err(BackupManagerError::LimitExceeded {
+                attr: "sync factor".to_string(),
+                current: metadata.sync_factors.len(),
+                max: MAX_SYNC_FACTORS,
+            });
+        }
+
+        if metadata.keys.len() > MAX_BACKUP_ENCRYPTION_KEYS {
+            return Err(BackupManagerError::LimitExceeded {
+                attr: "backup_encryption_key".to_string(),
+                current: metadata.keys.len(),
+                max: MAX_BACKUP_ENCRYPTION_KEYS,
+            });
+        }
 
         Ok(())
     }
@@ -449,27 +469,39 @@ pub struct FoundBackup {
 }
 
 fn get_backup_key(backup_id: &str) -> String {
-    format!("{backup_id}/backup")
-}
-
-fn get_metadata_key(backup_id: &str) -> String {
-    format!("{backup_id}/metadata")
+    backup_id.to_string()
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum BackupManagerError {
     #[error("Failed to upload object to S3: {0:?}")]
     PutObjectError(#[from] SdkError<aws_sdk_s3::operation::put_object::PutObjectError>),
-    #[error("Failed to download object from S3: {0:?}")]
+    #[error("Failed to serialize/deserialize JSON: {0:?}")]
     SerdeJsonError(#[from] serde_json::Error),
     #[error("Failed to download object from S3: {0:?}")]
     GetObjectError(#[from] SdkError<aws_sdk_s3::operation::get_object::GetObjectError>),
+    #[error("Failed to get object metadata from S3: {0:?}")]
+    HeadObjectError(#[from] SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>),
+    #[error("Failed to copy object in S3: {0:?}")]
+    CopyObjectError(SdkError<aws_sdk_s3::operation::copy_object::CopyObjectError>),
     #[error("Failed to convert ByteStream to bytes: {0:?}")]
     ByteStreamError(#[from] aws_sdk_s3::primitives::ByteStreamError),
     #[error("Sync factor must be a keypair")]
     SyncFactorMustBeKeypair,
     #[error("Backup not found")]
     BackupNotFound,
+    #[error("Metadata not found in object metadata")]
+    MetadataNotFound,
+    #[error("Compressed metadata too large ({0} bytes). Maximum size is 2048 bytes.")]
+    MetadataTooLarge(usize),
+    #[error("Compression error: {0}")]
+    CompressionError(String),
+    #[error("Limit exceeded for {attr}: {current}, maximum allowed: {max}")]
+    LimitExceeded {
+        attr: String,
+        current: usize,
+        max: usize,
+    },
     #[error("Factor already exists")]
     FactorAlreadyExists,
     #[error("Factor not found")]
@@ -496,6 +528,63 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    #[test]
+    fn test_factor_limits() {
+        let backup_id = Uuid::new_v4().to_string();
+
+        // Main Factors
+        let mut metadata = BackupMetadata {
+            id: backup_id.clone(),
+            factors: (0..=10) // MAX_MAIN_FACTORS
+                .map(|i| {
+                    Factor::new_oidc_account(
+                        OidcAccountKind::Google {
+                            sub: format!("user_{i}"),
+                            email: format!("user{i}@example.com"),
+                        },
+                        format!("provider_{i}"),
+                    )
+                })
+                .collect(),
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        let result = BackupStorage::validate_factor_limits(&metadata);
+        assert!(matches!(
+            result,
+            Err(BackupManagerError::LimitExceeded { .. })
+        ));
+
+        // Sync Factors
+        metadata.factors = vec![];
+        metadata.sync_factors =
+            (0..=10) // MAX_SYNC_FACTORS
+                .map(|i| Factor::new_ec_keypair(format!("public_key_{i}")))
+                .collect();
+
+        let result = BackupStorage::validate_factor_limits(&metadata);
+        assert!(matches!(
+            result,
+            Err(BackupManagerError::LimitExceeded { .. })
+        ));
+
+        // Backup Encryption Keys
+        metadata.sync_factors = vec![];
+        metadata.keys = (0..=10) // MAX_BACKUP_ENCRYPTION_KEYS
+            .map(|i| BackupEncryptionKey::Prf {
+                encrypted_key: format!("key_{i}"),
+            })
+            .collect();
+
+        let result = BackupStorage::validate_factor_limits(&metadata);
+        assert!(matches!(
+            result,
+            Err(BackupManagerError::LimitExceeded { .. })
+        ));
+    }
 
     #[tokio::test]
     async fn test_create_and_get_backup() {
@@ -556,6 +645,9 @@ mod tests {
             manifest_hash: hex::encode([1u8; 32]),
         };
 
+        // Validate factor limits (asserting validate_factor_limits works as expected)
+        BackupStorage::validate_factor_limits(&backup_metadata).unwrap();
+
         // Create a backup
         backup_storage
             .create(test_backup_data.clone(), &backup_metadata)
@@ -591,25 +683,14 @@ mod tests {
             _ => panic!("Expected PutObjectError"),
         }
 
-        // Try to create a backup with the same ID, when only one of the files exists -
-        // should still return an error
+        // Clean up the test backup
         s3_client
             .delete_object()
             .bucket(environment.s3_bucket())
-            .key(get_metadata_key(&test_backup_id))
+            .key(get_backup_key(&test_backup_id))
             .send()
             .await
             .unwrap();
-        let result = backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
-            .await;
-        assert!(result.is_err());
-        match result {
-            Err(BackupManagerError::PutObjectError(SdkError::ServiceError(err))) => {
-                assert_eq!(err.err().code(), Some("PreconditionFailed"));
-            }
-            _ => panic!("Expected PutObjectError"),
-        }
     }
 
     #[tokio::test]

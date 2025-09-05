@@ -95,7 +95,7 @@ async fn test_end_to_end_readiness() {
 
     // Step 6: Remove the backup (S3 GetObject + DeleteObject)
     backup_storage
-        .get_backup_by_backup_id(TEST_BACKUP_ID)
+        .get_by_backup_id(TEST_BACKUP_ID)
         .await
         .expect("Failed to get backup");
 
