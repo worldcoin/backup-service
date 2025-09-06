@@ -253,13 +253,7 @@ impl AuthHandler {
             .finish_passkey_registration(&user_provided_credential, &passkey_state)?;
 
         let credential_id = verified_passkey.cred_id().clone();
-        let factor = Factor::new_passkey(
-            verified_passkey,
-            serde_json::to_value(credential.clone()).map_err(|err| {
-                tracing::info!(message = "Failed to serialize passkey credential", error = ?err);
-                ErrorResponse::internal_server_error()
-            })?,
-        );
+        let factor = Factor::new_passkey(verified_passkey);
         let factor_to_lookup = FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id));
 
         Ok((factor, factor_to_lookup))
@@ -317,7 +311,6 @@ impl AuthHandler {
             .filter_map(|factor| {
                 if let FactorKind::Passkey {
                     webauthn_credential,
-                    registration: _,
                 } = &factor.kind
                 {
                     Some(webauthn_credential.into())

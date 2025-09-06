@@ -66,8 +66,12 @@ impl Factor {
             id: self.id.clone(),
             created_at: self.created_at.timestamp(),
             kind: match &self.kind {
-                FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
-                    registration: registration.clone(),
+                FactorKind::Passkey {
+                    webauthn_credential,
+                    ..
+                } => ExportedFactorKind::Passkey {
+                    credential_id: serde_plain::to_string(webauthn_credential.cred_id())
+                        .unwrap_or_default(),
                 },
                 FactorKind::OidcAccount {
                     account,
@@ -124,12 +128,7 @@ impl Factor {
 #[allow(clippy::large_enum_variant)]
 pub enum FactorKind {
     #[serde(rename_all = "camelCase")]
-    Passkey {
-        webauthn_credential: Passkey,
-        // Registration object presented by the client when signing up. Used by the client to be
-        // to register the passkey in Turnkey later, not during initial sign up.
-        registration: serde_json::Value,
-    },
+    Passkey { webauthn_credential: Passkey },
     #[serde(rename_all = "camelCase")]
     OidcAccount {
         account: OidcAccountKind,
@@ -182,12 +181,11 @@ impl PartialEq for FactorKind {
 
 impl Factor {
     #[must_use]
-    pub fn new_passkey(webauthn_credential: Passkey, registration: serde_json::Value) -> Self {
+    pub fn new_passkey(webauthn_credential: Passkey) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::Passkey {
                 webauthn_credential,
-                registration,
             },
             created_at: Utc::now(),
         }
@@ -269,12 +267,10 @@ pub struct ExportedFactor {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 #[allow(clippy::large_enum_variant)]
 pub enum ExportedFactorKind {
+    /// For Passkey, we export (using String because of incompatibility with `JsonSchema`):
+    /// - the credential ID (type: `CredentialID`) as a base64-url-safe-no-pad string
     #[serde(rename_all = "camelCase")]
-    Passkey {
-        // Registration object presented by the client when signing up. Used by the client to be
-        // to register the passkey in Turnkey later, not during initial sign up.
-        registration: serde_json::Value,
-    },
+    Passkey { credential_id: String },
     #[serde(rename_all = "camelCase")]
     OidcAccount {
         account: ExportedOidcAccountKind,
@@ -403,11 +399,9 @@ mod tests {
 
         let factor_1 = FactorKind::Passkey {
             webauthn_credential: passkey.clone(),
-            registration: json!([1]),
         };
         let factor_2 = FactorKind::Passkey {
             webauthn_credential: passkey,
-            registration: json!([2]),
         };
 
         assert_eq!(factor_1, factor_2);
