@@ -73,6 +73,7 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 ] }
 uuid = { workspace = true }
 webauthn-rs = { version = "0.5.2", features = [
+  "danger-allow-state-serialisation", # see webauthn.rs for details
   "conditional-ui",
   "workaround-google-passkey-specific-issues",
 ] }

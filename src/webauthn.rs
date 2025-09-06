@@ -1,3 +1,10 @@
+//! This module contains specific logic for `WebAuthn` operations (used for Passkey serialization and deserialization).
+//!
+//! Particularly for the `webauthn-rs` crate we use the `danger-allow-state-serialisation` feature flag. This
+//! is required to serialize and deserialize the `PasskeyRegistration` and `PasskeyAuthentication` structs. It
+//! is safe because the states are kept server-accessible only (stored in the encrypted Challenge token, see `ChallengeManager`).
+//! Reference: <https://docs.rs/webauthn-rs/latest/webauthn_rs/#allow-serialising-registration-and-authentication-state>
+
 use crate::types::ErrorResponse;
 use serde_json::Value;
 use webauthn_rs::prelude::PublicKeyCredential;
