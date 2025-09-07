@@ -13,8 +13,8 @@ use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
-    redis_cache::RedisCacheManager,
     factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
+    redis_cache::RedisCacheManager,
     types::{
         backup_metadata::{BackupMetadata, FactorKind},
         Authorization, Environment, ErrorResponse,
