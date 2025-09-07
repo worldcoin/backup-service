@@ -36,10 +36,12 @@ async fn test_end_to_end_readiness() {
         environment,
         dynamodb_client.clone(),
     ));
-    let dynamo_cache_manager = Arc::new(backup_service::dynamo_cache::DynamoCacheManager::new(
+    let client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
+    let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
+    let redis_cache_manager = Arc::new(backup_service::redis_cache::RedisCacheManager::new(
         environment,
         environment.cache_default_ttl(),
-        dynamodb_client.clone(),
+        redis_pool,
     ));
 
     const TEST_BACKUP_ID: &str = "canary_backup";
@@ -47,14 +49,14 @@ async fn test_end_to_end_readiness() {
     // Step 0: Delete the `TEST_BACKUP` if it exists (this is clean up in case a previous test failed mid-way)
     let _ = backup_storage.delete_backup(TEST_BACKUP_ID).await; // we ignore the result because it's fine (even expected) that there's no backup to delete
 
-    // Step 1: Check Dynamo Cache Manager (PutItem)
-    let token = dynamo_cache_manager
+    // Step 1: Check Redis Cache Manager (CREATE)
+    let token = redis_cache_manager
         .create_sync_factor_token(TEST_BACKUP_ID.to_string())
         .await
         .expect("Failed to create sync factor token");
 
-    // Step 2: Check Dynamo Cache Manager (GetItem + UpdateItem)
-    dynamo_cache_manager
+    // Step 2: Check Redis Cache Manager (GET + UPDATE)
+    redis_cache_manager
         .use_sync_factor_token(token)
         .await
         .expect("Failed to use sync factor token");

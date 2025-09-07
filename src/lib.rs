@@ -4,7 +4,7 @@ pub mod attestation_gateway;
 pub mod auth;
 pub mod backup_storage;
 pub mod challenge_manager;
-pub mod dynamo_cache;
+pub mod redis_cache;
 pub mod factor_lookup;
 pub mod kms_jwe;
 pub mod oidc_nonce_verifier;

@@ -1,7 +1,6 @@
 use crate::attestation_gateway::AttestationGatewayError;
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
-use crate::dynamo_cache::DynamoCacheError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
 use crate::turnkey_activity::TurnkeyActivityError;
@@ -258,38 +257,11 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);
                 ErrorResponse::bad_request("oidc_token_parse_error")
             }
-            OidcTokenVerifierError::DynamoCacheError(e) => e.into(),
+            OidcTokenVerifierError::RedisCacheError(e) => e.into(),
         }
     }
 }
 
-impl From<DynamoCacheError> for ErrorResponse {
-    fn from(err: DynamoCacheError) -> Self {
-        match &err {
-            DynamoCacheError::DynamoDbPutError(_)
-            | DynamoCacheError::DynamoDbGetError(_)
-            | DynamoCacheError::DynamoDbUpdateError(_)
-            | DynamoCacheError::MalformedToken
-            | DynamoCacheError::ParseBackupIdError
-            | DynamoCacheError::ParseExpirationError => {
-                tracing::error!(message = "Sync factor token error", error = ?err);
-                ErrorResponse::internal_server_error()
-            }
-            DynamoCacheError::TokenNotFound => {
-                tracing::info!(message = "Sync factor token not found", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_not_found")
-            }
-            DynamoCacheError::TokenExpired => {
-                tracing::info!(message = "Sync factor token expired", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_expired")
-            }
-            DynamoCacheError::AlreadyUsed => {
-                tracing::info!(message = "The token or challenge has already been used", error = ?err);
-                ErrorResponse::bad_request("already_used")
-            }
-        }
-    }
-}
 
 impl From<TurnkeyActivityError> for ErrorResponse {
     fn from(err: TurnkeyActivityError) -> Self {
@@ -321,5 +293,32 @@ impl From<RedisError> for ErrorResponse {
     fn from(err: RedisError) -> Self {
         tracing::error!(message = format!("Redis error: {err}"), error = ?err);
         ErrorResponse::internal_server_error()
+    }
+}
+
+impl From<crate::redis_cache::RedisCacheError> for ErrorResponse {
+    fn from(err: crate::redis_cache::RedisCacheError) -> Self {
+        match &err {
+            crate::redis_cache::RedisCacheError::RedisError(_) => {
+                tracing::error!(message = "Redis cache error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            crate::redis_cache::RedisCacheError::ParseError(_) => {
+                tracing::error!(message = "Redis cache parse error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            crate::redis_cache::RedisCacheError::TokenNotFound => {
+                tracing::info!(message = "Token not found", error = ?err);
+                ErrorResponse::bad_request("token_not_found")
+            }
+            crate::redis_cache::RedisCacheError::AlreadyUsed => {
+                tracing::info!(message = "Token already used", error = ?err);
+                ErrorResponse::bad_request("already_used")
+            }
+            crate::redis_cache::RedisCacheError::TokenExpired => {
+                tracing::info!(message = "Token expired", error = ?err);
+                ErrorResponse::bad_request("token_expired")
+            }
+        }
     }
 }

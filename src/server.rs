@@ -1,6 +1,6 @@
 use crate::attestation_gateway::AttestationGateway;
 use crate::challenge_manager::ChallengeManager;
-use crate::dynamo_cache::DynamoCacheManager;
+use crate::redis_cache::RedisCacheManager;
 use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::routes;
@@ -26,7 +26,7 @@ pub async fn start(
     backup_storage: Arc<BackupStorage>,
     factor_lookup: Arc<FactorLookup>,
     oidc_token_verifier: Arc<OidcTokenVerifier>,
-    dynamo_cache_manager: Arc<DynamoCacheManager>,
+    redis_cache_manager: Arc<RedisCacheManager>,
     auth_handler: AuthHandler,
     attestation_gateway: Arc<AttestationGateway>,
     redis_pool: ConnectionManager,
@@ -63,7 +63,7 @@ pub async fn start(
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
-        .layer(Extension(dynamo_cache_manager))
+        .layer(Extension(redis_cache_manager))
         .layer(Extension(auth_handler))
         .layer(Extension(attestation_gateway))
         .layer(Extension(redis_pool))

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::dynamo_cache::DynamoCacheManager;
+use crate::redis_cache::RedisCacheManager;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::{Authorization, ErrorResponse};
 use axum::{Extension, Json};
@@ -33,7 +33,7 @@ pub struct AddSyncFactorResponse {
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
-    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
@@ -52,7 +52,7 @@ pub async fn handler(
     let sync_factor_to_lookup = validation_result.factor_to_lookup;
 
     // Step 2: Verify the sync factor token and extract the backup ID
-    let backup_id = dynamo_cache_manager
+    let backup_id = redis_cache_manager
         .use_sync_factor_token(request.sync_factor_token.to_string())
         .await?;
 
@@ -75,7 +75,7 @@ pub async fn handler(
             tracing::error!(message = "Failed to delete factor from lookup table after failed sync factor addition.", error = ?e, sync_factor_pk = sync_factor_to_lookup.primary_key());
         }
 
-        if let Err(e) = dynamo_cache_manager
+        if let Err(e) = redis_cache_manager
             .unuse_sync_factor_token(request.sync_factor_token.to_string())
             .await
         {

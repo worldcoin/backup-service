@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::dynamo_cache::DynamoCacheManager;
+use crate::redis_cache::RedisCacheManager;
 use crate::factor_lookup::FactorScope;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::{Authorization, ErrorResponse};
@@ -42,7 +42,7 @@ pub fn docs(op: TransformOperation) -> TransformOperation {
 /// Request to retrieve a backup using a solved challenge.
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
-    Extension(dynamo_cache_manager): Extension<Arc<DynamoCacheManager>>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
@@ -64,7 +64,7 @@ pub async fn handler(
     };
 
     // Step 3: Create a sync factor token to allow the user to add a new sync factor later
-    let sync_factor_token = dynamo_cache_manager
+    let sync_factor_token = redis_cache_manager
         .create_sync_factor_token(backup_metadata.id.clone())
         .await?;
 

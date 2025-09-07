@@ -13,7 +13,7 @@ use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
-    dynamo_cache::DynamoCacheManager,
+    redis_cache::RedisCacheManager,
     factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
     types::{
         backup_metadata::{BackupMetadata, FactorKind},
@@ -31,7 +31,7 @@ pub struct ValidationResult {
 #[derive(Clone)]
 pub struct AuthHandler {
     backup_storage: Arc<BackupStorage>,
-    dynamo_cache_manager: Arc<DynamoCacheManager>,
+    redis_cache_manager: Arc<RedisCacheManager>,
     challenge_manager: Arc<ChallengeManager>,
     environment: Environment,
     factor_lookup: Arc<FactorLookup>,
@@ -41,7 +41,7 @@ pub struct AuthHandler {
 impl AuthHandler {
     pub fn new(
         backup_storage: Arc<BackupStorage>,
-        dynamo_cache_manager: Arc<DynamoCacheManager>,
+        redis_cache_manager: Arc<RedisCacheManager>,
         challenge_manager: Arc<ChallengeManager>,
         environment: Environment,
         factor_lookup: Arc<FactorLookup>,
@@ -49,7 +49,7 @@ impl AuthHandler {
     ) -> Self {
         Self {
             backup_storage,
-            dynamo_cache_manager,
+            redis_cache_manager,
             challenge_manager,
             environment,
             factor_lookup,
@@ -131,7 +131,7 @@ impl AuthHandler {
         };
 
         // Step 5: Track the used challenge to prevent replay attacks
-        self.dynamo_cache_manager
+        self.redis_cache_manager
             .use_challenge_token(challenge_token)
             .await?;
 
@@ -210,7 +210,7 @@ impl AuthHandler {
 
         // Step 5: Mark the challenge token as used to prevent replay attacks
         // This ensures each challenge can only be used once
-        self.dynamo_cache_manager
+        self.redis_cache_manager
             .use_challenge_token(challenge_token)
             .await?;
 

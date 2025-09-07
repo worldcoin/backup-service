@@ -117,20 +117,24 @@ pub async fn get_test_router(
         environment,
         dynamodb_client.clone(),
     ));
-    let dynamo_cache_manager = Arc::new(backup_service::dynamo_cache::DynamoCacheManager::new(
+    
+    let client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
+    let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
+    
+    let redis_cache_manager = Arc::new(backup_service::redis_cache::RedisCacheManager::new(
         environment,
         environment.cache_default_ttl(),
-        dynamodb_client.clone(),
+        redis_pool.clone(),
     ));
     let oidc_token_verifier =
         Arc::new(backup_service::oidc_token_verifier::OidcTokenVerifier::new(
             environment,
-            dynamo_cache_manager.clone(),
+            redis_cache_manager.clone(),
         ));
 
     let auth_handler = AuthHandler::new(
         backup_storage.clone(),
-        dynamo_cache_manager.clone(),
+        redis_cache_manager.clone(),
         challenge_manager.clone(),
         environment,
         factor_lookup.clone(),
@@ -156,7 +160,7 @@ pub async fn get_test_router(
         .layer(Extension(backup_storage))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
-        .layer(Extension(dynamo_cache_manager))
+        .layer(Extension(redis_cache_manager))
         .layer(Extension(auth_handler))
         .layer(Extension(attestation_gateway))
         .layer(Extension(redis_pool))
