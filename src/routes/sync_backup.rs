@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
-use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
 use crate::normalize_hex_32;
 use crate::types::{Authorization, Environment, ErrorResponse};
+use crate::utils::{extract_fields_from_multipart, release_redis_lock, set_redis_lock};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
+use redis::aio::ConnectionManager;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,10 +42,14 @@ pub struct SyncBackupResponse {
     pub backup_id: String,
 }
 
+const SYNC_BACKUP_LOCK_KEY: &str = "sync_backup_lock:";
+const SYNC_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
+
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    Extension(mut redis): Extension<ConnectionManager>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -83,15 +88,36 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Update the backup with the new backup file
-    backup_storage
+    // Step 3: Acquire a lock on the backup
+    let lock_acquired = set_redis_lock(
+        SYNC_BACKUP_LOCK_KEY,
+        &backup_id,
+        SYNC_BACKUP_LOCK_TTL,
+        &mut redis,
+    )
+    .await?;
+
+    if !lock_acquired {
+        tracing::info!(message = "Failed to acquire lock on the backup");
+        return Err(ErrorResponse::bad_request("failed_to_acquire_lock"));
+    }
+
+    // Step 4: Update the backup with the new backup file
+    let update_result = backup_storage
         .update_backup(
             &backup_id,
             backup.to_vec(),
             request.current_manifest_hash,
             request.new_manifest_hash,
         )
-        .await?;
+        .await;
+
+    // Step 5: Release the lock regardless of the result of the update
+    release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, &mut redis).await?;
+
+    if let Err(e) = update_result {
+        return Err(e.into());
+    }
 
     Ok(Json(SyncBackupResponse { backup_id }))
 }

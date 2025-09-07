@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
-use crate::axum_utils::extract_fields_from_multipart;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
@@ -9,6 +8,7 @@ use crate::normalize_hex_32;
 use crate::types::backup_metadata::BackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
+use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;

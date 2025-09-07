@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use openidconnect::DiscoveryError;
+use redis::RedisError;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::error::Error;
@@ -305,5 +306,12 @@ impl From<AttestationGatewayError> for ErrorResponse {
                 ErrorResponse::bad_request("invalid_attestation_token")
             }
         }
+    }
+}
+
+impl From<RedisError> for ErrorResponse {
+    fn from(err: RedisError) -> Self {
+        tracing::error!(message = format!("Redis error: {err}"), error = ?err);
+        ErrorResponse::internal_server_error()
     }
 }
