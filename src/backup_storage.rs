@@ -171,7 +171,7 @@ impl BackupStorage {
         };
 
         if metadata.manifest_hash != current_manifest_hash {
-            return Err(BackupManagerError::UpdateConflict);
+            return Err(BackupManagerError::ManifestHashMismatch);
         }
 
         metadata.manifest_hash = new_manifest_hash;
@@ -481,7 +481,7 @@ pub enum BackupManagerError {
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
     #[error("Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first.")]
-    UpdateConflict,
+    ManifestHashMismatch,
 }
 
 #[cfg(test)]

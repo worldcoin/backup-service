@@ -98,8 +98,8 @@ pub async fn handler(
     .await?;
 
     if !lock_acquired {
-        tracing::info!(message = "Failed to acquire lock on the backup");
-        return Err(ErrorResponse::bad_request("failed_to_acquire_lock"));
+        tracing::info!(message = "Rejecting conlicting update in progress");
+        return Err(ErrorResponse::conflict("update_in_progress"));
     }
 
     // Step 4: Update the backup with the new backup file
@@ -113,7 +113,12 @@ pub async fn handler(
         .await;
 
     // Step 5: Release the lock regardless of the result of the update
-    release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, &mut redis).await?;
+    let _ = release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, &mut redis)
+        .await
+        .map_err(|e| {
+            // log the error but we continue anyway
+            tracing::error!(message = "Failed to release lock on the backup", error = ?e);
+        });
 
     if let Err(e) = update_result {
         return Err(e.into());

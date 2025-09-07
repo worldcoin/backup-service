@@ -49,6 +49,14 @@ impl ErrorResponse {
             status: StatusCode::UNAUTHORIZED,
         }
     }
+
+    #[must_use]
+    pub fn conflict(message: &str) -> Self {
+        Self {
+            error: message.to_string(),
+            status: StatusCode::CONFLICT,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -181,11 +189,11 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Encryption key not found", error = ?err);
                 ErrorResponse::bad_request("encryption_key_not_found")
             }
-            BackupManagerError::UpdateConflict => {
-                tracing::info!(message = "Update conflict. Provided manifest hash does not match the current manifest hash.");
+            BackupManagerError::ManifestHashMismatch => {
+                tracing::info!(message = BackupManagerError::ManifestHashMismatch.to_string());
                 ErrorResponse {
-                    error: "update_conflict".to_string(),
-                    status: StatusCode::CONFLICT,
+                    error: "manifest_hash_mismatch".to_string(),
+                    status: StatusCode::PRECONDITION_FAILED,
                 }
             }
         }
