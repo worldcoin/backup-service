@@ -31,7 +31,6 @@ use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
-use redis::aio::ConnectionManager;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -117,15 +116,12 @@ pub async fn get_test_router(
         environment,
         dynamodb_client.clone(),
     ));
-    
-    let client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
-    let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
-    
-    let redis_cache_manager = Arc::new(backup_service::redis_cache::RedisCacheManager::new(
-        environment,
-        environment.cache_default_ttl(),
-        redis_pool.clone(),
-    ));
+
+    let redis_cache_manager = Arc::new(
+        backup_service::redis_cache::RedisCacheManager::new(environment)
+            .await
+            .unwrap(),
+    );
     let oidc_token_verifier =
         Arc::new(backup_service::oidc_token_verifier::OidcTokenVerifier::new(
             environment,
@@ -149,9 +145,6 @@ pub async fn get_test_router(
         enabled: true,
     }));
 
-    let client: redis::Client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
-    let redis_pool = ConnectionManager::new(client).await.unwrap();
-
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
         .layer(Extension(environment))
@@ -163,7 +156,6 @@ pub async fn get_test_router(
         .layer(Extension(redis_cache_manager))
         .layer(Extension(auth_handler))
         .layer(Extension(attestation_gateway))
-        .layer(Extension(redis_pool))
 }
 
 pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Response {

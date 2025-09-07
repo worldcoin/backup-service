@@ -1,5 +1,5 @@
-use crate::redis_cache::{RedisCacheError, RedisCacheManager};
 use crate::oidc_nonce_verifier::OidcNonceVerifier;
+use crate::redis_cache::{RedisCacheError, RedisCacheManager};
 use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
@@ -22,7 +22,7 @@ type JwkCache = Arc<RwLock<HashMap<JsonWebKeySetUrl, JwkCacheEntry>>>;
 /// Verifier for OIDC tokens.
 ///
 /// Downloads the public keys from the OIDC provider and verifies the token, returning the claims.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OidcTokenVerifier {
     environment: Environment,
     redis_cache_manager: Arc<RedisCacheManager>,
@@ -188,8 +188,6 @@ fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::types::OidcProvider;
     use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
@@ -210,13 +208,7 @@ mod tests {
     async fn get_redis_cache_manager() -> Arc<RedisCacheManager> {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
-        let client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
-        let redis = redis::aio::ConnectionManager::new(client).await.unwrap();
-        Arc::new(RedisCacheManager::new(
-            environment,
-            Duration::from_secs(60 * 60 * 24),
-            redis,
-        ))
+        Arc::new(RedisCacheManager::new(environment).await.unwrap())
     }
 
     async fn verify_token_for_provider(

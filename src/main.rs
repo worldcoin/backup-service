@@ -3,20 +3,14 @@ use backup_service::attestation_gateway::{AttestationGateway, AttestationGateway
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
-use backup_service::redis_cache::RedisCacheManager;
 use backup_service::factor_lookup::FactorLookup;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::oidc_token_verifier::OidcTokenVerifier;
+use backup_service::redis_cache::RedisCacheManager;
 use backup_service::server;
 use backup_service::types::Environment;
 use dotenvy::dotenv;
-use redis::aio::ConnectionManager;
 use std::sync::Arc;
-
-async fn build_redis_pool(redis_url: String) -> redis::RedisResult<ConnectionManager> {
-    let client: redis::Client = redis::Client::open(redis_url)?;
-    ConnectionManager::new(client).await
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,19 +38,13 @@ async fn main() -> anyhow::Result<()> {
         kms_jwe,
     ));
 
-    let redis_pool = build_redis_pool(environment.redis_endpoint_url())
-        .await
-        .expect("failed to connect to Redis.");
-
-    tracing::info!("✅ Redis connection pool built successfully.");
-
     let backup_storage = Arc::new(BackupStorage::new(environment, s3_client.clone()));
     let factor_lookup = Arc::new(FactorLookup::new(environment, dynamodb_client.clone()));
-    let redis_cache_manager = Arc::new(RedisCacheManager::new(
-        environment,
-        environment.cache_default_ttl(),
-        redis_pool.clone(),
-    ));
+    let redis_cache_manager = Arc::new(
+        RedisCacheManager::new(environment)
+            .await
+            .expect("failed to build RedisCacheManager"),
+    );
 
     let oidc_token_verifier = Arc::new(OidcTokenVerifier::new(
         environment,
@@ -82,7 +70,6 @@ async fn main() -> anyhow::Result<()> {
         redis_cache_manager,
         auth_handler,
         attestation_gateway,
-        redis_pool,
     )
     .await
 }

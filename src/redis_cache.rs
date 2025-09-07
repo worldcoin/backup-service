@@ -3,7 +3,7 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
 use redis::aio::ConnectionManager;
-use redis::{AsyncCommands, RedisError};
+use redis::{AsyncTypedCommands, RedisError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -15,29 +15,25 @@ use std::time::Duration;
 /// - It is also used to prevent replay attacks by storing used challenge tokens.
 #[derive(Clone)]
 pub struct RedisCacheManager {
-    environment: Environment,
     default_ttl: Duration,
     redis: ConnectionManager,
 }
 
-impl std::fmt::Debug for RedisCacheManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedisCacheManager")
-            .field("environment", &self.environment)
-            .field("default_ttl", &self.default_ttl)
-            .field("redis", &"<ConnectionManager>")
-            .finish()
-    }
-}
-
 impl RedisCacheManager {
-    #[must_use]
-    pub fn new(environment: Environment, default_ttl: Duration, redis: ConnectionManager) -> Self {
-        Self {
-            environment,
-            default_ttl,
+    /// Creates a new `RedisCacheManager` instance.
+    ///
+    /// # Errors
+    /// * `RedisError` - if the Redis connection cannot be established
+    pub async fn new(environment: Environment) -> Result<Self, RedisError> {
+        let client: redis::Client = redis::Client::open(environment.redis_endpoint_url())?;
+        let redis = ConnectionManager::new(client).await?;
+
+        tracing::info!("✅ Redis connection pool built successfully.");
+
+        Ok(Self {
+            default_ttl: environment.cache_default_ttl(),
             redis,
-        }
+        })
     }
 
     /// Creates a new sync factor token that allows to update `backup_id` and stores it
@@ -243,7 +239,7 @@ impl RedisCacheManager {
     pub async fn is_ready(&self) -> bool {
         // Test Redis connection with a simple ping
         let mut redis = self.redis.clone();
-        match redis.ping::<String>().await {
+        match redis.ping().await {
             Ok(_) => true,
             Err(e) => {
                 tracing::error!("System is not ready. RedisCacheManager (ping): {:?}", e);
@@ -291,17 +287,10 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    async fn get_test_redis_client() -> ConnectionManager {
-        let environment = Environment::development(None);
-        let client = redis::Client::open(environment.redis_endpoint_url()).unwrap();
-        ConnectionManager::new(client).await.unwrap()
-    }
-
     #[tokio::test]
     async fn test_create_and_use_token() {
-        let redis = get_test_redis_client().await;
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment, Duration::from_secs(60), redis);
+        let token_manager = RedisCacheManager::new(environment).await.unwrap();
 
         let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
 
@@ -325,9 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_use_nonexistent_token() {
-        let redis = get_test_redis_client().await;
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment, Duration::from_secs(60), redis);
+        let token_manager = RedisCacheManager::new(environment).await.unwrap();
 
         // Try to use a non-existent token
         let token = format!("nonexistent_token_{}", uuid::Uuid::new_v4());
@@ -337,14 +325,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_expiration() {
-        let redis = get_test_redis_client().await;
         let environment = Environment::development(None);
         // Set a very short expiration time
-        let token_manager = RedisCacheManager::new(
-            environment,
-            Duration::from_secs(1), // 1 second expiration
-            redis,
-        );
+        let token_manager = RedisCacheManager::new(environment).await.unwrap();
 
         let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
 
@@ -364,9 +347,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prevent_challenge_token_reuse_replay_attack() {
-        let redis = get_test_redis_client().await;
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment, Duration::from_secs(60), redis);
+        let token_manager = RedisCacheManager::new(environment).await.unwrap();
 
         let challenge_token = format!("my_one_time_challenge_token_{}", uuid::Uuid::new_v4());
 
