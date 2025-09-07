@@ -270,13 +270,6 @@ impl Environment {
     }
 
     #[must_use]
-    pub fn cache_table_name(&self) -> &'static str {
-        match self {
-            Self::Production | Self::Staging | Self::Development { .. } => "backup-service-cache",
-        }
-    }
-
-    #[must_use]
     pub const fn attestation_gateway_host(&self) -> &str {
         match self {
             Self::Production => "https://attestation.worldcoin.org",

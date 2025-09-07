@@ -5,11 +5,11 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
 use crate::normalize_hex_32;
+use crate::redis_cache::RedisCacheManager;
 use crate::types::{Authorization, Environment, ErrorResponse};
-use crate::utils::{extract_fields_from_multipart, release_redis_lock, set_redis_lock};
+use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use redis::aio::ConnectionManager;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +49,7 @@ pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    Extension(mut redis): Extension<ConnectionManager>,
+    Extension(redis_cache_manager): Extension<RedisCacheManager>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -89,13 +89,9 @@ pub async fn handler(
         .await?;
 
     // Step 3: Acquire a lock on the backup
-    let lock_acquired = set_redis_lock(
-        SYNC_BACKUP_LOCK_KEY,
-        &backup_id,
-        SYNC_BACKUP_LOCK_TTL,
-        &mut redis,
-    )
-    .await?;
+    let lock_acquired = redis_cache_manager
+        .set_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, Some(SYNC_BACKUP_LOCK_TTL))
+        .await?;
 
     if !lock_acquired {
         tracing::info!(message = "Rejecting conlicting update in progress");
@@ -113,7 +109,8 @@ pub async fn handler(
         .await;
 
     // Step 5: Release the lock regardless of the result of the update
-    let _ = release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, &mut redis)
+    let _ = redis_cache_manager
+        .release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id)
         .await
         .map_err(|e| {
             // log the error but we continue anyway

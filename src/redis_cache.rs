@@ -3,7 +3,7 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
 use redis::aio::ConnectionManager;
-use redis::{AsyncTypedCommands, RedisError};
+use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, SetExpiry, SetOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -233,6 +233,53 @@ impl RedisCacheManager {
             .expire(&token_hash, i64::from(long_ttl_seconds))
             .await?;
 
+        Ok(())
+    }
+
+    /// Sets a lock in Redis for a given identifier.
+    ///
+    /// # Errors
+    /// Returns `RedisError` if the lock cannot be set in Redis.
+    pub async fn set_redis_lock(
+        &self,
+        prefix: &str,
+        identifier: &str,
+        ttl_seconds: Option<u64>,
+    ) -> Result<bool, RedisError> {
+        let request_hash_lock_options = SetOptions::default()
+            .conditional_set(ExistenceCheck::NX)
+            .with_expiration(SetExpiry::EX(
+                ttl_seconds.unwrap_or(self.default_ttl.as_secs()),
+            ));
+
+        let mut redis = self.redis.clone();
+
+        let result = redis
+            .set_options::<String, bool>(
+                format!("{prefix}{identifier}"),
+                true,
+                request_hash_lock_options,
+            )
+            .await?;
+
+        let lock_set = result.is_some() && result.unwrap_or_default() == "OK";
+
+        Ok(lock_set)
+    }
+
+    /// Releases a lock in Redis for a given identifier.
+    ///
+    /// Will not return an error if the lock does not exist.
+    ///
+    /// # Errors
+    /// Returns `RedisError` if the lock cannot be released in Redis.
+    pub async fn release_redis_lock(
+        &self,
+        prefix: &str,
+        identifier: &str,
+    ) -> Result<(), RedisError> {
+        let mut redis = self.redis.clone();
+        redis.del(format!("{prefix}{identifier}")).await?;
         Ok(())
     }
 

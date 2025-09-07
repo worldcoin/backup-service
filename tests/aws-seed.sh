@@ -17,17 +17,4 @@ awslocal dynamodb create-table \
   --region us-east-1 \
   --provisioned-throughput ReadCapacityUnits=10,WriteCapacityUnits=5
 
-# dynamodb for cache
-awslocal dynamodb create-table \
-    --table-name backup-service-cache \
-    --key-schema AttributeName=PK,KeyType=HASH \
-    --attribute-definitions \
-        AttributeName=PK,AttributeType=S  \
-  --region us-east-1 \
-  --provisioned-throughput ReadCapacityUnits=10,WriteCapacityUnits=5
-
-awslocal dynamodb update-time-to-live \
-  --table-name backup-service-cache \
-  --time-to-live-specification "Enabled=true,AttributeName=ExpiresAt"
-
 echo "AWS LocalStack resources initialized successfully!"
