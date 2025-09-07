@@ -121,6 +121,7 @@ async fn test_delete_backup_with_incorrect_signature() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    tracing::info!("create_response: {:?}", create_response);
     let backup_id = create_response["backupId"].as_str().unwrap();
 
     // Get a delete backup challenge
