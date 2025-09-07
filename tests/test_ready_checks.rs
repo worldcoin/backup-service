@@ -37,9 +37,12 @@ async fn test_end_to_end_readiness() {
         dynamodb_client.clone(),
     ));
     let redis_cache_manager = Arc::new(
-        backup_service::redis_cache::RedisCacheManager::new(environment)
-            .await
-            .unwrap(),
+        backup_service::redis_cache::RedisCacheManager::new(
+            environment,
+            environment.cache_default_ttl(),
+        )
+        .await
+        .unwrap(),
     );
 
     const TEST_BACKUP_ID: &str = "canary_backup";

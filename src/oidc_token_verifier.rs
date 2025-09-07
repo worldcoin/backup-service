@@ -208,7 +208,11 @@ mod tests {
     async fn get_redis_cache_manager() -> Arc<RedisCacheManager> {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
-        Arc::new(RedisCacheManager::new(environment).await.unwrap())
+        Arc::new(
+            RedisCacheManager::new(environment, environment.cache_default_ttl())
+                .await
+                .unwrap(),
+        )
     }
 
     async fn verify_token_for_provider(

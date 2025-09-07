@@ -118,9 +118,12 @@ pub async fn get_test_router(
     ));
 
     let redis_cache_manager = Arc::new(
-        backup_service::redis_cache::RedisCacheManager::new(environment)
-            .await
-            .unwrap(),
+        backup_service::redis_cache::RedisCacheManager::new(
+            environment,
+            environment.cache_default_ttl(),
+        )
+        .await
+        .unwrap(),
     );
     let oidc_token_verifier =
         Arc::new(backup_service::oidc_token_verifier::OidcTokenVerifier::new(

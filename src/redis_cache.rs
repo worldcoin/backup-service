@@ -1,7 +1,6 @@
 use crate::types::{Environment, OidcProvider};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::Utc;
 use redis::aio::ConnectionManager;
 use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, SetExpiry, SetOptions};
 use serde::{Deserialize, Serialize};
@@ -22,24 +21,23 @@ pub struct RedisCacheManager {
 impl RedisCacheManager {
     /// Creates a new `RedisCacheManager` instance.
     ///
+    /// # Arguments
+    /// - `environment`: The environment to use for the `RedisCacheManager`
+    /// - `default_ttl`: The default TTL for cached values. Note we could derive this from the environment, but it's useful to be able to override it for testing.
+    ///
     /// # Errors
     /// * `RedisError` - if the Redis connection cannot be established
-    pub async fn new(environment: Environment) -> Result<Self, RedisError> {
+    pub async fn new(environment: Environment, default_ttl: Duration) -> Result<Self, RedisError> {
         let client: redis::Client = redis::Client::open(environment.redis_endpoint_url())?;
         let redis = ConnectionManager::new(client).await?;
 
         tracing::info!("✅ Redis connection pool built successfully.");
 
-        Ok(Self {
-            default_ttl: environment.cache_default_ttl(),
-            redis,
-        })
+        Ok(Self { default_ttl, redis })
     }
 
     /// Creates a new sync factor token that allows to update `backup_id` and stores it
-    /// in the `Redis` database. The token is returned to the caller.
-    ///
-    /// Sync Factor Tokens are prefixed in Redis with `syncFactorToken#`
+    /// in the cache. The token is returned to the caller.
     ///
     /// # Errors
     /// * `RedisCacheError::RedisError` - if the token cannot be inserted into the Redis database
@@ -52,21 +50,15 @@ impl RedisCacheManager {
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut token_bytes);
         let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
 
-        // Hash the token for storage
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
-        // Calculate TTL in seconds
         let ttl_seconds = self.default_ttl.as_secs();
 
-        // Create token data
         let token_data = SyncFactorTokenData {
             backup_id,
             is_used: false,
-            created_at: Utc::now().timestamp_millis(),
-            expires_at: Utc::now().timestamp() + i64::try_from(ttl_seconds).unwrap_or(i64::MAX),
         };
 
-        // Serialize and store in Redis with TTL
         let serialized_data = serde_json::to_string(&token_data)?;
         let mut redis = self.redis.clone();
         redis
@@ -98,48 +90,29 @@ impl RedisCacheManager {
     /// * `RedisCacheError::TokenExpired` - if the token has expired
     /// * `RedisCacheError::ParseError` - if the token data cannot be parsed
     pub async fn use_sync_factor_token(&self, token: String) -> Result<String, RedisCacheError> {
-        // Hash the token for lookup
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
-        // Get the token data from Redis
         let mut redis = self.redis.clone();
         let data: Option<String> = redis.get(&token_hash).await?;
         let Some(data) = data else {
             return Err(RedisCacheError::TokenNotFound);
         };
 
-        // Parse the token data
         let mut token_data: SyncFactorTokenData = serde_json::from_str(&data)?;
 
-        // Check if the token is already used
         if token_data.is_used {
             return Err(RedisCacheError::AlreadyUsed);
         }
 
-        // Check if the token has expired
-        if Utc::now().timestamp() > token_data.expires_at {
-            return Err(RedisCacheError::TokenExpired);
-        }
-
-        // Mark as used and update in Redis atomically using a transaction
         token_data.is_used = true;
         let updated_data = serde_json::to_string(&token_data)?;
 
-        // For atomic operations in Redis with async connections, we use optimistic locking
-        // First check if token exists and is not used
-        let current_data: Option<String> = redis.get(&token_hash).await?;
-        let Some(current) = current_data else {
-            return Err(RedisCacheError::TokenNotFound);
-        };
-
-        let current_token: SyncFactorTokenData = serde_json::from_str(&current)?;
-        if current_token.is_used {
-            return Err(RedisCacheError::AlreadyUsed);
-        }
-
-        // Update the token to mark as used
         redis
-            .set_ex(&token_hash, &updated_data, self.default_ttl.as_secs())
+            .set_options(
+                &token_hash,
+                &updated_data,
+                SetOptions::default().with_expiration(SetExpiry::KEEPTTL), // we can keep the original TTL, after which the token is deleted
+            )
             .await?;
 
         Ok(token_data.backup_id)
@@ -155,23 +128,24 @@ impl RedisCacheManager {
     pub async fn unuse_sync_factor_token(&self, token: String) -> Result<(), RedisCacheError> {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
-        // Get current data
         let mut redis = self.redis.clone();
         let data: Option<String> = redis.get(&token_hash).await?;
         if let Some(data) = data {
             let mut token_data: SyncFactorTokenData = serde_json::from_str(&data)?;
             token_data.is_used = false;
             let updated_data = serde_json::to_string(&token_data)?;
-
-            // Update the token
-            let ttl =
-                u64::try_from((token_data.expires_at - Utc::now().timestamp()).max(0)).unwrap_or(0);
-            redis.set_ex(&token_hash, updated_data, ttl).await?;
+            redis
+                .set_options(
+                    &token_hash,
+                    updated_data,
+                    SetOptions::default().with_expiration(SetExpiry::KEEPTTL),
+                )
+                .await?;
         }
         Ok(())
     }
 
-    /// Records a hashed challenge token as used in `Redis` to prevent replay attacks.
+    /// Records a hashed challenge token as used in redis to prevent replay attacks.
     ///
     /// # Errors
     /// * `RedisCacheError::RedisError` - if the token cannot be inserted into Redis
@@ -185,16 +159,19 @@ impl RedisCacheManager {
 
         // Try to set the token with NX (not exists) option to prevent duplicates
         let mut redis = self.redis.clone();
-        let result: bool = redis.set_nx(&token_hash, "used").await?;
+        let result = redis
+            .set_options(
+                &token_hash,
+                true,
+                SetOptions::default()
+                    .with_expiration(SetExpiry::EX(ttl_seconds))
+                    .conditional_set(ExistenceCheck::NX), // critical to ensure tokens are only used once
+            )
+            .await?;
 
-        if !result {
+        if result.is_none() || result.unwrap_or_default() != "OK" {
             return Err(RedisCacheError::AlreadyUsed);
         }
-
-        // Set TTL separately since SET NX doesn't support EX in all Redis versions
-        redis
-            .expire(&token_hash, i64::try_from(ttl_seconds).unwrap_or(i64::MAX))
-            .await?;
 
         Ok(())
     }
@@ -220,18 +197,19 @@ impl RedisCacheManager {
 
         // Try to set the nonce with NX (not exists) option to prevent duplicates
         let mut redis = self.redis.clone();
-        let result: bool = redis
-            .set_nx(&token_hash, Utc::now().date_naive().to_string())
+        let result = redis
+            .set_options(
+                &token_hash,
+                true,
+                SetOptions::default()
+                    .with_expiration(SetExpiry::EX(long_ttl_seconds))
+                    .conditional_set(ExistenceCheck::NX), // critical to ensure it's only used once
+            )
             .await?;
 
-        if !result {
+        if result.is_none() || result.unwrap_or_default() != "OK" {
             return Err(RedisCacheError::AlreadyUsed);
         }
-
-        // Set very long TTL for OIDC nonces
-        redis
-            .expire(&token_hash, i64::from(long_ttl_seconds))
-            .await?;
 
         Ok(())
     }
@@ -256,7 +234,7 @@ impl RedisCacheManager {
 
         let result = redis
             .set_options::<String, bool>(
-                format!("{prefix}{identifier}"),
+                format!("lock#{prefix}#{identifier}"),
                 true,
                 request_hash_lock_options,
             )
@@ -279,12 +257,11 @@ impl RedisCacheManager {
         identifier: &str,
     ) -> Result<(), RedisError> {
         let mut redis = self.redis.clone();
-        redis.del(format!("{prefix}{identifier}")).await?;
+        redis.del(format!("lock#{prefix}#{identifier}")).await?;
         Ok(())
     }
 
     pub async fn is_ready(&self) -> bool {
-        // Test Redis connection with a simple ping
         let mut redis = self.redis.clone();
         match redis.ping().await {
             Ok(_) => true,
@@ -307,8 +284,6 @@ fn hash_token(prefix: &str, token: &str) -> String {
 struct SyncFactorTokenData {
     backup_id: String,
     is_used: bool,
-    created_at: i64,
-    expires_at: i64,
 }
 
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
@@ -337,7 +312,9 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_use_token() {
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment).await.unwrap();
+        let token_manager = RedisCacheManager::new(environment, environment.cache_default_ttl())
+            .await
+            .unwrap();
 
         let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
 
@@ -362,7 +339,9 @@ mod tests {
     #[tokio::test]
     async fn test_use_nonexistent_token() {
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment).await.unwrap();
+        let token_manager = RedisCacheManager::new(environment, environment.cache_default_ttl())
+            .await
+            .unwrap();
 
         // Try to use a non-existent token
         let token = format!("nonexistent_token_{}", uuid::Uuid::new_v4());
@@ -374,7 +353,9 @@ mod tests {
     async fn test_token_expiration() {
         let environment = Environment::development(None);
         // Set a very short expiration time
-        let token_manager = RedisCacheManager::new(environment).await.unwrap();
+        let token_manager = RedisCacheManager::new(environment, Duration::from_secs(1))
+            .await
+            .unwrap();
 
         let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
 
@@ -389,13 +370,16 @@ mod tests {
 
         // Try to use the expired token - Redis should have automatically deleted it
         let result = token_manager.use_sync_factor_token(token).await;
+        dbg!(&result);
         assert!(matches!(result, Err(RedisCacheError::TokenNotFound)));
     }
 
     #[tokio::test]
     async fn test_prevent_challenge_token_reuse_replay_attack() {
         let environment = Environment::development(None);
-        let token_manager = RedisCacheManager::new(environment).await.unwrap();
+        let token_manager = RedisCacheManager::new(environment, environment.cache_default_ttl())
+            .await
+            .unwrap();
 
         let challenge_token = format!("my_one_time_challenge_token_{}", uuid::Uuid::new_v4());
 

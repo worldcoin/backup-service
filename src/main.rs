@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let backup_storage = Arc::new(BackupStorage::new(environment, s3_client.clone()));
     let factor_lookup = Arc::new(FactorLookup::new(environment, dynamodb_client.clone()));
     let redis_cache_manager = Arc::new(
-        RedisCacheManager::new(environment)
+        RedisCacheManager::new(environment, environment.cache_default_ttl())
             .await
             .expect("failed to build RedisCacheManager"),
     );
