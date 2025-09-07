@@ -223,7 +223,7 @@ impl RedisCacheManager {
         prefix: &str,
         identifier: &str,
         ttl_seconds: Option<u64>,
-    ) -> Result<bool, RedisError> {
+    ) -> Result<bool, RedisCacheError> {
         let request_hash_lock_options = SetOptions::default()
             .conditional_set(ExistenceCheck::NX)
             .with_expiration(SetExpiry::EX(
@@ -255,7 +255,7 @@ impl RedisCacheManager {
         &self,
         prefix: &str,
         identifier: &str,
-    ) -> Result<(), RedisError> {
+    ) -> Result<(), RedisCacheError> {
         let mut redis = self.redis.clone();
         redis.del(format!("lock#{prefix}#{identifier}")).await?;
         Ok(())

@@ -3,6 +3,7 @@ use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::redis_cache::RedisCacheError;
 use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
@@ -12,7 +13,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use openidconnect::DiscoveryError;
-use redis::RedisError;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::error::Error;
@@ -262,7 +262,6 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
     }
 }
 
-
 impl From<TurnkeyActivityError> for ErrorResponse {
     fn from(err: TurnkeyActivityError) -> Self {
         tracing::info!(message = "Turnkey activity error", error = ?err);
@@ -289,33 +288,26 @@ impl From<AttestationGatewayError> for ErrorResponse {
     }
 }
 
-impl From<RedisError> for ErrorResponse {
-    fn from(err: RedisError) -> Self {
-        tracing::error!(message = format!("Redis error: {err}"), error = ?err);
-        ErrorResponse::internal_server_error()
-    }
-}
-
-impl From<crate::redis_cache::RedisCacheError> for ErrorResponse {
-    fn from(err: crate::redis_cache::RedisCacheError) -> Self {
+impl From<RedisCacheError> for ErrorResponse {
+    fn from(err: RedisCacheError) -> Self {
         match &err {
-            crate::redis_cache::RedisCacheError::RedisError(_) => {
+            RedisCacheError::RedisError(_) => {
                 tracing::error!(message = "Redis cache error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
-            crate::redis_cache::RedisCacheError::ParseError(_) => {
+            RedisCacheError::ParseError(_) => {
                 tracing::error!(message = "Redis cache parse error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
-            crate::redis_cache::RedisCacheError::TokenNotFound => {
+            RedisCacheError::TokenNotFound => {
                 tracing::info!(message = "Token not found", error = ?err);
                 ErrorResponse::bad_request("token_not_found")
             }
-            crate::redis_cache::RedisCacheError::AlreadyUsed => {
+            RedisCacheError::AlreadyUsed => {
                 tracing::info!(message = "Token already used", error = ?err);
                 ErrorResponse::bad_request("already_used")
             }
-            crate::redis_cache::RedisCacheError::TokenExpired => {
+            RedisCacheError::TokenExpired => {
                 tracing::info!(message = "Token expired", error = ?err);
                 ErrorResponse::bad_request("token_expired")
             }

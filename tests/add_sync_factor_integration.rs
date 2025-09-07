@@ -257,6 +257,6 @@ async fn test_add_sync_factor_with_invalid_token() {
 
     assert_eq!(
         error_response["error"]["code"].as_str().unwrap(),
-        "sync_factor_token_not_found"
+        "token_not_found"
     );
 }

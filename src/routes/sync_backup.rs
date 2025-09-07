@@ -49,7 +49,7 @@ pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    Extension(redis_cache_manager): Extension<RedisCacheManager>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
