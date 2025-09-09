@@ -295,8 +295,8 @@ impl From<RedisCacheError> for ErrorResponse {
                 tracing::error!(message = "Redis cache error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
-            RedisCacheError::ParseError(_) => {
-                tracing::error!(message = "Redis cache parse error", error = ?err);
+            RedisCacheError::ParseError(_) | RedisCacheError::EncodingError => {
+                tracing::error!(message = "Redis cache parse/encoding error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
             RedisCacheError::TokenNotFound => {

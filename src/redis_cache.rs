@@ -94,43 +94,40 @@ impl RedisCacheManager {
 
         // Lua script for atomic check-and-set operation
         // Returns:
-        // - 0 if token doesn't exist
-        // - 1 if token exists but is already used
-        // - value of updated data if token exists and was successfully marked as used
+        // - `-1` if token doesn't exist
+        // - `1` if token exists but is already used
+        // - `2` and the value of updated data if token exists and was successfully marked as used
         let script = Script::new(
             "
             local key = KEYS[1]
             local data = redis.call('GET', key)
-            
-            if not data then
-                return 0
+
+            -- token not found
+            if not data or #data == 0 then
+                return {-1, \"\"}
             end
-            
-            -- Check first byte: 0 = not used, 1 = used
-            local status_byte = string.byte(data, 1)
-            
-            if status_byte ~= 0 then
-                return 1
+
+            -- already used
+            if string.byte(data, 1) == 1 then
+                return {1, \"\"}
             end
-            
-            -- Create new data with status byte set to 1 (used)
-            local backup_id = string.sub(data, 2)
-            local updated_data = string.char(1) .. backup_id
             
             -- Update the token data while preserving existing TTL
+            local updated_data = string.char(1) .. string.sub(data, 2)
             redis.call('SET', key, updated_data, 'KEEPTTL')
             
-            return updated_data
+            return {2, updated_data}
         ",
         );
 
-        let result: redis::Value = script.key(&token_hash).invoke_async(&mut redis).await?;
+        let (code, token_data): (i64, Vec<u8>) =
+            script.key(&token_hash).invoke_async(&mut redis).await?;
 
-        match result {
-            redis::Value::Int(0) => Err(RedisCacheError::TokenNotFound),
-            redis::Value::Int(1) => Err(RedisCacheError::AlreadyUsed),
-            redis::Value::BulkString(updated_data) => {
-                let sync_factor_token_data = SyncFactorTokenData::from_bytes(&updated_data)?;
+        match code {
+            -1 => Err(RedisCacheError::TokenNotFound),
+            1 => Err(RedisCacheError::AlreadyUsed),
+            2 => {
+                let sync_factor_token_data = SyncFactorTokenData::from_bytes(&token_data)?;
                 Ok(sync_factor_token_data.backup_id)
             }
             _ => Err(RedisCacheError::EncodingError),
@@ -140,7 +137,7 @@ impl RedisCacheManager {
     /// Unmarks a sync factor token as used. This is used to ensure atomicity in the process to add a sync factor.
     ///
     /// If the process of adding the factor to the backup metadata in S3 fails, the token is unmarked as used
-    /// to allow the user to try again.
+    /// to allow the user to try again. This method keeps the existing TTL of the token.
     ///
     /// # Errors
     /// * `RedisCacheError::RedisError` - if the token cannot be updated in Redis
@@ -148,42 +145,14 @@ impl RedisCacheManager {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
         let mut redis = self.redis.clone();
 
-        // Lua script for atomic unmark operation
-        // Works directly with bytes: sets first byte to 0 (not used)
-        // Lua scripts are inherently atomic, no need for WATCH/MULTI/EXEC
-        // Returns:
-        // - 0 if token doesn't exist
-        // - 1 if token exists and was successfully unmarked
-        let script = Script::new(
-            "
-            local key = KEYS[1]
-            local data = redis.call('GET', key)
-            
-            if not data then
-                return 0
-            end
-            
-            -- Create new data with status byte set to 0 (not used)
-            local backup_id = string.sub(data, 2)
-            local updated_data = string.char(0) .. backup_id
-            
-            -- Update the token data while preserving TTL
-            redis.call('SET', key, updated_data, 'KEEPTTL')
-            
-            return 1
-        ",
-        );
-
-        let result: redis::Value = script.key(&token_hash).invoke_async(&mut redis).await?;
-
-        match result {
-            redis::Value::Int(0) => {
-                // Token doesn't exist, which is fine for unuse operation
-                Ok(())
-            }
-            redis::Value::Int(1) => Ok(()),
-            _ => Err(RedisCacheError::EncodingError),
+        // check if the key exists to not store the token otherwise
+        // (done so we don't accidentally store the token without a TTL)
+        if !redis.exists(&token_hash).await? {
+            return Err(RedisCacheError::TokenNotFound);
         }
+
+        redis.setrange(&token_hash, 0, 0).await?;
+        Ok(())
     }
 
     /// Records a hashed challenge token as used in redis to prevent replay attacks.
@@ -500,7 +469,6 @@ mod tests {
 
         // Try to use the expired token - Redis should have automatically deleted it
         let result = token_manager.use_sync_factor_token(token).await;
-        dbg!(&result);
         assert!(matches!(result, Err(RedisCacheError::TokenNotFound)));
     }
 
@@ -522,5 +490,60 @@ mod tests {
         // second time it fails
         let result = token_manager.use_challenge_token(challenge_token).await;
         assert!(matches!(result, Err(RedisCacheError::AlreadyUsed)));
+    }
+
+    #[tokio::test]
+    async fn test_no_race_conditions_on_concurrent_sync_token_usage() {
+        let environment = Environment::development(None);
+        let token_manager = RedisCacheManager::new(environment, environment.cache_default_ttl())
+            .await
+            .unwrap();
+
+        let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
+
+        let token = token_manager
+            .create_sync_factor_token(backup_id.clone())
+            .await
+            .unwrap();
+
+        // Spawn 10 concurrent tasks that all try to use the same token
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let token_manager_clone = token_manager.clone();
+            let token_clone = token.clone();
+            let handle = tokio::spawn(async move {
+                (
+                    i,
+                    token_manager_clone.use_sync_factor_token(token_clone).await,
+                )
+            });
+            handles.push(handle);
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            let (_task_id, result) = handle.await.unwrap();
+            results.push(result);
+        }
+
+        let mut success_count = 0;
+        let mut already_used_count = 0;
+
+        for result in results {
+            match result {
+                Ok(_) => {
+                    success_count += 1;
+                }
+                Err(RedisCacheError::AlreadyUsed) => {
+                    already_used_count += 1;
+                }
+                Err(other_error) => {
+                    panic!("Unexpected error: {other_error:?}");
+                }
+            }
+        }
+
+        assert_eq!(success_count, 1);
+        assert_eq!(already_used_count, 9);
     }
 }
