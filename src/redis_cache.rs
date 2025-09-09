@@ -2,8 +2,7 @@ use crate::types::{Environment, OidcProvider};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use redis::aio::ConnectionManager;
-use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, SetExpiry, SetOptions};
-use serde::{Deserialize, Serialize};
+use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, Script, SetExpiry, SetOptions};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -53,16 +52,16 @@ impl RedisCacheManager {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
 
         let ttl_seconds = self.default_ttl.as_secs();
-
-        let token_data = SyncFactorTokenData {
-            backup_id,
-            is_used: false,
-        };
-
-        let serialized_data = serde_json::to_string(&token_data)?;
+        let token_data = SyncFactorTokenData::new(backup_id);
         let mut redis = self.redis.clone();
         redis
-            .set_ex(&token_hash, serialized_data, ttl_seconds)
+            .set_options(
+                &token_hash,
+                token_data.into_bytes(),
+                SetOptions::default()
+                    .with_expiration(SetExpiry::EX(ttl_seconds))
+                    .conditional_set(ExistenceCheck::NX),
+            )
             .await?;
 
         Ok(token)
@@ -81,7 +80,7 @@ impl RedisCacheManager {
     ///
     /// The token is a random secret value that's stored hashed in Redis. The token is
     /// issued at retrieval and removed when the sync factor is added. This method retrieves and marks the token as used
-    /// in an atomic process using Redis transactions.
+    /// in an atomic process to ensure race condition safety.
     ///
     /// # Errors
     /// * `RedisCacheError::RedisError` - if the token cannot be fetched from Redis
@@ -91,31 +90,51 @@ impl RedisCacheManager {
     /// * `RedisCacheError::ParseError` - if the token data cannot be parsed
     pub async fn use_sync_factor_token(&self, token: String) -> Result<String, RedisCacheError> {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
-
         let mut redis = self.redis.clone();
-        let data: Option<String> = redis.get(&token_hash).await?;
-        let Some(data) = data else {
-            return Err(RedisCacheError::TokenNotFound);
-        };
 
-        let mut token_data: SyncFactorTokenData = serde_json::from_str(&data)?;
+        // Lua script for atomic check-and-set operation
+        // Returns:
+        // - 0 if token doesn't exist
+        // - 1 if token exists but is already used
+        // - value of updated data if token exists and was successfully marked as used
+        let script = Script::new(
+            "
+            local key = KEYS[1]
+            local data = redis.call('GET', key)
+            
+            if not data then
+                return 0
+            end
+            
+            -- Check first byte: 0 = not used, 1 = used
+            local status_byte = string.byte(data, 1)
+            
+            if status_byte ~= 0 then
+                return 1
+            end
+            
+            -- Create new data with status byte set to 1 (used)
+            local backup_id = string.sub(data, 2)
+            local updated_data = string.char(1) .. backup_id
+            
+            -- Update the token data while preserving existing TTL
+            redis.call('SET', key, updated_data, 'KEEPTTL')
+            
+            return updated_data
+        ",
+        );
 
-        if token_data.is_used {
-            return Err(RedisCacheError::AlreadyUsed);
+        let result: redis::Value = script.key(&token_hash).invoke_async(&mut redis).await?;
+
+        match result {
+            redis::Value::Int(0) => Err(RedisCacheError::TokenNotFound),
+            redis::Value::Int(1) => Err(RedisCacheError::AlreadyUsed),
+            redis::Value::BulkString(updated_data) => {
+                let sync_factor_token_data = SyncFactorTokenData::from_bytes(&updated_data)?;
+                Ok(sync_factor_token_data.backup_id)
+            }
+            _ => Err(RedisCacheError::EncodingError),
         }
-
-        token_data.is_used = true;
-        let updated_data = serde_json::to_string(&token_data)?;
-
-        redis
-            .set_options(
-                &token_hash,
-                &updated_data,
-                SetOptions::default().with_expiration(SetExpiry::KEEPTTL), // we can keep the original TTL, after which the token is deleted
-            )
-            .await?;
-
-        Ok(token_data.backup_id)
     }
 
     /// Unmarks a sync factor token as used. This is used to ensure atomicity in the process to add a sync factor.
@@ -127,22 +146,44 @@ impl RedisCacheManager {
     /// * `RedisCacheError::RedisError` - if the token cannot be updated in Redis
     pub async fn unuse_sync_factor_token(&self, token: String) -> Result<(), RedisCacheError> {
         let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
-
         let mut redis = self.redis.clone();
-        let data: Option<String> = redis.get(&token_hash).await?;
-        if let Some(data) = data {
-            let mut token_data: SyncFactorTokenData = serde_json::from_str(&data)?;
-            token_data.is_used = false;
-            let updated_data = serde_json::to_string(&token_data)?;
-            redis
-                .set_options(
-                    &token_hash,
-                    updated_data,
-                    SetOptions::default().with_expiration(SetExpiry::KEEPTTL),
-                )
-                .await?;
+
+        // Lua script for atomic unmark operation
+        // Works directly with bytes: sets first byte to 0 (not used)
+        // Lua scripts are inherently atomic, no need for WATCH/MULTI/EXEC
+        // Returns:
+        // - 0 if token doesn't exist
+        // - 1 if token exists and was successfully unmarked
+        let script = Script::new(
+            "
+            local key = KEYS[1]
+            local data = redis.call('GET', key)
+            
+            if not data then
+                return 0
+            end
+            
+            -- Create new data with status byte set to 0 (not used)
+            local backup_id = string.sub(data, 2)
+            local updated_data = string.char(0) .. backup_id
+            
+            -- Update the token data while preserving TTL
+            redis.call('SET', key, updated_data, 'KEEPTTL')
+            
+            return 1
+        ",
+        );
+
+        let result: redis::Value = script.key(&token_hash).invoke_async(&mut redis).await?;
+
+        match result {
+            redis::Value::Int(0) => {
+                // Token doesn't exist, which is fine for unuse operation
+                Ok(())
+            }
+            redis::Value::Int(1) => Ok(()),
+            _ => Err(RedisCacheError::EncodingError),
         }
-        Ok(())
     }
 
     /// Records a hashed challenge token as used in redis to prevent replay attacks.
@@ -214,37 +255,6 @@ impl RedisCacheManager {
         Ok(())
     }
 
-    /// Sets a lock in Redis for a given identifier.
-    ///
-    /// # Errors
-    /// Returns `RedisError` if the lock cannot be set in Redis.
-    pub async fn set_redis_lock(
-        &self,
-        prefix: &str,
-        identifier: &str,
-        ttl_seconds: Option<u64>,
-    ) -> Result<bool, RedisCacheError> {
-        let request_hash_lock_options = SetOptions::default()
-            .conditional_set(ExistenceCheck::NX)
-            .with_expiration(SetExpiry::EX(
-                ttl_seconds.unwrap_or(self.default_ttl.as_secs()),
-            ));
-
-        let mut redis = self.redis.clone();
-
-        let result = redis
-            .set_options::<String, bool>(
-                format!("lock#{prefix}#{identifier}"),
-                true,
-                request_hash_lock_options,
-            )
-            .await?;
-
-        let lock_set = result.is_some() && result.unwrap_or_default() == "OK";
-
-        Ok(lock_set)
-    }
-
     /// Attempts to acquire a Redis lock and returns a guard that releases it on drop.
     ///
     /// # Errors
@@ -287,10 +297,43 @@ fn hash_token(prefix: &str, token: &str) -> String {
     format!("{prefix}#{:x}", hasher.finalize())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Stores the authorized `backup_id` and whether the token was used for a sync factor token.
+///
+/// Sync factor tokens are how operations to add sync factors are authorized.
+///
+/// Encoded as bytes for efficient Redis operations.
 struct SyncFactorTokenData {
     backup_id: String,
     is_used: bool,
+}
+
+impl SyncFactorTokenData {
+    /// Creates a new `SyncFactorTokenData` with the given `backup_id` and `is_used` set to `false`.
+    fn new(backup_id: String) -> Self {
+        Self {
+            backup_id,
+            is_used: false,
+        }
+    }
+
+    /// Creates byte representation of token data
+    fn into_bytes(self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(1 + self.backup_id.len());
+        data.push(u8::from(self.is_used));
+        data.extend_from_slice(self.backup_id.as_bytes());
+        data
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, RedisCacheError> {
+        if bytes.is_empty() {
+            return Err(RedisCacheError::EncodingError);
+        }
+
+        let is_used = bytes[0] != 0;
+        let backup_id =
+            String::from_utf8(bytes[1..].to_vec()).map_err(|_| RedisCacheError::EncodingError)?;
+        Ok(Self { backup_id, is_used })
+    }
 }
 
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
@@ -299,6 +342,8 @@ const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
 #[derive(thiserror::Error, Debug)]
 pub enum RedisCacheError {
+    #[error("unexpected encoding error")]
+    EncodingError,
     #[error("Redis error: {0}")]
     RedisError(#[from] RedisError),
     #[error("JSON serialization/deserialization error: {0}")]
