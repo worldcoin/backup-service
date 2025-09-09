@@ -9,6 +9,7 @@ use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
+use redis::aio::ConnectionManager;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::Level;
@@ -28,6 +29,7 @@ pub async fn start(
     dynamo_cache_manager: Arc<DynamoCacheManager>,
     auth_handler: AuthHandler,
     attestation_gateway: Arc<AttestationGateway>,
+    redis_pool: ConnectionManager,
 ) -> anyhow::Result<()> {
     let mut openapi = OpenApi {
         info: Info {
@@ -64,6 +66,7 @@ pub async fn start(
         .layer(Extension(dynamo_cache_manager))
         .layer(Extension(auth_handler))
         .layer(Extension(attestation_gateway))
+        .layer(Extension(redis_pool))
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(
             tower_http::trace::TraceLayer::new_for_http()

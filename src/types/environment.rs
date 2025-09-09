@@ -66,6 +66,20 @@ impl Environment {
         }
     }
 
+    /// Redis endpoint URL
+    ///
+    /// # Panics
+    /// Panics if the `REDIS_URL` environment variable is not set.
+    #[must_use]
+    pub fn redis_endpoint_url(&self) -> String {
+        match self {
+            Self::Production | Self::Staging => {
+                env::var("REDIS_URL").expect("REDIS_URL environment variable is not set")
+            }
+            Self::Development { .. } => "redis://localhost:6379".to_string(),
+        }
+    }
+
     /// AWS configuration to be used for the application, including any environment-specific overrides
     pub async fn aws_config(&self) -> aws_config::SdkConfig {
         let mut aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());

@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use openidconnect::DiscoveryError;
+use redis::RedisError;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::error::Error;
@@ -46,6 +47,14 @@ impl ErrorResponse {
         Self {
             error: "unauthorized".to_string(),
             status: StatusCode::UNAUTHORIZED,
+        }
+    }
+
+    #[must_use]
+    pub fn conflict(message: &str) -> Self {
+        Self {
+            error: message.to_string(),
+            status: StatusCode::CONFLICT,
         }
     }
 }
@@ -180,11 +189,11 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Encryption key not found", error = ?err);
                 ErrorResponse::bad_request("encryption_key_not_found")
             }
-            BackupManagerError::UpdateConflict => {
-                tracing::info!(message = "Update conflict. Provided manifest hash does not match the current manifest hash.");
+            BackupManagerError::ManifestHashMismatch => {
+                tracing::info!(message = BackupManagerError::ManifestHashMismatch.to_string());
                 ErrorResponse {
-                    error: "update_conflict".to_string(),
-                    status: StatusCode::CONFLICT,
+                    error: "manifest_hash_mismatch".to_string(),
+                    status: StatusCode::PRECONDITION_FAILED,
                 }
             }
         }
@@ -305,5 +314,12 @@ impl From<AttestationGatewayError> for ErrorResponse {
                 ErrorResponse::bad_request("invalid_attestation_token")
             }
         }
+    }
+}
+
+impl From<RedisError> for ErrorResponse {
+    fn from(err: RedisError) -> Self {
+        tracing::error!(message = format!("Redis error: {err}"), error = ?err);
+        ErrorResponse::internal_server_error()
     }
 }

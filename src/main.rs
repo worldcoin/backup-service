@@ -10,7 +10,13 @@ use backup_service::oidc_token_verifier::OidcTokenVerifier;
 use backup_service::server;
 use backup_service::types::Environment;
 use dotenvy::dotenv;
+use redis::aio::ConnectionManager;
 use std::sync::Arc;
+
+async fn build_redis_pool(redis_url: String) -> redis::RedisResult<ConnectionManager> {
+    let client: redis::Client = redis::Client::open(redis_url)?;
+    ConnectionManager::new(client).await
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -60,6 +66,12 @@ async fn main() -> anyhow::Result<()> {
         oidc_token_verifier.clone(),
     );
 
+    let redis_pool = build_redis_pool(environment.redis_endpoint_url())
+        .await
+        .expect("failed to connect to Redis.");
+
+    tracing::info!("✅ Redis connection pool built successfully.");
+
     server::start(
         environment,
         s3_client,
@@ -70,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         dynamo_cache_manager,
         auth_handler,
         attestation_gateway,
+        redis_pool,
     )
     .await
 }

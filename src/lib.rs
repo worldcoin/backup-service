@@ -2,7 +2,6 @@
 #![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 pub mod attestation_gateway;
 pub mod auth;
-pub mod axum_utils;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod dynamo_cache;
@@ -14,6 +13,7 @@ pub mod routes;
 pub mod server;
 pub mod turnkey_activity;
 pub mod types;
+pub mod utils;
 pub mod verify_signature;
 pub mod webauthn;
 
