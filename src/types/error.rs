@@ -50,10 +50,10 @@ impl ErrorResponse {
     }
 
     #[must_use]
-    pub fn conflict(message: &str) -> Self {
+    pub fn locked(message: &str) -> Self {
         Self {
             error: message.to_string(),
-            status: StatusCode::CONFLICT,
+            status: StatusCode::LOCKED,
         }
     }
 }

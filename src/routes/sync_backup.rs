@@ -95,7 +95,7 @@ pub async fn handler(
 
     if !lock_acquired {
         tracing::info!(message = "Rejecting conlicting update in progress");
-        return Err(ErrorResponse::conflict("update_in_progress"));
+        return Err(ErrorResponse::locked("conflicting_lock"));
     }
 
     // Step 4: Update the backup with the new backup file
