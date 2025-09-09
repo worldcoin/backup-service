@@ -50,9 +50,9 @@ impl ErrorResponse {
     }
 
     #[must_use]
-    pub fn locked(message: &str) -> Self {
+    pub fn locked() -> Self {
         Self {
-            error: message.to_string(),
+            error: "conflicting_lock".to_string(),
             status: StatusCode::LOCKED,
         }
     }
@@ -310,6 +310,10 @@ impl From<RedisCacheError> for ErrorResponse {
             RedisCacheError::TokenExpired => {
                 tracing::info!(message = "Token expired", error = ?err);
                 ErrorResponse::bad_request("token_expired")
+            }
+            RedisCacheError::Locked => {
+                tracing::info!(message = "Conflicting lock", error = ?err);
+                ErrorResponse::locked()
             }
         }
     }

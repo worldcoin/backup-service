@@ -45,6 +45,8 @@ pub struct SyncBackupResponse {
 const SYNC_BACKUP_LOCK_KEY: &str = "sync_backup_lock:";
 const SYNC_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
 
+// Lock guard is now provided by the redis_cache module
+
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
@@ -88,15 +90,14 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Acquire a lock on the backup
-    let lock_acquired = redis_cache_manager
-        .set_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, Some(SYNC_BACKUP_LOCK_TTL))
+    // Step 3: Acquire a lock on the backup to prevent concurrent updates
+    let mut lock_guard = redis_cache_manager
+        .try_acquire_lock_guard(
+            SYNC_BACKUP_LOCK_KEY,
+            backup_id.clone(),
+            Some(SYNC_BACKUP_LOCK_TTL),
+        )
         .await?;
-
-    if !lock_acquired {
-        tracing::info!(message = "Rejecting conlicting update in progress");
-        return Err(ErrorResponse::locked("conflicting_lock"));
-    }
 
     // Step 4: Update the backup with the new backup file
     let update_result = backup_storage
@@ -108,14 +109,7 @@ pub async fn handler(
         )
         .await;
 
-    // Step 5: Release the lock regardless of the result of the update
-    let _ = redis_cache_manager
-        .release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id)
-        .await
-        .map_err(|e| {
-            // log the error but we continue anyway
-            tracing::error!(message = "Failed to release lock on the backup", error = ?e);
-        });
+    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     if let Err(e) = update_result {
         return Err(e.into());

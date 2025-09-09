@@ -79,7 +79,7 @@ impl RedisCacheManager {
     /// Since users might make multiple attempts to retrieve their backup, this would lead to
     /// accumulation of sync factors in the backup that are not used and likely not even saved in the app.
     ///
-    /// The token is a random secret value that's stored hashed in the cache table in Redis. The token is
+    /// The token is a random secret value that's stored hashed in Redis. The token is
     /// issued at retrieval and removed when the sync factor is added. This method retrieves and marks the token as used
     /// in an atomic process using Redis transactions.
     ///
@@ -245,20 +245,27 @@ impl RedisCacheManager {
         Ok(lock_set)
     }
 
-    /// Releases a lock in Redis for a given identifier.
-    ///
-    /// Will not return an error if the lock does not exist.
+    /// Attempts to acquire a Redis lock and returns a guard that releases it on drop.
     ///
     /// # Errors
-    /// Returns `RedisError` if the lock cannot be released in Redis.
-    pub async fn release_redis_lock(
+    /// * `RedisCacheError::Locked` - if the lock already exists
+    /// * `RedisCacheError::RedisError` - if there's an unexpected failure with Redis
+    pub async fn try_acquire_lock_guard(
         &self,
-        prefix: &str,
-        identifier: &str,
-    ) -> Result<(), RedisCacheError> {
-        let mut redis = self.redis.clone();
-        redis.del(format!("lock#{prefix}#{identifier}")).await?;
-        Ok(())
+        prefix: impl Into<String>,
+        identifier: impl Into<String>,
+        ttl_seconds: Option<u64>,
+    ) -> Result<RedisLockGuard, RedisCacheError> {
+        let prefix = prefix.into();
+        let identifier = identifier.into();
+
+        RedisLockGuard::new_from_manager(
+            self,
+            prefix,
+            identifier,
+            ttl_seconds.unwrap_or(self.default_ttl.as_secs()),
+        )
+        .await
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -302,6 +309,84 @@ pub enum RedisCacheError {
     AlreadyUsed,
     #[error("Token has expired")]
     TokenExpired,
+    #[error("Conflicting lock")]
+    Locked,
+}
+
+/// A guard that releases a Redis lock when dropped.
+pub struct RedisLockGuard {
+    redis: ConnectionManager,
+    prefix: String,
+    identifier: String,
+    released: bool,
+}
+
+impl RedisLockGuard {
+    async fn new_from_manager(
+        manager: &RedisCacheManager,
+        prefix: String,
+        identifier: String,
+        ttl_seconds: u64,
+    ) -> Result<Self, RedisCacheError> {
+        let mut redis = manager.redis.clone();
+
+        let lock_options = SetOptions::default()
+            .conditional_set(ExistenceCheck::NX)
+            .with_expiration(SetExpiry::EX(ttl_seconds));
+
+        let result = redis
+            .set_options::<String, bool>(format!("lock#{prefix}#{identifier}"), true, lock_options)
+            .await?;
+
+        let acquired = result.is_some() && result.unwrap_or_default() == "OK";
+
+        if !acquired {
+            return Err(RedisCacheError::Locked);
+        }
+
+        Ok(Self {
+            redis,
+            prefix,
+            identifier,
+            released: false,
+        })
+    }
+
+    /// Explicitly releases the lock. Safe to call multiple times.
+    ///
+    /// # Errors
+    /// * `RedisCacheError::RedisError` - if there's a failure with Redis
+    pub async fn release(&mut self) -> Result<(), RedisCacheError> {
+        if !self.released {
+            let mut redis = self.redis.clone();
+            redis.del(self.as_key()).await?;
+            self.released = true;
+        }
+        Ok(())
+    }
+
+    fn as_key(&self) -> String {
+        format!("lock#{}#{}", self.prefix, self.identifier)
+    }
+}
+
+impl Drop for RedisLockGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let mut redis = self.redis.clone();
+        let key = self.as_key();
+        // Best-effort release as `Drop` cannot be async.
+        tokio::spawn(async move {
+            if let Err(e) = redis.del(key).await {
+                tracing::error!(
+                    message = "Failed to release Redis lock in Drop",
+                    error = ?e
+                );
+            }
+        });
+    }
 }
 
 #[cfg(test)]
