@@ -265,11 +265,9 @@ impl Environment {
 
     #[must_use]
     pub fn factor_lookup_dynamodb_table_name(&self) -> String {
-        std::env::var("DYNAMODB_TABLE_FACTOR_LOOKUP").unwrap_or_else(|_| {
-            match self {
-                Self::Production | Self::Staging | Self::Development { .. } => {
-                    "backup-service-factor-lookup".to_string()
-                }
+        std::env::var("DYNAMODB_TABLE_FACTOR_LOOKUP").unwrap_or_else(|_| match self {
+            Self::Production | Self::Staging | Self::Development { .. } => {
+                "backup-service-factor-lookup".to_string()
             }
         })
     }
