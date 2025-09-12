@@ -241,12 +241,15 @@ impl Environment {
     }
 
     /// The client ID for the Apple OIDC provider
+    ///
+    /// # Panics
+    /// Will not panic. Values are hardcoded per environment.
     #[must_use]
     pub fn apple_client_id(&self) -> ClientId {
         match self {
-            Self::Production | Self::Staging | Self::Development { .. } => {
-                ClientId::new("placeholder".to_string())
-            }
+            Self::Production => ClientId::new("org.worldcoin.insight".to_string()),
+            Self::Staging => ClientId::new("org.worldcoin.insight.staging".to_string()),
+            Self::Development { .. } => ClientId::new("placeholder".to_string()),
         }
     }
 
