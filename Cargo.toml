@@ -55,6 +55,7 @@ reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
 schemars = "0.8.21"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { workspace = true }
+serde_plain = "1.0.2"
 sha2 = { workspace = true }
 strum = "0.27.2"
 strum_macros = "0.27.1"
@@ -72,9 +73,8 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
   "json",
 ] }
 uuid = { workspace = true }
-# TODO/FIXME: Investigate how dangerous this is considering we're going to be tracking used challenges
 webauthn-rs = { version = "0.5.2", features = [
-  "danger-allow-state-serialisation",
+  "danger-allow-state-serialisation", # see webauthn.rs for details
   "conditional-ui",
   "workaround-google-passkey-specific-issues",
 ] }
