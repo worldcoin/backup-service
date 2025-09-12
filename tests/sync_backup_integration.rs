@@ -330,13 +330,13 @@ async fn test_concurrent_sync_backup_prevention() {
                     assert_eq!(response["backupId"], backup_id);
                     success_count.fetch_add(1, Ordering::SeqCst);
                 }
-                StatusCode::CONFLICT => {
+                StatusCode::LOCKED => {
                     let body = response.into_body().collect().await.unwrap().to_bytes();
                     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     let error_code = error_response["error"]["code"].as_str().unwrap_or("");
 
-                    // Expected conflict codes: update_in_progress (lock)
-                    if error_code == "update_in_progress" {
+                    // Expected conflict codes: conflicting_lock
+                    if error_code == "conflicting_lock" {
                         conflict_count.fetch_add(1, Ordering::SeqCst);
                     } else {
                         panic!("Unexpected conflict error code: {}", error_code);

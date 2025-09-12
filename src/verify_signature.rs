@@ -39,10 +39,13 @@ pub fn verify_signature(
     let signature = STANDARD.decode(signature)?;
     // Check if the signature is between 70 and 72 bytes (DER format)
     if signature.len() < 70 || signature.len() > 72 {
-        return Err(VerifySignatureError::DecodeSignatureError);
+        return Err(VerifySignatureError::DecodeSignatureError(format!(
+            "Invalid signature length. Received {} bytes",
+            signature.len()
+        )));
     }
     let signature = p256::ecdsa::Signature::from_der(&signature)
-        .map_err(|_| VerifySignatureError::DecodeSignatureError)?;
+        .map_err(|e| VerifySignatureError::DecodeSignatureError(e.to_string()))?;
 
     // Verify the signature
     verifying_key
@@ -60,8 +63,8 @@ pub enum VerifySignatureError {
     Base64DecodeError(#[from] base64::DecodeError),
     #[error("Failed to create verifying key from SEC1 bytes")]
     DecodeVerifyingKeyError,
-    #[error("Failed to create signature from DER bytes")]
-    DecodeSignatureError,
+    #[error("Failed to create signature from DER bytes: {0}")]
+    DecodeSignatureError(String),
     #[error("Signature verification failed")]
     SignatureVerificationError,
 }

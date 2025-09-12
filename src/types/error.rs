@@ -1,9 +1,9 @@
 use crate::attestation_gateway::AttestationGatewayError;
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
-use crate::dynamo_cache::DynamoCacheError;
 use crate::factor_lookup::FactorLookupError;
 use crate::oidc_token_verifier::OidcTokenVerifierError;
+use crate::redis_cache::RedisCacheError;
 use crate::turnkey_activity::TurnkeyActivityError;
 use crate::verify_signature::VerifySignatureError;
 use aide::OperationOutput;
@@ -13,7 +13,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use openidconnect::DiscoveryError;
-use redis::RedisError;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::error::Error;
@@ -51,10 +50,10 @@ impl ErrorResponse {
     }
 
     #[must_use]
-    pub fn conflict(message: &str) -> Self {
+    pub fn locked() -> Self {
         Self {
-            error: message.to_string(),
-            status: StatusCode::CONFLICT,
+            error: "conflicting_lock".to_string(),
+            status: StatusCode::LOCKED,
         }
     }
 }
@@ -258,35 +257,7 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);
                 ErrorResponse::bad_request("oidc_token_parse_error")
             }
-            OidcTokenVerifierError::DynamoCacheError(e) => e.into(),
-        }
-    }
-}
-
-impl From<DynamoCacheError> for ErrorResponse {
-    fn from(err: DynamoCacheError) -> Self {
-        match &err {
-            DynamoCacheError::DynamoDbPutError(_)
-            | DynamoCacheError::DynamoDbGetError(_)
-            | DynamoCacheError::DynamoDbUpdateError(_)
-            | DynamoCacheError::MalformedToken
-            | DynamoCacheError::ParseBackupIdError
-            | DynamoCacheError::ParseExpirationError => {
-                tracing::error!(message = "Sync factor token error", error = ?err);
-                ErrorResponse::internal_server_error()
-            }
-            DynamoCacheError::TokenNotFound => {
-                tracing::info!(message = "Sync factor token not found", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_not_found")
-            }
-            DynamoCacheError::TokenExpired => {
-                tracing::info!(message = "Sync factor token expired", error = ?err);
-                ErrorResponse::bad_request("sync_factor_token_expired")
-            }
-            DynamoCacheError::AlreadyUsed => {
-                tracing::info!(message = "The token or challenge has already been used", error = ?err);
-                ErrorResponse::bad_request("already_used")
-            }
+            OidcTokenVerifierError::RedisCacheError(e) => e.into(),
         }
     }
 }
@@ -317,9 +288,33 @@ impl From<AttestationGatewayError> for ErrorResponse {
     }
 }
 
-impl From<RedisError> for ErrorResponse {
-    fn from(err: RedisError) -> Self {
-        tracing::error!(message = format!("Redis error: {err}"), error = ?err);
-        ErrorResponse::internal_server_error()
+impl From<RedisCacheError> for ErrorResponse {
+    fn from(err: RedisCacheError) -> Self {
+        match &err {
+            RedisCacheError::RedisError(_) => {
+                tracing::error!(message = "Redis cache error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            RedisCacheError::ParseError(_) | RedisCacheError::EncodingError => {
+                tracing::error!(message = "Redis cache parse/encoding error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            RedisCacheError::TokenNotFound => {
+                tracing::info!(message = "Token not found", error = ?err);
+                ErrorResponse::bad_request("token_not_found")
+            }
+            RedisCacheError::AlreadyUsed => {
+                tracing::info!(message = "Token already used", error = ?err);
+                ErrorResponse::bad_request("already_used")
+            }
+            RedisCacheError::TokenExpired => {
+                tracing::info!(message = "Token expired", error = ?err);
+                ErrorResponse::bad_request("token_expired")
+            }
+            RedisCacheError::Locked => {
+                tracing::info!(message = "Conflicting lock", error = ?err);
+                ErrorResponse::locked()
+            }
+        }
     }
 }

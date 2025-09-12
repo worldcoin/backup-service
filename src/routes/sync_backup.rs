@@ -5,11 +5,11 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
 use crate::normalize_hex_32;
+use crate::redis_cache::RedisCacheManager;
 use crate::types::{Authorization, Environment, ErrorResponse};
-use crate::utils::{extract_fields_from_multipart, release_redis_lock, set_redis_lock};
+use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use redis::aio::ConnectionManager;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -45,11 +45,13 @@ pub struct SyncBackupResponse {
 const SYNC_BACKUP_LOCK_KEY: &str = "sync_backup_lock:";
 const SYNC_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
 
+// Lock guard is now provided by the redis_cache module
+
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    Extension(mut redis): Extension<ConnectionManager>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -88,19 +90,14 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3: Acquire a lock on the backup
-    let lock_acquired = set_redis_lock(
-        SYNC_BACKUP_LOCK_KEY,
-        &backup_id,
-        SYNC_BACKUP_LOCK_TTL,
-        &mut redis,
-    )
-    .await?;
-
-    if !lock_acquired {
-        tracing::info!(message = "Rejecting conlicting update in progress");
-        return Err(ErrorResponse::conflict("update_in_progress"));
-    }
+    // Step 3: Acquire a lock on the backup to prevent concurrent updates
+    let mut lock_guard = redis_cache_manager
+        .try_acquire_lock_guard(
+            SYNC_BACKUP_LOCK_KEY,
+            backup_id.clone(),
+            Some(SYNC_BACKUP_LOCK_TTL),
+        )
+        .await?;
 
     // Step 4: Update the backup with the new backup file
     let update_result = backup_storage
@@ -112,13 +109,7 @@ pub async fn handler(
         )
         .await;
 
-    // Step 5: Release the lock regardless of the result of the update
-    let _ = release_redis_lock(SYNC_BACKUP_LOCK_KEY, &backup_id, &mut redis)
-        .await
-        .map_err(|e| {
-            // log the error but we continue anyway
-            tracing::error!(message = "Failed to release lock on the backup", error = ?e);
-        });
+    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     if let Err(e) = update_result {
         return Err(e.into());
