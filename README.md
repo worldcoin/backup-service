@@ -48,3 +48,32 @@ cargo test -- --nocapture
 # Clean up:
 docker compose down
 ```
+
+### E2E Testing Against Remote Environments
+
+An end-to-end Python test script is available to test the complete backup flow against remote environments:
+
+
+```bash
+# Try without attestation token first (may work if ENABLE_ATTESTATION_GATEWAY=false)
+python3 tests/e2e/create-and-retrieve-backup.py \
+  --url "https://tfh-backup-api.dev-nethermind.xyz"
+
+# If attestation is required, use bypass token:
+export ATTESTATION_TOKEN="dummy-token-for-testing-purposes-xxxxx"
+python3 tests/e2e/create-and-retrieve-backup.py \
+  --url "https://tfh-backup-api.dev-nethermind.xyz" \
+  --attestation-token "$ATTESTATION_TOKEN"
+```
+
+#### Test Flow
+
+The e2e test performs a complete backup lifecycle:
+
+1. **Generate EC keypairs** for main factor and sync factor
+2. **Create backup** with main factor authentication and initial sync factor
+3. **Retrieve metadata** using sync factor to get current manifest hash
+4. **Sync backup** with updated content using sync factor
+5. **Retrieve full backup** using main factor
+
+**Note**: The attestation gateway requirement depends on the `ENABLE_ATTESTATION_GATEWAY` environment variable. Some staging environments may have this disabled for easier testing.
