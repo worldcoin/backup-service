@@ -48,3 +48,15 @@ cargo test -- --nocapture
 # Clean up:
 docker compose down
 ```
+
+### E2E Testing Against Remote Environments
+
+An end-to-end Python test script is available to test the complete backup flow against remote environments:
+
+
+```bash
+export ATTESTATION_TOKEN="dummy-token-for-testing-purposes-xxxxx"
+python3 tests/e2e/create-and-retrieve-backup.py \
+  --url "https://tfh-backup-api.dev-nethermind.xyz" \
+  --attestation-token "$ATTESTATION_TOKEN"
+```
