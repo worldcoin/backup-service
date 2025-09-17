@@ -44,6 +44,18 @@ impl BackupMetadata {
             manifest_hash: self.manifest_hash.clone(),
         }
     }
+
+    /// Computes the commitment hash of the backup metadata.
+    ///
+    /// This is used to check the integrity of the backup metadata object which is stored separately from the actual backup content.
+    ///
+    /// # Errors
+    /// Errors are not expected. JSON serialization may theoretically fail.
+    pub fn as_json_and_commitment_hash(&self) -> Result<(Vec<u8>, String), serde_json::Error> {
+        let metadata_json = serde_json::to_vec(self)?;
+        let hash = blake3::hash(&metadata_json);
+        Ok((metadata_json, hex::encode(hash.as_bytes())))
+    }
 }
 
 /// A factor is a unique identifier for a specific authentication method. It can be a passkey,

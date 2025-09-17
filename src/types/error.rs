@@ -157,8 +157,10 @@ impl From<BackupManagerError> for ErrorResponse {
     fn from(err: BackupManagerError) -> Self {
         match &err {
             BackupManagerError::PutObjectError(_)
+            | BackupManagerError::PutObjectTaggingError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
+            | BackupManagerError::GetObjectTaggingError(_)
             | BackupManagerError::ByteStreamError(_)
             | BackupManagerError::DeleteObjectError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
