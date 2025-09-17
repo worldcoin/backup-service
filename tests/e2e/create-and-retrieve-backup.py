@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
 
+
+"""
+An end-to-end Python test script for the backup service.
+
+1. **Generate EC keypairs** for main factor and sync factor
+2. **Create backup** with main factor authentication and initial sync factor
+3. **Retrieve metadata** using sync factor to get current manifest hash
+4. **Sync backup** with updated content using sync factor
+5. **Retrieve full backup** using main factor
+"""
+
 import argparse
 import base64
 import json
@@ -41,7 +52,7 @@ def sign_challenge(private_key: ec.EllipticCurvePrivateKey, challenge_base64: st
     return base64.b64encode(der_signature).decode('utf-8')
 
 
-def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivateKey, ec.EllipticCurvePrivateKey]:
+def create_backup(base_url: str) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivateKey, ec.EllipticCurvePrivateKey]:
     """
     Create a backup with EC keypair authentication and a sync factor.
     
@@ -179,7 +190,7 @@ def retrieve_backup(base_url: str, backup_id: str, private_key: ec.EllipticCurve
     return retrieve_data
 
 
-def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, attestation_token: str = None) -> Dict[str, Any]:
+def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey) -> Dict[str, Any]:
     """Retrieve backup metadata using the sync factor keypair."""
     print(f"Retrieving metadata for backup {backup_id}...")
     
@@ -231,7 +242,7 @@ def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.Ellipt
     return retrieve_data
 
 
-def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, new_content: bytes, attestation_token: str = None, current_manifest_hash: str = None, new_manifest_hash: str = None) -> Dict[str, Any]:
+def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, new_content: bytes, current_manifest_hash: str = None, new_manifest_hash: str = None) -> Dict[str, Any]:
     """Sync (update) a backup using the sync factor keypair."""
     print(f"Syncing backup {backup_id}...")
     
@@ -303,7 +314,7 @@ def main():
 
     # Step 3: Sync (update) the backup with new content
     new_content = b"THIS IS AN UPDATED MOCK BACKUP"
-    new_manifest_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+    new_manifest_hash = "aaadef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
     sync_backup(args.url, backup_id, sync_private_key, new_content, attestation_token, current_manifest_hash, new_manifest_hash)
 
     # Step 4: Retrieve the backup using main factor
