@@ -531,7 +531,7 @@ impl BackupStorage {
             .s3_client
             .put_object_tagging()
             .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id)) // Fix: Tag the backup object, not metadata object
+            .key(get_backup_key(backup_id))
             .tagging(tagging)
             .send()
             .await;
@@ -541,7 +541,7 @@ impl BackupStorage {
         }
     }
 
-    /// Validates the current metadata object matches what is commited to in the backup object.
+    /// Validates the current metadata object matches what is committed to in the backup object.
     ///
     /// Logs an error if metadata commitment hash is out of sync but doesn't block. This is to allow for recovery from previous states.
     /// Logging is to detect and fix any sync issues.
@@ -552,6 +552,7 @@ impl BackupStorage {
             tracing::error!(message = "Failed to get metadata commitment hash to validate in sync", error = ?err, backup_id = backup_id);
             return;
         }
+
         let expected_commitment_hash = expected_commitment_hash.unwrap_or_default();
 
         if let Some(expected_commitment_hash) = expected_commitment_hash {
