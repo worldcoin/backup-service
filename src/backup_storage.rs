@@ -490,23 +490,21 @@ impl BackupStorage {
         &self,
         backup_id: &str,
     ) -> Result<Option<String>, BackupManagerError> {
-        let _result = self
+        let result = self
             .s3_client
             .get_object_tagging()
             .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id)) // Get tags from backup object
+            .key(get_backup_key(backup_id))
             .send()
             .await?;
 
-        // TODO: Fix AWS SDK tag access pattern - temporarily disabled
-        // The tag.key() and tag.value() API needs proper handling
+        let commitment_hash = result
+            .tag_set()
+            .iter()
+            .find(|tag| tag.key() == METADATA_COMMITMENT_HASH_TAG_KEY)
+            .map(|tag| tag.value().to_string());
 
-        tracing::debug!(
-            backup_id = backup_id,
-            "Getting metadata commitment hash (temporarily disabled due to AWS SDK compatibility)"
-        );
-
-        Ok(None) // Temporarily return None until AWS SDK API is fixed
+        Ok(commitment_hash)
     }
 
     /// Updates the commitment hash of the metadata stored within the actual backup object.
