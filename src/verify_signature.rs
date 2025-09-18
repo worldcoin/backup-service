@@ -10,8 +10,8 @@ use p256::ecdsa::VerifyingKey;
 /// - `public_key`: The public key in base64-encoded SEC1 format.
 /// - `signature`: The signature in base64-encoded DER format.
 /// - `trusted_payload`: The payload that was signed. This should be passed from a trusted source,
-///    not user input. In some cases, this maybe user input, but server verified (e.g. timestamp
-///    of a signature).
+///   not user input. In some cases, this maybe user input, but server verified (e.g. timestamp
+///   of a signature).
 ///
 /// # Errors
 /// - `Base64DecodeError`: If the public key or signature cannot be decoded from base64.

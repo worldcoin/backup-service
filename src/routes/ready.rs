@@ -9,9 +9,6 @@ use crate::{
     types::ErrorResponse,
 };
 
-#[derive(Serialize)]
-pub struct ReadyRequest {}
-
 #[derive(Serialize, JsonSchema)]
 pub struct ReadyResponse {
     status: String,
