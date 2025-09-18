@@ -1,4 +1,4 @@
-FROM rust:1.85.1-slim AS builder
+FROM rust:1.89.0-slim AS builder
 
 ARG GIT_REV
 ENV GIT_REV=${GIT_REV}
