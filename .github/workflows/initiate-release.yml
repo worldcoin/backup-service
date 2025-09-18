@@ -4,7 +4,6 @@
 name: Initiate Release
 
 on:
-  pull_request: # FIXME
   workflow_dispatch:
     inputs:
       bump_type:
@@ -41,7 +40,6 @@ jobs:
         run: |
           # Get current version from Cargo.toml using cargo metadata
           CURRENT_VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "backup-service") | .version')
-          echo "Cargo metadata: $(cargo metadata --format-version=1 --no-deps)"
           echo "Current version: $CURRENT_VERSION"
           # Ensure CURRENT_VERSION is in semantic versioning format
           if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
