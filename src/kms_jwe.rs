@@ -91,7 +91,7 @@ impl JweEncrypter for Aes256GcmKwJweEncrypter {
         _content_encryption: &dyn JweContentEncryption,
         _merged: &JweHeader,
         _header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         Ok(None)
     }
 
@@ -172,7 +172,7 @@ impl JweDecrypter for Aes256GcmKwJweDecrypter {
         encrypted_key: Option<&[u8]>,
         _content_encryption: &dyn JweContentEncryption,
         header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
             let Some(encrypted_key) = encrypted_key else {
                 anyhow::bail!("No encrypted key")

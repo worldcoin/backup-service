@@ -255,7 +255,7 @@ impl BackupStorage {
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///    maintenance harder (e.g. when deleting a factor)
+    ///   maintenance harder (e.g. when deleting a factor)
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
