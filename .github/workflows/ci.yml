@@ -46,12 +46,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Get Rust version
-        id: rust_version
-        run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
-
       - name: Build the project
-        run: cargo build --release
+        run: cargo build --release --locked
 
   test:
     name: Tests
