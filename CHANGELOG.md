@@ -2,6 +2,17 @@
 
 
 
+# [0.7.1] - 2025-09-19
+
+## What's Changed
+* chore: push and attest Docker image to GH registry by @paolodamico in https://github.com/worldcoin/backup-service/pull/112
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.0...0.7.1
+
+
+
+
 # [0.7.0] - 2025-09-18
 
 ## What's Changed
