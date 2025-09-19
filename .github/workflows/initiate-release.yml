@@ -146,6 +146,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git add Cargo.toml
           git add CHANGELOG.md
+          git add Cargo.lock
           git commit -m "Bump crate version to $NEW_VERSION"
           git push origin "$BRANCH_NAME"
           echo "RELEASE_NOTES: $RELEASE_NOTES"
