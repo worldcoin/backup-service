@@ -105,7 +105,7 @@ jobs:
         with:
           push: true
           load: true
-          tags: backup-service-ci:latest
+          tags: ghcr.io/worldcoin/backup-service
           cache-from: type=gha
           cache-to: "type=gha,mode=max"
           platforms: linux/amd64
