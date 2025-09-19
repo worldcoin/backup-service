@@ -4,6 +4,7 @@
 name: Initiate Release
 
 on:
+  pull_request: # FIXME
   workflow_dispatch:
     inputs:
       bump_type:
@@ -36,7 +37,8 @@ jobs:
       - name: Calculate new version
         id: version
         env:
-          BUMP_TYPE: ${{ github.event.inputs.bump_type }}
+          # BUMP_TYPE: ${{ github.event.inputs.bump_type }}
+          BUMP_TYPE: patch # FIXME
         run: |
           # Get current version from Cargo.toml using cargo metadata
           CURRENT_VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "backup-service") | .version')
