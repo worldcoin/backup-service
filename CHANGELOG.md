@@ -2,6 +2,23 @@
 
 
 
+# [0.7.4] - 2025-09-22
+
+## What's Changed
+* chore: push and attest Docker image to GH registry by @paolodamico in https://github.com/worldcoin/backup-service/pull/112
+* Release 0.7.1 by @github-actions[bot] in https://github.com/worldcoin/backup-service/pull/113
+* fix: unify crate versioning by @paolodamico in https://github.com/worldcoin/backup-service/pull/114
+* Release 0.7.2 by @github-actions[bot] in https://github.com/worldcoin/backup-service/pull/116
+* fix: fix docker build by @paolodamico in https://github.com/worldcoin/backup-service/pull/117
+* Release 0.7.3 by @github-actions[bot] in https://github.com/worldcoin/backup-service/pull/118
+* fix: remove duplicate worldcoin prefix for GH package by @paolodamico in https://github.com/worldcoin/backup-service/pull/119
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.0...0.7.4
+
+
+
+
 # [0.7.3] - 2025-09-19
 
 ## What's Changed
