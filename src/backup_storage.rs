@@ -312,6 +312,10 @@ impl BackupStorage {
     /// account can no longer be used to decrypt the backup, so the key and reference to Turnkey IDs
     /// should be deleted.
     ///
+    /// # Returns
+    /// - `DeletionResult::BackupDeleted` if the backup was deleted (because it was the last Main factor).
+    /// - `DeletionResult::OnlyFactorDeleted` if the backup was not deleted, and only the factor was deleted.
+    ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorNotFound` - if the factor does not exist.
@@ -321,7 +325,7 @@ impl BackupStorage {
         backup_id: &str,
         factor_id: &str,
         backup_encryption_key_to_delete: Option<&BackupEncryptionKey>,
-    ) -> Result<(), BackupManagerError> {
+    ) -> Result<DeletionResult, BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
@@ -362,7 +366,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(DeletionResult::OnlyFactorDeleted)
     }
 
     /// Removes a `Sync` factor from the backup metadata in S3 by factor ID.
@@ -407,7 +411,10 @@ impl BackupStorage {
     ///
     /// # Errors
     /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
-    pub async fn delete_backup(&self, backup_id: &str) -> Result<(), BackupManagerError> {
+    pub async fn delete_backup(
+        &self,
+        backup_id: &str,
+    ) -> Result<DeletionResult, BackupManagerError> {
         self.s3_client
             .delete_object()
             .bucket(self.environment.s3_bucket())
@@ -422,7 +429,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(DeletionResult::BackupDeleted)
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -454,6 +461,12 @@ fn get_backup_key(backup_id: &str) -> String {
 
 fn get_metadata_key(backup_id: &str) -> String {
     format!("{backup_id}/metadata")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeletionResult {
+    BackupDeleted,
+    OnlyFactorDeleted,
 }
 
 #[derive(thiserror::Error, Debug)]

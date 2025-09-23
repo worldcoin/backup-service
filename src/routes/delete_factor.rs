@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
-use crate::backup_storage::BackupStorage;
+use crate::backup_storage::{BackupStorage, DeletionResult};
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -28,7 +28,9 @@ pub struct DeleteFactorRequest {
 
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteFactorResponse {}
+pub struct DeleteFactorResponse {
+    backup_deleted: bool,
+}
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
     op.description(
@@ -89,11 +91,13 @@ pub async fn handler(
     };
 
     // Step 4: Delete the factor from the backup storage
+    let mut backup_deleted = false;
     match request.scope {
         FactorScope::Main => {
-            backup_storage
+            let result = backup_storage
                 .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
                 .await?;
+            backup_deleted = matches!(result, DeletionResult::BackupDeleted);
         }
         FactorScope::Sync => {
             backup_storage
@@ -115,5 +119,5 @@ pub async fn handler(
         )
         .await?;
 
-    Ok(Json(DeleteFactorResponse {}))
+    Ok(Json(DeleteFactorResponse { backup_deleted }))
 }
