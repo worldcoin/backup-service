@@ -9,6 +9,7 @@ use openidconnect::{
     Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
+use p256::ecdsa::VerifyingKey;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
 use sha2::{Digest, Sha256};
@@ -110,7 +111,8 @@ impl MockOidcServer {
         // convert public key to expected turnkey nonce
         // see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
         let public_key_bytes = STANDARD.decode(public_key_sec1_base64).unwrap();
-        let public_key_hex = hex::encode(public_key_bytes);
+        let public_key = VerifyingKey::from_sec1_bytes(&public_key_bytes).unwrap();
+        let public_key_hex = hex::encode(public_key.to_encoded_point(true));
         let mut hasher = Sha256::new();
         hasher.update(public_key_hex.as_bytes());
         let nonce_value = hex::encode(hasher.finalize());
