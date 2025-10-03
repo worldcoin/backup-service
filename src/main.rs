@@ -17,7 +17,11 @@ async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .json()
+        .flatten_event(true)
         .init();
+
+    tracing::info!("...Starting backup service");
 
     let environment = Environment::from_env();
     let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
@@ -59,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
         factor_lookup.clone(),
         oidc_token_verifier.clone(),
     );
+
+    tracing::info!("Initial set up is complete.");
 
     server::start(
         environment,
