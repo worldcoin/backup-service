@@ -39,9 +39,14 @@ impl<B> MakeSpan<B> for ConditionalMakeSpan {
 struct ConditionalOnResponse {}
 
 impl<B> OnResponse<B> for ConditionalOnResponse {
-    fn on_response(self, response: &axum::http::Response<B>, latency: std::time::Duration, _span: &Span) {
+    fn on_response(
+        self,
+        response: &axum::http::Response<B>,
+        latency: std::time::Duration,
+        span: &Span,
+    ) {
         // Only log if we're in a real span (not Span::none())
-        if !_span.is_disabled() {
+        if !span.is_disabled() {
             tracing::info!(
                 status = %response.status(),
                 latency = ?latency,
