@@ -11,7 +11,45 @@ use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::Level;
+use tower_http::trace::{MakeSpan, OnResponse};
+use tracing::Span;
+
+/// Custom span maker that excludes /health endpoint from logs
+#[derive(Clone)]
+struct ConditionalMakeSpan {}
+
+impl<B> MakeSpan<B> for ConditionalMakeSpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> Span {
+        // don't create a span for /health endpoint
+        if request.uri().path() == "/health" {
+            return Span::none();
+        }
+
+        // For all other requests, create a normal span
+        tracing::info_span!(
+            "request",
+            method = %request.method(),
+            uri = %request.uri(),
+        )
+    }
+}
+
+/// Custom response handler that only logs when there's an active span
+#[derive(Clone)]
+struct ConditionalOnResponse {}
+
+impl<B> OnResponse<B> for ConditionalOnResponse {
+    fn on_response(self, response: &axum::http::Response<B>, latency: std::time::Duration, _span: &Span) {
+        // Only log if we're in a real span (not Span::none())
+        if !_span.is_disabled() {
+            tracing::info!(
+                status = %response.status(),
+                latency = ?latency,
+                "response"
+            );
+        }
+    }
+}
 
 /// Starts the backup service.
 ///
@@ -67,8 +105,8 @@ pub async fn start(
         .layer(tower_http::compression::CompressionLayer::new())
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
-                .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(tower_http::trace::DefaultOnResponse::new().level(Level::INFO)),
+                .make_span_with(ConditionalMakeSpan {})
+                .on_response(ConditionalOnResponse {}),
         )
         .layer(tower_http::timeout::TimeoutLayer::new(
             std::time::Duration::from_secs(30),
