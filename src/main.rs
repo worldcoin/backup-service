@@ -15,11 +15,14 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .json()
-        .flatten_event(true)
-        .init();
+    let use_json = std::env::var("JSON_LOG_FORMAT").is_ok();
+    let builder = tracing_subscriber::fmt().with_target(true);
+
+    if use_json {
+        builder.json().flatten_event(true).init();
+    } else {
+        builder.init();
+    }
 
     tracing::info!("...Starting backup service");
 
