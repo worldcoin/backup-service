@@ -84,7 +84,7 @@ pub async fn start(
     ));
 
     let listener = TcpListener::bind(&addr).await?;
-    tracing::info!("🔄 Backup service started on http://{addr}");
+    tracing::info!("✅ Backup service started on http://{addr}");
 
     axum::serve(listener, router.into_make_service())
         .await
