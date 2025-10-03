@@ -820,6 +820,7 @@ dependencies = [
  "hex",
  "mockito",
  "openidconnect",
+ "p256 0.13.2",
  "passkey",
  "public-suffix",
  "rand 0.8.5",
