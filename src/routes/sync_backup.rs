@@ -81,7 +81,7 @@ pub async fn handler(
     }
 
     // Step 2: Auth. Verify the solved challenge in the authorization parameter
-    let (backup_id, _backup_metadata) = auth_handler
+    let (backup_id, backup_metadata) = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Sync,
@@ -89,6 +89,14 @@ pub async fn handler(
             request.challenge_token,
         )
         .await?;
+
+    let span = tracing::info_span!(
+        "sync_backup",
+        backup_id = backup_id,
+        current_manifest_hash = backup_metadata.manifest_hash,
+        new_manifest_hash = request.new_manifest_hash
+    );
+    let _span_guard = span.enter();
 
     // Step 3: Acquire a lock on the backup to prevent concurrent updates
     let mut lock_guard = redis_cache_manager

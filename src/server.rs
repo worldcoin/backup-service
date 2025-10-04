@@ -9,6 +9,7 @@ use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
+use http::StatusCode;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::trace::{MakeSpan, OnResponse};
@@ -25,11 +26,13 @@ impl<B> MakeSpan<B> for ConditionalMakeSpan {
             return Span::none();
         }
 
-        // For all other requests, create a normal span
+        let request_id = uuid::Uuid::new_v4();
+
         tracing::info_span!(
             "request",
             method = %request.method(),
             uri = %request.uri(),
+            request_id = %request_id,
         )
     }
 }
@@ -45,13 +48,25 @@ impl<B> OnResponse<B> for ConditionalOnResponse {
         latency: std::time::Duration,
         span: &Span,
     ) {
-        // Only log if we're in a real span (not Span::none())
         if !span.is_disabled() {
-            tracing::info!(
-                status = %response.status(),
-                latency = ?latency,
-                "response"
+            let message = format!(
+                "request completed with status {} in {}ms",
+                response.status(),
+                latency.as_millis()
             );
+            if response.status() == StatusCode::INTERNAL_SERVER_ERROR {
+                tracing::error!(
+                    message,
+                    status = %response.status(),
+                    latency = ?latency,
+                );
+            } else {
+                tracing::info!(
+                    message,
+                    status = %response.status(),
+                    latency = ?latency,
+                );
+            }
         }
     }
 }

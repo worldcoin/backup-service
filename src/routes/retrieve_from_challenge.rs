@@ -56,6 +56,9 @@ pub async fn handler(
         )
         .await?;
 
+    let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = backup_id);
+    let _span_guard = span.enter();
+
     // Step 2: Fetch the backup from S3
     let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;
     let Some(backup) = backup else {
