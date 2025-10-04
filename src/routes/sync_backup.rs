@@ -90,6 +90,9 @@ pub async fn handler(
         )
         .await?;
 
+    let span = tracing::info_span!("sync_backup", backup_id = backup_id);
+    let _span_guard = span.enter();
+
     // Step 3: Acquire a lock on the backup to prevent concurrent updates
     let mut lock_guard = redis_cache_manager
         .try_acquire_lock_guard(

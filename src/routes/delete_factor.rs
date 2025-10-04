@@ -76,6 +76,9 @@ pub async fn handler(
         )
         .await?;
 
+    let span = tracing::info_span!("delete_factor", backup_id = backup_id);
+    let _span_guard = span.enter();
+
     // Step 3: Find the factor to delete from the backup
     let factor_to_delete = match request.scope {
         FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
