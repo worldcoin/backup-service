@@ -773,3 +773,277 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
         })
     );
 }
+
+/// Test that duplicate backup_account_id is rejected
+#[tokio::test]
+async fn test_create_backup_with_duplicate_backup_account_id() {
+    let mut passkey_client = get_mock_passkey_client();
+
+    // Get a challenge from the server
+    let challenge_response = get_passkey_challenge().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
+
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
+    // Generate a backup_account_id that we'll use for both requests
+    let backup_account_id = generate_random_backup_id();
+
+    // Send the first request to create a backup
+    let response = send_post_request_with_multipart(
+        "/v1/create",
+        json!({
+            "authorization": {
+                "kind": "PASSKEY",
+                "credential": credential.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor.clone(),
+            "initialSyncChallengeToken": sync_challenge_token.clone(),
+            "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": backup_account_id.clone(),
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Now try to create another backup with the same backup_account_id
+    // Get a new challenge
+    let challenge_response2 = get_passkey_challenge().await;
+    let credential2 =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response2).await;
+
+    // Create a new sync factor
+    let (sync_factor2, sync_challenge_token2, _) = make_sync_factor().await;
+
+    let response = send_post_request_with_multipart(
+        "/v1/create",
+        json!({
+            "authorization": {
+                "kind": "PASSKEY",
+                "credential": credential2,
+            },
+            "challengeToken": challenge_response2["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY_2",
+            },
+            "initialSyncFactor": sync_factor2,
+            "initialSyncChallengeToken": sync_challenge_token2,
+            "manifestHash": hex::encode([2u8; 32]),
+            "backupAccountId": backup_account_id,
+        }),
+        Bytes::from(b"TEST FILE 2".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_account_id_already_exists",
+                "message": "backup_account_id_already_exists",
+            },
+        })
+    );
+}
+
+/// Test that invalid backup account IDs are rejected during deserialization
+#[tokio::test]
+async fn test_create_backup_with_invalid_backup_account_id() {
+    let mut passkey_client = get_mock_passkey_client();
+
+    // Get a challenge from the server
+    let challenge_response = get_passkey_challenge().await;
+
+    // Register a credential by solving the challenge
+    let credential =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
+
+    // Create a sync factor
+    let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
+    // Test with missing prefix
+    let response = send_post_request_with_multipart(
+        "/v1/create",
+        json!({
+            "authorization": {
+                "kind": "PASSKEY",
+                "credential": credential.clone(),
+            },
+            "challengeToken": challenge_response["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor.clone(),
+            "initialSyncChallengeToken": sync_challenge_token.clone(),
+            "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "invalid_payload",
+                "message": "invalid_payload",
+            },
+        })
+    );
+
+    // Test with wrong length (too short)
+    let challenge_response2 = get_passkey_challenge().await;
+    let credential2 =
+        make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response2).await;
+    let (sync_factor2, sync_challenge_token2, _) = make_sync_factor().await;
+
+    let response = send_post_request_with_multipart(
+        "/v1/create",
+        json!({
+            "authorization": {
+                "kind": "PASSKEY",
+                "credential": credential2.clone(),
+            },
+            "challengeToken": challenge_response2["token"],
+            "initialEncryptionKey": {
+                "kind": "PRF",
+                "encryptedKey": "ENCRYPTED_KEY",
+            },
+            "initialSyncFactor": sync_factor2.clone(),
+            "initialSyncChallengeToken": sync_challenge_token2.clone(),
+            "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": "backup_account_0102",
+        }),
+        Bytes::from(b"TEST FILE".as_slice()),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "invalid_payload",
+                "message": "invalid_payload",
+            },
+        })
+    );
+}
+
+/// Test that concurrent requests to create backups with the same backup_account_id don't cause race conditions
+#[tokio::test]
+async fn test_no_race_conditions_on_concurrent_backup_account_id() {
+    use futures::future::join_all;
+
+    let backup_account_id = generate_random_backup_id();
+    let num_concurrent_requests = 5;
+
+    // Create multiple concurrent requests with the same backup_account_id
+    let mut handles = vec![];
+    for _ in 0..num_concurrent_requests {
+        let backup_account_id = backup_account_id.clone();
+        let handle = tokio::spawn(async move {
+            let mut passkey_client = get_mock_passkey_client();
+            let challenge_response = get_passkey_challenge().await;
+            let credential =
+                make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response)
+                    .await;
+            let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
+
+            send_post_request_with_multipart(
+                "/v1/create",
+                json!({
+                    "authorization": {
+                        "kind": "PASSKEY",
+                        "credential": credential,
+                    },
+                    "challengeToken": challenge_response["token"],
+                    "initialEncryptionKey": {
+                        "kind": "PRF",
+                        "encryptedKey": "ENCRYPTED_KEY",
+                    },
+                    "initialSyncFactor": sync_factor,
+                    "initialSyncChallengeToken": sync_challenge_token,
+                    "manifestHash": hex::encode([1u8; 32]),
+                    "backupAccountId": backup_account_id,
+                }),
+                Bytes::from(b"TEST FILE".as_slice()),
+                None,
+            )
+            .await
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all requests to complete
+    let responses = join_all(handles).await;
+
+    // Exactly one request should succeed, the rest should fail with either:
+    // - conflicting_lock (423 LOCKED) - if they hit the Redis lock
+    // - backup_account_id_already_exists (400 BAD_REQUEST) - if they got past the lock but backup already exists
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for result in responses {
+        let response = result.unwrap();
+        if response.status() == StatusCode::OK {
+            success_count += 1;
+        } else if response.status() == StatusCode::LOCKED {
+            // StatusCode::LOCKED is 423
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let response_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if response_body["error"]["code"] == "conflicting_lock" {
+                error_count += 1;
+            }
+        } else if response.status() == StatusCode::BAD_REQUEST {
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let response_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if response_body["error"]["code"] == "backup_account_id_already_exists" {
+                error_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        success_count, 1,
+        "Expected exactly 1 successful request, got {}",
+        success_count
+    );
+    assert_eq!(
+        error_count,
+        num_concurrent_requests - 1,
+        "Expected {} errors (conflicting_lock or backup_account_id_already_exists), got {}",
+        num_concurrent_requests - 1,
+        error_count
+    );
+}
