@@ -775,7 +775,7 @@ mod tests {
         let google_account = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -852,7 +852,7 @@ mod tests {
         let new_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "67890".to_string(),
-                email: "test2@example.com".to_string(),
+                masked_email: "t2****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -945,7 +945,7 @@ mod tests {
         let oidc_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -982,14 +982,14 @@ mod tests {
         let factor1 = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
-                email: "test1@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
         let factor2 = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "67890".to_string(),
-                email: "test2@example.com".to_string(),
+                masked_email: "t2****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -1069,7 +1069,7 @@ mod tests {
         let google_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
-                email: "test1@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -1077,7 +1077,7 @@ mod tests {
         let apple_factor = Factor::new_oidc_account(
             OidcAccountKind::Apple {
                 sub: "67890".to_string(),
-                email: "test2@example.com".to_string(),
+                masked_email: "t2****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
@@ -1145,7 +1145,7 @@ mod tests {
         let google_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             "turnkey_provider_id".to_string(),
         );
