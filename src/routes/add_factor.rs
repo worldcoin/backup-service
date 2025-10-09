@@ -67,7 +67,7 @@ pub async fn handler(
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     // Step 1: Check authorization for the existing factor and get the backup ID
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
-        Authorization::Passkey { credential } => {
+        Authorization::Passkey { credential, .. } => {
             // Step 1A.1: Validate the format of data: turnkey activity, passkey assertion object
 
             // Turnkey activity is required for passkeys

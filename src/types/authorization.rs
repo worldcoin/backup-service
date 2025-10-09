@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum Authorization {
     #[serde(rename_all = "camelCase")]
-    Passkey { credential: serde_json::Value },
+    Passkey {
+        credential: serde_json::Value,
+        #[serde(default)]
+        label: String,
+    },
     #[serde(rename_all = "camelCase")]
     OidcAccount {
         // OIDC token from external provider, like Google or Apple
