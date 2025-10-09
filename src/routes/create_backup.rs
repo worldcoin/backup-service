@@ -110,15 +110,16 @@ pub async fn handler(
     let initial_sync_factor = sync_validation_result.factor;
     let initial_sync_factor_to_lookup = sync_validation_result.factor_to_lookup;
 
-    // Step 3: Ensure the backup account ID is unique
+    // Step 4: Ensure the backup account ID is unique
     if backup_storage
         .does_backup_exist(&request.backup_account_id)
         .await?
     {
-        tracing::info!(message = "Backup account ID already exists");
-        return Err(ErrorResponse::bad_request(
-            "backup_account_id_already_exists",
-        ));
+        tracing::info!(
+            message = "Backup account ID already exists",
+            backup_account_id = request.backup_account_id
+        );
+        return Err(ErrorResponse::conflict("backup_account_id_already_exists"));
     }
     let mut lock_guard = redis_cache_manager
         .try_acquire_lock_guard(
@@ -128,7 +129,7 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 4: Initialize backup metadata
+    // Step 5: Initialize backup metadata
     let backup_metadata = BackupMetadata {
         id: request.backup_account_id,
         factors: vec![backup_factor],
@@ -137,7 +138,7 @@ pub async fn handler(
         manifest_hash: request.manifest_hash,
     };
 
-    // Step 5: Link credential ID and sync factor public key to backup ID for lookup during recovery
+    // Step 6: Link credential ID and sync factor public key to backup ID for lookup during recovery
     // and sync. This should happen before the backup storage is updated, because
     // it might fail with a duplicate key error.
     factor_lookup
@@ -155,14 +156,14 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 6: Save the backup to S3
+    // Step 7: Save the backup to S3
     let result = backup_storage
         .create(backup.to_vec(), &backup_metadata)
         .await;
 
     let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
-    // Step 6.1: If the backup storage create fails, remove the factor from the lookup table
+    // Step 7.1: If the backup storage create fails, remove the factor from the lookup table
     if let Err(e) = result {
         if let Err(e) = factor_lookup
             .delete(FactorScope::Main, &factor_to_lookup)

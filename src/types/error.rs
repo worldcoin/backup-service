@@ -56,6 +56,14 @@ impl ErrorResponse {
             status: StatusCode::LOCKED,
         }
     }
+
+    #[must_use]
+    pub fn conflict(message: &str) -> Self {
+        Self {
+            error: message.to_string(),
+            status: StatusCode::CONFLICT,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -195,6 +203,10 @@ impl From<BackupManagerError> for ErrorResponse {
                     error: "manifest_hash_mismatch".to_string(),
                     status: StatusCode::PRECONDITION_FAILED,
                 }
+            }
+            BackupManagerError::FactorOrphanedFromEncryptionKey => {
+                tracing::info!(message = "Factor would be orphaned by removing the specific encryption key.", error = ?err);
+                ErrorResponse::bad_request("factor_orphaned_from_encryption_key")
             }
         }
     }

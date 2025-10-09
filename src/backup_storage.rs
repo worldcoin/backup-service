@@ -347,10 +347,53 @@ impl BackupStorage {
             return self.delete_backup(backup_id).await;
         }
 
-        // If a backup encryption key is provided, remove it from the metadata
+        // If a backup encryption key is provided, remove it from the metadata, validating no orphans are left
         if let Some(encryption_key) = backup_encryption_key_to_delete {
             if let Some(key_index) = metadata.keys.iter().position(|k| k == encryption_key) {
                 metadata.keys.remove(key_index);
+
+                // Ensure we are not removing keys and leaving unusable factors
+                match encryption_key {
+                    BackupEncryptionKey::Prf { .. } => {
+                        if !metadata
+                            .keys
+                            .iter()
+                            .any(|k| matches!(k, BackupEncryptionKey::Prf { .. }))
+                            && metadata
+                                .factors
+                                .iter()
+                                .any(|f| matches!(f.kind, FactorKind::Passkey { .. }))
+                        {
+                            return Err(BackupManagerError::FactorOrphanedFromEncryptionKey);
+                        }
+                    }
+                    BackupEncryptionKey::Icloud { .. } => {
+                        if !metadata
+                            .keys
+                            .iter()
+                            .any(|k| matches!(k, BackupEncryptionKey::Icloud { .. }))
+                            && metadata
+                                .factors
+                                .iter()
+                                .any(|f| matches!(f.kind, FactorKind::EcKeypair { .. }))
+                        {
+                            return Err(BackupManagerError::FactorOrphanedFromEncryptionKey);
+                        }
+                    }
+                    BackupEncryptionKey::Turnkey { .. } => {
+                        if !metadata
+                            .keys
+                            .iter()
+                            .any(|k| matches!(k, BackupEncryptionKey::Turnkey { .. }))
+                            && metadata
+                                .factors
+                                .iter()
+                                .any(|f| matches!(f.kind, FactorKind::OidcAccount { .. }))
+                        {
+                            return Err(BackupManagerError::FactorOrphanedFromEncryptionKey);
+                        }
+                    }
+                }
             } else {
                 // return Err if the key is not found
                 return Err(BackupManagerError::EncryptionKeyNotFound);
@@ -517,6 +560,8 @@ pub enum BackupManagerError {
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
     #[error("Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first.")]
     ManifestHashMismatch,
+    #[error("A factor would be orphaned by removing the specific encryption key.")]
+    FactorOrphanedFromEncryptionKey,
 }
 
 #[cfg(test)]
@@ -998,5 +1043,192 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    /// OIDC factors (Google or Apple for example) share the same underlying backup encryption key stored in Turnkey,
+    /// when removing one of the factors it's important to verify that the backup encryption key is not removed if there is another
+    /// OIDC factor remaining. Otherwise, even though the user will be able to authenticate to the backup remote services, they won't
+    /// be able to actually decrypt their backup.
+    #[tokio::test]
+    async fn test_cannot_remove_turnkey_key_with_oidc_factor_remaining() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Create a test backup with two OIDC factors and one Turnkey key
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let turnkey_key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "TURNKEY_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        let google_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                email: "test1@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+
+        let apple_factor = Factor::new_oidc_account(
+            OidcAccountKind::Apple {
+                sub: "67890".to_string(),
+                email: "test2@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![google_factor.clone(), apple_factor.clone()],
+            sync_factors: vec![],
+            keys: vec![turnkey_key.clone()],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Try to remove the first OIDC factor and the Turnkey key while another OIDC factor remains
+        // This should fail because the remaining OIDC factor needs the Turnkey key
+        let result = backup_storage
+            .remove_factor(&test_backup_id, &google_factor.id, Some(&turnkey_key))
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::FactorOrphanedFromEncryptionKey) => {
+                // Expected error - we cannot remove the Turnkey key while an OIDC factor remains
+            }
+            _ => panic!("Expected FactorOrphanedFromEncryptionKey"),
+        }
+
+        // Verify the backup still has both factors and the key
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 2);
+        assert_eq!(updated_backup.metadata.keys.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_can_remove_turnkey_key_when_last_oidc_factor_removed() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Create a test backup with one OIDC factor, one Passkey factor, and both Turnkey and PRF keys
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+
+        let turnkey_key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "TURNKEY_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        let prf_key = BackupEncryptionKey::Prf {
+            encrypted_key: "PRF_KEY".to_string(),
+        };
+
+        let google_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                email: "test@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+
+        let test_webauthn_credential = json!({
+          "cred": {
+            "cred_id": "g967rT-WLv033gKWfMVpfg",
+            "cred": {
+              "type_": "ES256",
+              "key": {
+                "EC_EC2": {
+                  "curve": "SECP256R1",
+                  "x": "JXxTIZGm00nLcAreAWVdxNRaXTtLHn574LZN54Ua9oU",
+                  "y": "Excf9w7v519SL8eHA9H5n4V8BcheP59Jz9sHyWs3oDM"
+                }
+              }
+            },
+            "counter": 0,
+            "transports": null,
+            "user_verified": true,
+            "backup_eligible": true,
+            "backup_state": true,
+            "registration_policy": "required",
+            "extensions": {
+              "cred_protect": "Ignored",
+              "hmac_create_secret": "NotRequested",
+              "appid": "NotRequested",
+              "cred_props": "Ignored"
+            },
+            "attestation": {
+              "data": "None",
+              "metadata": "None"
+            },
+            "attestation_format": "none"
+          }
+        });
+
+        let passkey_factor = Factor {
+            id: Uuid::new_v4().to_string(),
+            kind: FactorKind::Passkey {
+                webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
+                registration: json!({}),
+            },
+            created_at: DateTime::default(),
+        };
+
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![google_factor.clone(), passkey_factor.clone()],
+            sync_factors: vec![],
+            keys: vec![turnkey_key.clone(), prf_key.clone()],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Remove the last OIDC factor along with the Turnkey key
+        // This should succeed because no OIDC factors will remain
+        let result = backup_storage
+            .remove_factor(&test_backup_id, &google_factor.id, Some(&turnkey_key))
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), DeletionResult::OnlyFactorDeleted);
+
+        // Verify the backup now has only the Passkey factor and PRF key
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.factors.len(), 1);
+        assert_eq!(updated_backup.metadata.factors[0].id, passkey_factor.id);
+        assert_eq!(updated_backup.metadata.keys.len(), 1);
+        match &updated_backup.metadata.keys[0] {
+            BackupEncryptionKey::Prf { .. } => {
+                // Expected - only PRF key should remain
+            }
+            _ => panic!("Expected only PRF key to remain"),
+        }
     }
 }
