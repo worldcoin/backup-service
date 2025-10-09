@@ -94,7 +94,7 @@ impl AuthHandler {
 
         // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
         let (backup_id, backup_metadata) = match authorization {
-            Authorization::Passkey { credential } => {
+            Authorization::Passkey { credential, .. } => {
                 self.validate_passkey_authentication(
                     credential,
                     &challenge_token_payload,
@@ -180,9 +180,11 @@ impl AuthHandler {
         // Step 4: Validate the specific authorization type and create the factor
         // Each factor type has its own validation rules for registration
         let (factor, factor_to_lookup) = match authorization {
-            Authorization::Passkey { credential } => {
-                self.validate_passkey_registration(credential, &challenge_token_payload)?
-            }
+            Authorization::Passkey { credential, label } => self.validate_passkey_registration(
+                credential,
+                &challenge_token_payload,
+                label.clone(),
+            )?,
             Authorization::OidcAccount {
                 oidc_token,
                 public_key,
@@ -234,6 +236,7 @@ impl AuthHandler {
         &self,
         credential: &serde_json::Value,
         challenge_token_payload: &[u8],
+        label: String,
     ) -> Result<(Factor, FactorToLookup), ErrorResponse> {
         let passkey_state: PasskeyRegistration = serde_json::from_slice(challenge_token_payload)
             .map_err(|err| {
@@ -259,6 +262,7 @@ impl AuthHandler {
                 tracing::info!(message = "Failed to serialize passkey credential", error = ?err);
                 ErrorResponse::internal_server_error()
             })?,
+            label,
         );
         let factor_to_lookup = FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential_id));
 
@@ -318,6 +322,7 @@ impl AuthHandler {
                 if let FactorKind::Passkey {
                     webauthn_credential,
                     registration: _,
+                    label: _,
                 } = &factor.kind
                 {
                     Some(webauthn_credential.into())

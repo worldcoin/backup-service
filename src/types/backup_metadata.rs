@@ -73,7 +73,12 @@ impl Factor {
             id: self.id.clone(),
             created_at: self.created_at.timestamp(),
             kind: match &self.kind {
-                FactorKind::Passkey { registration, .. } => ExportedFactorKind::Passkey {
+                FactorKind::Passkey {
+                    registration,
+                    label,
+                    ..
+                } => ExportedFactorKind::Passkey {
+                    label: label.clone(),
                     registration: registration.clone(),
                 },
                 FactorKind::OidcAccount {
@@ -132,9 +137,14 @@ impl Factor {
 pub enum FactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey {
+        /// A human-readable label for the passkey. For example, "Google Credential Manager". This is displayed to the user in the UI.
+        #[serde(default)]
+        label: String,
+        /// The passkey credential.
         webauthn_credential: Passkey,
-        // Registration object presented by the client when signing up. Used by the client to be
-        // to register the passkey in Turnkey later, not during initial sign up.
+        /// TODO: Remove once the client migrates to create the Turnkey account immediately upon registration.
+        /// Registration object presented by the client when signing up. Used by the client to be
+        /// to register the passkey in Turnkey later, not during initial sign up.
         registration: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
@@ -189,12 +199,17 @@ impl PartialEq for FactorKind {
 
 impl Factor {
     #[must_use]
-    pub fn new_passkey(webauthn_credential: Passkey, registration: serde_json::Value) -> Self {
+    pub fn new_passkey(
+        webauthn_credential: Passkey,
+        registration: serde_json::Value,
+        label: String,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind: FactorKind::Passkey {
                 webauthn_credential,
                 registration,
+                label,
             },
             created_at: Utc::now(),
         }
@@ -278,9 +293,12 @@ pub struct ExportedFactor {
 pub enum ExportedFactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey {
-        // Registration object presented by the client when signing up. Used by the client to be
-        // to register the passkey in Turnkey later, not during initial sign up.
+        /// TODO: Remove once the client migrates to create the Turnkey account immediately upon registration.
+        /// Registration object presented by the client when signing up. Used by the client to be
+        /// to register the passkey in Turnkey later, not during initial sign up.
         registration: serde_json::Value,
+        /// A human-readable label for the passkey. For example, "Google Credential Manager". This is displayed to the user in the UI.
+        label: String,
     },
     #[serde(rename_all = "camelCase")]
     OidcAccount {
@@ -411,10 +429,12 @@ mod tests {
         let factor_1 = FactorKind::Passkey {
             webauthn_credential: passkey.clone(),
             registration: json!([1]),
+            label: "Google Credential Manager".to_string(),
         };
         let factor_2 = FactorKind::Passkey {
             webauthn_credential: passkey,
             registration: json!([2]),
+            label: "iCloud Keychain".to_string(),
         };
 
         assert_eq!(factor_1, factor_2);

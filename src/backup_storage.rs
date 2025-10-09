@@ -589,6 +589,7 @@ mod tests {
                 kind: FactorKind::Passkey {
                     webauthn_credential: serde_json::from_value(test_webauthn_credential).unwrap(),
                     registration: json!({}),
+                    label: "Google Credential Manager".to_string(),
                 },
                 created_at: DateTime::default(),
             }],

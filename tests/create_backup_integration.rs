@@ -37,6 +37,7 @@ async fn test_create_backup_with_passkey() {
             "authorization": {
                 "kind": "PASSKEY",
                 "credential": credential,
+                "label": "Google Credential Manager",
             },
             "challengeToken": challenge_response["token"],
             "initialEncryptionKey": {
@@ -65,6 +66,10 @@ async fn test_create_backup_with_passkey() {
     // Check that metadata was successfully created on S3
     let metadata = verify_s3_metadata_exists(backup_id).await;
     assert_eq!(metadata["factors"][0]["kind"]["kind"], "PASSKEY");
+    assert_eq!(
+        metadata["factors"][0]["kind"]["label"],
+        "Google Credential Manager"
+    );
     assert_eq!(
         metadata["factors"][0]["kind"]["webauthnCredential"]["cred"]["cred_id"],
         credential["id"]
