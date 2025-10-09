@@ -30,6 +30,8 @@ async fn test_create_backup_with_passkey() {
     // Create a sync factor
     let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
 
+    let backup_account_id = generate_random_backup_id();
+
     // Send the credential to the server to create a backup
     let response = send_post_request_with_multipart(
         "/v1/create",
@@ -46,7 +48,7 @@ async fn test_create_backup_with_passkey() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
-            "backupAccountId": generate_random_backup_id(),
+            "backupAccountId": backup_account_id,
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -58,9 +60,10 @@ async fn test_create_backup_with_passkey() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let backup_id = response["backupId"].as_str().unwrap();
+    assert_eq!(backup_id, backup_account_id);
 
     // Check that backup was successfully created on S3
-    verify_s3_backup_exists(backup_id, b"TEST FILE").await;
+    verify_s3_backup_exists(&backup_account_id, b"TEST FILE").await;
 
     // Check that metadata was successfully created on S3
     let metadata = verify_s3_metadata_exists(backup_id).await;

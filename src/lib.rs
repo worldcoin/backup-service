@@ -74,16 +74,18 @@ where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    let s = s.strip_prefix("backup_account_").ok_or(de::Error::custom(
-        "Invalid backup account ID. Missing expected prefix.",
-    ))?;
-    let bytes = hex::decode(s).map_err(de::Error::custom)?;
+    if !s.starts_with("backup_account_") {
+        return Err(de::Error::custom(
+            "Invalid backup account ID. Missing expected prefix.",
+        ));
+    }
+    let bytes = hex::decode(s.trim_start_matches("backup_account_")).map_err(de::Error::custom)?;
     if bytes.len() != 32 {
         return Err(de::Error::custom(
             "Invalid backup account ID. Expected 32 bytes after the prefix.",
         ));
     }
-    Ok(s.to_string())
+    Ok(s)
 }
 
 #[cfg(test)]
