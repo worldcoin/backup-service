@@ -432,6 +432,26 @@ impl BackupStorage {
         Ok(DeletionResult::BackupDeleted)
     }
 
+    /// Checks whether a backup exists for a specific ID.
+    ///
+    /// # Errors
+    /// Will error if something goes unexpectedly wrong calling the S3 API.
+    pub async fn does_backup_exist(&self, backup_id: &str) -> Result<bool, BackupManagerError> {
+        let result = self
+            .s3_client
+            .head_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_backup_key(backup_id))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     pub async fn is_ready(&self) -> bool {
         let result = self
             .s3_client
@@ -471,6 +491,8 @@ pub enum DeletionResult {
 
 #[derive(thiserror::Error, Debug)]
 pub enum BackupManagerError {
+    #[error("Failed to HeadObject: {0:?}")]
+    HeadObjectError(#[from] SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>),
     #[error("Failed to upload object to S3: {0:?}")]
     PutObjectError(#[from] SdkError<aws_sdk_s3::operation::put_object::PutObjectError>),
     #[error("Failed to download object from S3: {0:?}")]
@@ -506,9 +528,17 @@ mod tests {
     use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
     use chrono::DateTime;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
     use serde_json::json;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    fn gen_backup_id() -> String {
+        let mut test_backup_id: [u8; 32] = [0; 32];
+        OsRng.fill_bytes(&mut test_backup_id);
+        format!("backup_account_{}", hex::encode(test_backup_id))
+    }
 
     #[tokio::test]
     async fn test_create_and_get_backup() {
@@ -517,7 +547,7 @@ mod tests {
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_primary_factor_id = Uuid::new_v4().to_string();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let test_webauthn_credential = json!({
@@ -632,7 +662,7 @@ mod tests {
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let updated_backup_data = vec![6, 7, 8, 9, 10];
 
@@ -680,7 +710,7 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let initial_metadata = BackupMetadata {
             id: test_backup_id.clone(),
@@ -754,7 +784,7 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup with initial encryption key
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let initial_key = BackupEncryptionKey::Prf {
             encrypted_key: "INITIAL_KEY".to_string(),
@@ -820,7 +850,7 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let initial_metadata = BackupMetadata {
             id: test_backup_id.clone(),
@@ -902,7 +932,7 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
         // Create a test backup with two factors
-        let test_backup_id = Uuid::new_v4().to_string();
+        let test_backup_id = gen_backup_id();
         let test_backup_data = vec![1, 2, 3, 4, 5];
         let factor1 = Factor::new_oidc_account(
             OidcAccountKind::Google {
