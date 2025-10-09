@@ -2,6 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
+use crate::common::generate_random_backup_id;
 use crate::common::{
     create_test_backup_with_sync_keypair, sign_keypair_challenge, verify_s3_metadata_exists,
 };
@@ -18,7 +19,6 @@ use base64::Engine;
 use futures::future;
 use http_body_util::BodyExt;
 use serde_json::json;
-use uuid::Uuid;
 
 /// Happy path - delete the last `Main` factor with a sync keypair.
 /// Deleting the last factor also deletes the backup.
@@ -408,7 +408,7 @@ async fn test_remove_sync_factor_etag_concurrency() {
     ));
 
     // Create a backup with multiple sync factors
-    let backup_id = Uuid::new_v4().to_string();
+    let backup_id = generate_random_backup_id();
     let test_backup_data = vec![1, 2, 3, 4, 5];
 
     // Create three sync factors

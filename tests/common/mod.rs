@@ -31,6 +31,7 @@ use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
+use rand::RngCore;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -377,6 +378,12 @@ pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
+pub fn generate_random_backup_id() -> String {
+    let mut test_backup_id: [u8; 32] = [0; 32];
+    OsRng.fill_bytes(&mut test_backup_id);
+    format!("backup_account_{}", hex::encode(test_backup_id))
+}
+
 /// Create a test backup with a passkey credential. Returns both the credential JSON and the create response.
 pub async fn create_test_backup(
     passkey_client: &mut MockPasskeyClient,
@@ -408,6 +415,7 @@ pub async fn create_test_backup(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -466,6 +474,7 @@ pub async fn create_test_backup_with_keypair(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -513,6 +522,7 @@ pub async fn create_test_backup_with_sync_keypair(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -584,6 +594,7 @@ pub async fn create_test_backup_with_oidc_account(
             "initialSyncChallengeToken": sync_challenge_token,
             "turnkeyProviderId": "turnkey_provider_id",
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(backup_data.to_vec()),
         Some(environment),

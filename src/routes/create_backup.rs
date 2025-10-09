@@ -4,15 +4,19 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::normalize_hex_32;
+use crate::redis_cache::RedisCacheManager;
 use crate::types::backup_metadata::BackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
+use crate::{normalize_hex_32, validate_backup_account_id};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+const CREATE_BACKUP_LOCK_KEY: &str = "crate_backup_lock:";
+const CREATE_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +33,9 @@ pub struct CreateBackupRequest {
     /// The initial manifest hash of the backup.
     #[serde(deserialize_with = "normalize_hex_32")]
     manifest_hash: String,
+    /// The unique identifier for the backup account (derived deterministically by the client).
+    #[serde(deserialize_with = "validate_backup_account_id")]
+    backup_account_id: String,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -37,11 +44,13 @@ pub struct CreateBackupResponse {
     pub backup_id: String,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
@@ -101,9 +110,27 @@ pub async fn handler(
     let initial_sync_factor = sync_validation_result.factor;
     let initial_sync_factor_to_lookup = sync_validation_result.factor_to_lookup;
 
+    // Step 3: Ensure the backup account ID is unique
+    if backup_storage
+        .does_backup_exist(&request.backup_account_id)
+        .await?
+    {
+        tracing::info!(message = "Backup account ID already exists");
+        return Err(ErrorResponse::bad_request(
+            "backup_account_id_already_exists",
+        ));
+    }
+    let mut lock_guard = redis_cache_manager
+        .try_acquire_lock_guard(
+            CREATE_BACKUP_LOCK_KEY,
+            request.backup_account_id.clone(),
+            Some(CREATE_BACKUP_LOCK_TTL),
+        )
+        .await?;
+
     // Step 4: Initialize backup metadata
     let backup_metadata = BackupMetadata {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: request.backup_account_id,
         factors: vec![backup_factor],
         sync_factors: vec![initial_sync_factor],
         keys: vec![request.initial_encryption_key.clone()],
@@ -132,6 +159,8 @@ pub async fn handler(
     let result = backup_storage
         .create(backup.to_vec(), &backup_metadata)
         .await;
+
+    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     // Step 6.1: If the backup storage create fails, remove the factor from the lookup table
     if let Err(e) = result {

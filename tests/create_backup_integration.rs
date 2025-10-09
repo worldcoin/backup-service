@@ -1,9 +1,9 @@
 mod common;
 
 use crate::common::{
-    generate_keypair, get_keypair_challenge, get_passkey_challenge, make_sync_factor,
-    send_post_request_with_multipart, sign_keypair_challenge, verify_s3_backup_exists,
-    verify_s3_metadata_exists,
+    generate_keypair, generate_random_backup_id, get_keypair_challenge, get_passkey_challenge,
+    make_sync_factor, send_post_request_with_multipart, sign_keypair_challenge,
+    verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -46,6 +46,7 @@ async fn test_create_backup_with_passkey() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -85,6 +86,7 @@ async fn test_create_backup_with_passkey() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -150,6 +152,7 @@ async fn test_create_backup_with_oidc_token() {
         "initialSyncChallengeToken": sync_challenge_token,
         "turnkeyProviderId": "turnkey_provider_id",
         "manifestHash": hex::encode([1u8; 32]),
+        "backupAccountId": generate_random_backup_id(),
     });
 
     // Send the OIDC token to the server to create a backup
@@ -204,6 +207,7 @@ async fn test_create_backup_with_ec_keypair() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -250,6 +254,7 @@ async fn test_create_backup_with_incorrect_token() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -312,6 +317,7 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -365,6 +371,7 @@ async fn test_create_backup_with_empty_file() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"".as_slice()),
         None,
@@ -418,6 +425,7 @@ async fn test_create_backup_with_large_file() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(vec![0; 10 * 1024 * 1024 + 1]), // 10 MB file + 1 byte
         None,
@@ -485,6 +493,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
             "initialSyncChallengeToken": sync_challenge_token,
             "turnkeyProviderId": "turnkey_provider_id",
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
@@ -554,6 +563,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
             "initialSyncChallengeToken": sync_challenge_token,
             "turnkeyProviderId": "turnkey_provider_id",
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         Some(environment),
@@ -611,6 +621,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -680,6 +691,7 @@ async fn test_create_backup_with_invalid_sync_factor() {
             },
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,
@@ -739,6 +751,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
+            "backupAccountId": generate_random_backup_id(),
         }),
         Bytes::from(b"TEST FILE".as_slice()),
         None,

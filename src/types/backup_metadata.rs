@@ -15,7 +15,14 @@ use webauthn_rs::prelude::Passkey;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupMetadata {
-    /// Backup ID, generated randomly.
+    /// The unique identifier for the backup account, i.e. each user can only have one backup account.
+    ///
+    /// Used to ensure that a user can only have a single backup (enforced in /create-backup).
+    ///
+    /// The identifier is deterministically derived by the client (see `derive_public_backup_account_id`).
+    /// It is used to prevent accidentally creating multiple backups. It is not intended to prevent
+    /// malicious creation of multiple backups. The raison d'être is to prevent user confusion
+    /// and undefined behavior in the UI from the user having multiple backups for the same account.
     pub id: String,
     /// Factors that are used to access the backup and modify it (including adding other factors).
     pub factors: Vec<Factor>,
@@ -234,7 +241,7 @@ pub enum OidcAccountKind {
 }
 
 /// The part of metadata of the backup that's exported to the client when performing the recovery.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedBackupMetadata {
     /// The ID of the backup.

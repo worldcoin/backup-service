@@ -65,6 +65,27 @@ where
     Ok(s.to_string())
 }
 
+/// Deserializes a provided backup account ID and verifies it has the correct format.
+///
+/// # Errors
+/// Returns an error if the provided value is not valid.
+pub fn validate_backup_account_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let s = s.strip_prefix("backup_account_").ok_or(de::Error::custom(
+        "Invalid backup account ID. Missing expected prefix.",
+    ))?;
+    let bytes = hex::decode(s).map_err(de::Error::custom)?;
+    if bytes.len() != 32 {
+        return Err(de::Error::custom(
+            "Invalid backup account ID. Expected 32 bytes after the prefix.",
+        ));
+    }
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
