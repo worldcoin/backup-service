@@ -5,6 +5,7 @@ use webauthn_rs::prelude::{
     RegisterPublicKeyCredential,
 };
 
+use crate::mask_email;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::types::backup_metadata::{Factor, OidcAccountKind};
 use crate::types::OidcToken;
@@ -390,11 +391,11 @@ impl AuthHandler {
         let oidc_account = match oidc_token {
             OidcToken::Google { .. } => OidcAccountKind::Google {
                 sub: claims.subject().to_string(),
-                email,
+                masked_email: mask_email(&email).unwrap_or_default(),
             },
             OidcToken::Apple { .. } => OidcAccountKind::Apple {
                 sub: claims.subject().to_string(),
-                email,
+                masked_email: mask_email(&email).unwrap_or_default(),
             },
         };
 
@@ -458,14 +459,6 @@ impl AuthHandler {
             return Err(ErrorResponse::bad_request("oidc_account_error"));
         };
 
-        let email = claims
-            .email()
-            .ok_or_else(|| {
-                tracing::info!(message = "Missing email in OIDC token");
-                ErrorResponse::bad_request("oidc_token_verification_error")
-            })?
-            .to_string();
-
         let is_oidc_account_in_factors = backup_metadata.factors.iter().any(|factor| {
             if let FactorKind::OidcAccount {
                 account,
@@ -473,14 +466,9 @@ impl AuthHandler {
             } = &factor.kind
             {
                 match account {
-                    OidcAccountKind::Google {
-                        sub,
-                        email: factor_email,
+                    OidcAccountKind::Google { sub, .. } | OidcAccountKind::Apple { sub, .. } => {
+                        sub == &claims.subject().to_string()
                     }
-                    | OidcAccountKind::Apple {
-                        sub,
-                        email: factor_email,
-                    } => sub == &claims.subject().to_string() && factor_email == &email,
                 }
             } else {
                 false

@@ -1,6 +1,6 @@
+use crate::factor_lookup::FactorToLookup;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
-use crate::{factor_lookup::FactorToLookup, mask_email};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -86,12 +86,16 @@ impl Factor {
                     turnkey_provider_id,
                 } => ExportedFactorKind::OidcAccount {
                     account: match account {
-                        OidcAccountKind::Google { email, .. } => ExportedOidcAccountKind::Google {
-                            masked_email: mask_email(email).unwrap_or_default(),
-                        },
-                        OidcAccountKind::Apple { email, .. } => ExportedOidcAccountKind::Apple {
-                            masked_email: mask_email(email).unwrap_or_default(),
-                        },
+                        OidcAccountKind::Google { masked_email, .. } => {
+                            ExportedOidcAccountKind::Google {
+                                masked_email: masked_email.clone(),
+                            }
+                        }
+                        OidcAccountKind::Apple { masked_email, .. } => {
+                            ExportedOidcAccountKind::Apple {
+                                masked_email: masked_email.clone(),
+                            }
+                        }
                     },
                     turnkey_provider_id: turnkey_provider_id.clone(),
                 },
@@ -115,10 +119,10 @@ impl Factor {
                 turnkey_provider_id: _,
             } => {
                 let (issuer_url, sub) = match account {
-                    OidcAccountKind::Google { sub, email: _ } => {
+                    OidcAccountKind::Google { sub, .. } => {
                         (environment.google_issuer_url().to_string(), sub.to_string())
                     }
-                    OidcAccountKind::Apple { sub, email: _ } => {
+                    OidcAccountKind::Apple { sub, .. } => {
                         (environment.apple_issuer_url().to_string(), sub.to_string())
                     }
                 };
@@ -246,13 +250,36 @@ pub struct OidcAccount {
     pub kind: OidcAccountKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum OidcAccountKind {
     #[serde(rename_all = "camelCase")]
-    Google { sub: String, email: String },
+    Google {
+        sub: String,
+        #[serde(default)]
+        masked_email: String,
+    },
     #[serde(rename_all = "camelCase")]
-    Apple { sub: String, email: String },
+    Apple {
+        sub: String,
+        #[serde(default)]
+        masked_email: String,
+    },
+}
+
+impl PartialEq for OidcAccountKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                OidcAccountKind::Google { sub, .. },
+                OidcAccountKind::Google { sub: sub_other, .. },
+            )
+            | (OidcAccountKind::Apple { sub, .. }, OidcAccountKind::Apple { sub: sub_other, .. }) => {
+                sub == sub_other
+            }
+            _ => false,
+        }
+    }
 }
 
 /// The part of metadata of the backup that's exported to the client when performing the recovery.
@@ -358,7 +385,7 @@ mod tests {
         let factor_1 = FactorKind::OidcAccount {
             account: OidcAccountKind::Google {
                 sub: "1234567890".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             turnkey_provider_id: "1234567890".to_string(),
         };
@@ -366,7 +393,7 @@ mod tests {
         let factor_2 = FactorKind::OidcAccount {
             account: OidcAccountKind::Google {
                 sub: "1234567890".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t1***@example.com".to_string(), // see how this is a different masked email
             },
             turnkey_provider_id: "1234567890".to_string(),
         };
@@ -374,7 +401,7 @@ mod tests {
         let factor_3 = FactorKind::OidcAccount {
             account: OidcAccountKind::Google {
                 sub: "1234567890".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             turnkey_provider_id: "1234567891".to_string(), // different provider ID
         };
@@ -382,7 +409,7 @@ mod tests {
         let factor_4 = FactorKind::OidcAccount {
             account: OidcAccountKind::Google {
                 sub: "1234567891".to_string(), // different sub
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             turnkey_provider_id: "1234567890".to_string(),
         };
@@ -391,7 +418,7 @@ mod tests {
             account: OidcAccountKind::Apple {
                 // different `OidcAccountKind`
                 sub: "1234567890".to_string(),
-                email: "test@example.com".to_string(),
+                masked_email: "t****@example.com".to_string(),
             },
             turnkey_provider_id: "1234567890".to_string(),
         };
