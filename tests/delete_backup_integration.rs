@@ -248,7 +248,7 @@ async fn test_delete_backup_with_non_existent_backup() {
     let error_response: serde_json::Value = serde_json::from_slice(&error_body).unwrap();
     assert_eq!(
         error_response["error"]["code"].as_str().unwrap(),
-        "backup_not_found"
+        "backup_untraceable"
     );
 }
 
