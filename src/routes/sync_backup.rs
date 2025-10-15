@@ -12,6 +12,7 @@ use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -92,36 +93,38 @@ pub async fn handler(
 
     let span = tracing::info_span!(
         "sync_backup",
-        backup_id = backup_id,
-        current_manifest_hash = backup_metadata.manifest_hash,
-        new_manifest_hash = request.new_manifest_hash
+        backup_id = %backup_id,
+        current_manifest_hash = %backup_metadata.manifest_hash,
+        new_manifest_hash = %request.new_manifest_hash
     );
-    let _span_guard = span.enter();
+    async move {
+        // Step 3: Acquire a lock on the backup to prevent concurrent updates
+        let mut lock_guard = redis_cache_manager
+            .try_acquire_lock_guard(
+                SYNC_BACKUP_LOCK_KEY,
+                backup_id.clone(),
+                Some(SYNC_BACKUP_LOCK_TTL),
+            )
+            .await?;
 
-    // Step 3: Acquire a lock on the backup to prevent concurrent updates
-    let mut lock_guard = redis_cache_manager
-        .try_acquire_lock_guard(
-            SYNC_BACKUP_LOCK_KEY,
-            backup_id.clone(),
-            Some(SYNC_BACKUP_LOCK_TTL),
-        )
-        .await?;
+        // Step 4: Update the backup with the new backup file
+        let update_result = backup_storage
+            .update_backup(
+                &backup_id,
+                backup.to_vec(),
+                request.current_manifest_hash,
+                request.new_manifest_hash,
+            )
+            .await;
 
-    // Step 4: Update the backup with the new backup file
-    let update_result = backup_storage
-        .update_backup(
-            &backup_id,
-            backup.to_vec(),
-            request.current_manifest_hash,
-            request.new_manifest_hash,
-        )
-        .await;
+        let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
-    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
+        if let Err(e) = update_result {
+            return Err(e.into());
+        }
 
-    if let Err(e) = update_result {
-        return Err(e.into());
+        Ok(Json(SyncBackupResponse { backup_id }))
     }
-
-    Ok(Json(SyncBackupResponse { backup_id }))
+    .instrument(span)
+    .await
 }
