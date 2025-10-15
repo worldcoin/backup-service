@@ -149,7 +149,7 @@ impl From<AuthError> for ErrorResponse {
             | AuthError::InvalidChallengeContext
             | AuthError::InvalidSyncFactorType
             | AuthError::MissingTurnkeyProviderId
-            | AuthError::WebauthNPrfResultsNotAllowed
+            | AuthError::WebauthnPrfResultsNotAllowed
             | AuthError::MissingEmail => {
                 tracing::debug!(message = "Client-side auth failure", error = ?err);
                 Self::bad_request(&err.to_string())

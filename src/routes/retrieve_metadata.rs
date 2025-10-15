@@ -40,7 +40,7 @@ pub async fn handler(
         )
         .await;
 
-    if matches!(backup_metadata, Err(AuthError::BackupUntraceable)) {
+    if matches!(&backup_metadata, Err(AuthError::BackupUntraceable)) {
         // when the backup cannot be traced to a specific backup ID and if the client provided an explicit backup ID we check
         // if the problem is the backup does not actually exist or instead the factor is invalid
         if let Some(backup_id) = request.backup_id {

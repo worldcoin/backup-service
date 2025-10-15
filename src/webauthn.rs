@@ -8,7 +8,7 @@ pub trait TryFromValue: Sized {
     /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
     ///
     /// # Errors
-    /// - Returns `AuthError::WebauthNPrfResultsNotAllowed` if PRF extension information is present in the credential. This is a security risk.
+    /// - Returns `AuthError::WebauthnPrfResultsNotAllowed` if PRF extension information is present in the credential. This is a security risk.
     /// - Returns `AuthError::WebauthnClientError` if the credential is invalid or cannot be deserialized.
     fn try_from_value(value: &Value) -> Result<Self, AuthError>;
 }
@@ -23,7 +23,7 @@ impl TryFromValue for PublicKeyCredential {
             .and_then(|prf| prf.get("results")) // this field must be removed by the clients and never sent to the server
             .is_some()
         {
-            return Err(AuthError::WebauthNPrfResultsNotAllowed);
+            return Err(AuthError::WebauthnPrfResultsNotAllowed);
         }
 
         //  Deserialize credential
@@ -72,7 +72,7 @@ mod tests {
         let result = PublicKeyCredential::try_from_value(&raw);
         assert!(matches!(
             result,
-            Err(AuthError::WebauthNPrfResultsNotAllowed)
+            Err(AuthError::WebauthnPrfResultsNotAllowed)
         ));
     }
 

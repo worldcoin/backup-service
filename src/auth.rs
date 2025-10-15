@@ -64,7 +64,7 @@ pub enum AuthError {
     WebauthnClientError,
 
     #[error("webauthn_prf_results_not_allowed")]
-    WebauthNPrfResultsNotAllowed,
+    WebauthnPrfResultsNotAllowed,
 
     /// Unexpected server-side error with `WebAuthN`.
     #[error("WebAuthN server error: {err}")]
