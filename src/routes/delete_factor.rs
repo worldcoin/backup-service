@@ -10,6 +10,7 @@ use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -76,51 +77,53 @@ pub async fn handler(
         )
         .await?;
 
-    let span = tracing::info_span!("delete_factor", backup_id = backup_id);
-    let _span_guard = span.enter();
+    let span = tracing::info_span!("delete_factor", backup_id = %backup_id);
+    async move {
+        // Step 3: Find the factor to delete from the backup
+        let factor_to_delete = match request.scope {
+            FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
+            FactorScope::Sync => backup_metadata
+                .sync_factors
+                .iter()
+                .find(|f| f.id == factor_id),
+        };
 
-    // Step 3: Find the factor to delete from the backup
-    let factor_to_delete = match request.scope {
-        FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
-        FactorScope::Sync => backup_metadata
-            .sync_factors
-            .iter()
-            .find(|f| f.id == factor_id),
-    };
+        let Some(factor_to_delete) = factor_to_delete else {
+            tracing::info!(message = "Factor not found in backup metadata");
+            return Err(ErrorResponse::bad_request("factor_not_found"));
+        };
 
-    let Some(factor_to_delete) = factor_to_delete else {
-        tracing::info!(message = "Factor not found in backup metadata");
-        return Err(ErrorResponse::bad_request("factor_not_found"));
-    };
-
-    // Step 4: Delete the factor from the backup storage
-    let mut backup_deleted = false;
-    match request.scope {
-        FactorScope::Main => {
-            let result = backup_storage
-                .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
-                .await?;
-            backup_deleted = matches!(result, DeletionResult::BackupDeleted);
+        // Step 4: Delete the factor from the backup storage
+        let mut backup_deleted = false;
+        match request.scope {
+            FactorScope::Main => {
+                let result = backup_storage
+                    .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
+                    .await?;
+                backup_deleted = matches!(result, DeletionResult::BackupDeleted);
+            }
+            FactorScope::Sync => {
+                backup_storage
+                    .remove_sync_factor(&backup_id, &factor_id)
+                    .await?;
+            }
         }
-        FactorScope::Sync => {
-            backup_storage
-                .remove_sync_factor(&backup_id, &factor_id)
-                .await?;
-        }
+
+        // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
+        //   truth. Only factors in the S3 metadata are considered valid and allowed for authentication. In
+        //   the edge case where the factor is deleted from the S3 metadata but not from the `FactorLookup`,
+        //   this may lead to a backup not found error when retrieval, but it does not affect security.
+
+        // Step 5: Delete the factor from the factor lookup
+        factor_lookup
+            .delete(
+                request.scope,
+                &factor_to_delete.as_factor_to_lookup(&environment),
+            )
+            .await?;
+
+        Ok(Json(DeleteFactorResponse { backup_deleted }))
     }
-
-    // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
-    //   truth. Only factors in the S3 metadata are considered valid and allowed for authentication. In
-    //   the edge case where the factor is deleted from the S3 metadata but not from the `FactorLookup`,
-    //   this may lead to a backup not found error when retrieval, but it does not affect security.
-
-    // Step 5: Delete the factor from the factor lookup
-    factor_lookup
-        .delete(
-            request.scope,
-            &factor_to_delete.as_factor_to_lookup(&environment),
-        )
-        .await?;
-
-    Ok(Json(DeleteFactorResponse { backup_deleted }))
+    .instrument(span)
+    .await
 }
