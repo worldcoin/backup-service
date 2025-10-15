@@ -1,4 +1,6 @@
-use crate::types::ErrorResponse;
+#![allow(clippy::result_large_err)]
+
+use crate::auth::AuthError;
 use serde_json::Value;
 use webauthn_rs::prelude::PublicKeyCredential;
 
@@ -6,13 +8,13 @@ pub trait TryFromValue: Sized {
     /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
     ///
     /// # Errors
-    /// - Returns `webauthn_prf_results_not_allowed` if PRF extension information is present in the credential. This is a security risk.
-    /// - Returns `webauthn_error` if the credential is invalid or cannot be deserialized.
-    fn try_from_value(value: &Value) -> Result<Self, ErrorResponse>;
+    /// - Returns `AuthError::WebauthNPrfResultsNotAllowed` if PRF extension information is present in the credential. This is a security risk.
+    /// - Returns `AuthError::WebauthnClientError` if the credential is invalid or cannot be deserialized.
+    fn try_from_value(value: &Value) -> Result<Self, AuthError>;
 }
 
 impl TryFromValue for PublicKeyCredential {
-    fn try_from_value(value: &Value) -> Result<Self, ErrorResponse> {
+    fn try_from_value(value: &Value) -> Result<Self, AuthError> {
         // https://w3c.github.io/webauthn/#prf-extension
         // Check for PRF extension misuse
         if value
@@ -21,16 +23,13 @@ impl TryFromValue for PublicKeyCredential {
             .and_then(|prf| prf.get("results")) // this field must be removed by the clients and never sent to the server
             .is_some()
         {
-            tracing::info!(message = "PRF `results` are not allowed in clientExtensionResults");
-            return Err(ErrorResponse::bad_request(
-                "webauthn_prf_results_not_allowed",
-            ));
+            return Err(AuthError::WebauthNPrfResultsNotAllowed);
         }
 
         //  Deserialize credential
         serde_json::from_value(value.clone()).map_err(|err| {
             tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-            ErrorResponse::bad_request("webauthn_error")
+            AuthError::WebauthnClientError
         })
     }
 }
@@ -71,13 +70,16 @@ mod tests {
             "results": { "first": "something" }
         }});
         let result = PublicKeyCredential::try_from_value(&raw);
-        assert!(matches!(result, Err(ErrorResponse { .. })));
+        assert!(matches!(
+            result,
+            Err(AuthError::WebauthNPrfResultsNotAllowed)
+        ));
     }
 
     #[test]
     fn test_invalid_json_should_fail() {
         let raw = json!({ "some": "invalid" });
         let result = PublicKeyCredential::try_from_value(&raw);
-        assert!(matches!(result, Err(ErrorResponse { .. })));
+        assert!(matches!(result, Err(AuthError::WebauthnClientError)));
     }
 }

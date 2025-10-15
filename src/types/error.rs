@@ -1,4 +1,5 @@
 use crate::attestation_gateway::AttestationGatewayError;
+use crate::auth::AuthError;
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
@@ -130,6 +131,23 @@ impl From<MultipartError> for ErrorResponse {
     fn from(err: MultipartError) -> Self {
         tracing::info!(message = "Error when reading Multipart form data", error = ?err);
         ErrorResponse::bad_request("multipart_error")
+    }
+}
+
+impl From<AuthError> for ErrorResponse {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::WebauthnClientError => {
+                // no additional logging is needed as where relevant it's handled by the auth module
+                ErrorResponse::bad_request("webauthn_client_error")
+            }
+            AuthError::PasskeySerializationError { err } => {
+                tracing::error!(message = "Passkey serialization error", error = ?err);
+                ErrorResponse::internal_server_error()
+            }
+            AuthError::ChallengeManagerError(e) => e.into(),
+            _ => todo!("todo"),
+        }
     }
 }
 
