@@ -142,6 +142,8 @@ impl From<AuthError> for ErrorResponse {
                 Self::bad_request(&err.to_string())
             }
             AuthError::BackupUntraceable
+            | AuthError::BackupDoesNotExist
+            | AuthError::BackupIdMismatch
             | AuthError::FactorNotFound
             | AuthError::InvalidAuthorizationType
             | AuthError::InvalidChallengeContext

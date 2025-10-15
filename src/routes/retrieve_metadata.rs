@@ -47,14 +47,20 @@ pub async fn handler(
             let exists = backup_storage.does_backup_exist(&backup_id).await?;
             if exists {
                 // This may happen e.g. if user has a backup in two devices and device A revokes access to the sync factor of device B
-                // (e.g. through deleting and re-creating the entire backup). Device B can remediate by adding a new sync factor.
+                // (e.g. through deleting and re-creating the entire backup). Device B can remediate by adding a new sync
                 return Err(AuthError::UnauthorizedFactor.into());
             }
-            return Err(AuthError::BackupUntraceable.into());
+            return Err(AuthError::BackupDoesNotExist.into());
         }
     }
 
-    let (_backup_id, backup_metadata) = backup_metadata?;
+    let (backup_id, backup_metadata) = backup_metadata?;
+
+    if let Some(expected_backup_id) = request.backup_id {
+        if backup_id != expected_backup_id {
+            return Err(AuthError::BackupIdMismatch.into());
+        }
+    }
 
     // Step 2: Return the backup metadata
     let exported_metadata = backup_metadata.exported();

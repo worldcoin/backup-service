@@ -39,6 +39,14 @@ pub enum AuthError {
     #[error("backup_untraceable")]
     BackupUntraceable,
 
+    /// Only returned when the client provides an explicit backup ID to lookup and the backup does not exist.
+    #[error("backup_does_not_exist")]
+    BackupDoesNotExist,
+
+    /// Only returned when the client provides an explicit backup ID to lookup and the provided ID does not match the ID from the factor lookup.
+    #[error("backup_id_mismatch")]
+    BackupIdMismatch,
+
     #[error("factor_not_found")]
     FactorNotFound,
     #[error("invalid_authorization_type")]

@@ -367,5 +367,5 @@ async fn test_retrieve_metadata_when_backup_no_longer_exists() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(error_response["error"]["code"], "backup_untraceable");
+    assert_eq!(error_response["error"]["code"], "backup_does_not_exist");
 }
