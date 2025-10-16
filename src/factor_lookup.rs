@@ -176,6 +176,78 @@ impl FactorLookup {
         Ok(())
     }
 
+    /// Deletes all factors associated with a backup ID from the lookup table.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbQueryError` - if the factors unexpectedly cannot be queried from the `DynamoDB` table.
+    /// * Errors deleting factors will be logged but not propagated.
+    pub async fn delete_all_by_backup_id(
+        &self,
+        backup_id: String,
+    ) -> Result<(), FactorLookupError> {
+        // Query the GSI to find all factors associated with this backup_id
+        let query_result = self
+            .dynamodb_client
+            .query()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
+            .key_condition_expression("#backup_id = :backup_id")
+            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+            .expression_attribute_values(
+                ":backup_id",
+                aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
+            )
+            .send()
+            .await?;
+
+        let items = query_result.items();
+        let total_count = items.len();
+        let mut deleted_count = 0;
+        let mut error_count = 0;
+
+        // Delete each item individually, continuing even if some deletions fail
+        for item in items {
+            if let Some(pk) = item.get(&DocumentAttribute::Pk.to_string()) {
+                match self
+                    .dynamodb_client
+                    .delete_item()
+                    .table_name(self.environment.factor_lookup_dynamodb_table_name())
+                    .key(DocumentAttribute::Pk.to_string(), pk.clone())
+                    .send()
+                    .await
+                {
+                    Ok(_) => {
+                        deleted_count += 1;
+                    }
+                    Err(err) => {
+                        error_count += 1;
+                        tracing::error!(
+                            message = "Failed to delete factor during batch deletion from backup",
+                            pk = ?pk,
+                            error = ?err,
+                        );
+                    }
+                }
+            }
+        }
+
+        if error_count > 0 {
+            tracing::warn!(
+                message = "Completed batch deletion with errors",
+                total_count = total_count,
+                deleted_count = deleted_count,
+                error_count = error_count,
+            );
+        } else {
+            tracing::info!(
+                message = "Deleted all factors for backup successfully",
+                count = deleted_count,
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn is_ready(&self) -> bool {
         let result = self
             .dynamodb_client
@@ -213,6 +285,8 @@ pub enum FactorLookupError {
     DynamoDbDeleteError(
         #[from] SdkError<aws_sdk_dynamodb::operation::delete_item::DeleteItemError>,
     ),
+    #[error("Failed to query factors from DynamoDB: {0}")]
+    DynamoDbQueryError(#[from] SdkError<aws_sdk_dynamodb::operation::query::QueryError>),
     #[error("Failed to parse backup ID from DynamoDB row")]
     ParseBackupIdError,
 }
@@ -381,5 +455,84 @@ mod test {
             .await
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_by_backup_id() {
+        let dynamodb_client = get_test_dynamodb_client().await;
+        let environment = Environment::development(None);
+        let factor_lookup = FactorLookup::new(environment, dynamodb_client);
+
+        let backup_id = format!("test_backup_id_{}", uuid::Uuid::new_v4());
+
+        // Insert multiple factors with the same backup_id
+        let factor1 = FactorToLookup::from_passkey(uuid::Uuid::new_v4().to_string());
+        let factor2 = FactorToLookup::from_passkey(uuid::Uuid::new_v4().to_string());
+        let factor3 = FactorToLookup::from_ec_keypair(uuid::Uuid::new_v4().to_string());
+
+        factor_lookup
+            .insert(FactorScope::Main, &factor1, backup_id.clone())
+            .await
+            .unwrap();
+        factor_lookup
+            .insert(FactorScope::Sync, &factor2, backup_id.clone())
+            .await
+            .unwrap();
+        factor_lookup
+            .insert(FactorScope::Sync, &factor3, backup_id.clone())
+            .await
+            .unwrap();
+
+        // Verify all factors exist
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Main, &factor1)
+                .await
+                .unwrap(),
+            Some(backup_id.clone())
+        );
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Sync, &factor2)
+                .await
+                .unwrap(),
+            Some(backup_id.clone())
+        );
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Sync, &factor3)
+                .await
+                .unwrap(),
+            Some(backup_id.clone())
+        );
+
+        // Delete all factors for the backup_id
+        factor_lookup
+            .delete_all_by_backup_id(backup_id.clone())
+            .await
+            .unwrap();
+
+        // Verify all factors no longer exist
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Main, &factor1)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Sync, &factor2)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            factor_lookup
+                .lookup(FactorScope::Sync, &factor3)
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

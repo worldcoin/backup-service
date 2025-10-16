@@ -122,13 +122,16 @@ pub async fn handler(
         //   the edge case where the factor is deleted from the S3 metadata but not from the `FactorLookup`,
         //   this may lead to a backup not found error when retrieval, but it does not affect security.
 
-        // Step 5: Delete the factor from the factor lookup
-        factor_lookup
-            .delete(
-                request.scope,
-                &factor_to_delete.as_factor_to_lookup(&environment),
-            )
-            .await?;
+        // Step 5: Delete the factor from the `FactorLookup` (or all factors for the backup if it's the last main factor)
+        if backup_deleted {
+            factor_lookup
+                .delete_all_by_backup_id(backup_id.clone())
+                .await?;
+        } else {
+            factor_lookup
+                .delete(request.scope, &factor_to_delete.as_factor_to_lookup(&environment))
+                .await?;
+        }
 
         Ok(Json(DeleteFactorResponse { backup_deleted }))
     }
