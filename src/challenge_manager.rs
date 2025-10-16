@@ -227,8 +227,14 @@ pub enum ChallengeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
+    /// Registering a new passkey (`WebAuthn` credential creation)
+    #[serde(rename_all = "camelCase")]
+    PasskeyRegistration {},
     #[serde(rename_all = "camelCase")]
     OidcAccount { oidc_token: String },
+    /// Adding a new `EC` keypair factor
+    #[serde(rename_all = "camelCase")]
+    EcKeypair {},
 }
 
 pub type TokenPayload = Vec<u8>;
