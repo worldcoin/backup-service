@@ -102,8 +102,9 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     // Complete passkey registration from challenge
     let mut passkey_client = get_mock_passkey_client();
     let registration_state = challenges["newFactorChallenge"].clone();
+    let registration_payload = json!({ "challenge": registration_state });
     let credential =
-        make_credential_from_passkey_challenge(&mut passkey_client, &registration_state).await;
+        make_credential_from_passkey_challenge(&mut passkey_client, &registration_payload).await;
 
     // Build existing OIDC authorization with a fresh session keypair and token to avoid nonce reuse
     let (existing_session_public_key, existing_session_secret_key) =
