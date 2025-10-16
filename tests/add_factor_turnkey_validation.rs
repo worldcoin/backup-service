@@ -9,6 +9,7 @@ use backup_service_test_utils::get_mock_passkey_client;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
+use http_body_util::BodyExt;
 use serde_json::json;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
@@ -30,9 +31,9 @@ async fn test_turnkey_activity_validation_cases() {
     );
 
     // Valid baseline activity
-    let (valid_activity, valid_hash) =
+    let (_valid_activity, valid_hash) =
         create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
-    let valid_passkey =
+    let _valid_passkey =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &valid_hash).await;
 
     // Cases

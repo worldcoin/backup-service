@@ -2,10 +2,8 @@ mod common;
 
 use crate::common::{
     create_test_backup, create_test_backup_with_oidc_account, create_turnkey_activity_and_hash,
-    get_add_factor_challenges_generic, get_keypair_retrieve_challenge,
-    get_passkey_retrieval_challenge, parse_response_body,
-    send_post_request_with_bypass_attestation_token, send_post_request_with_environment,
-    verify_s3_metadata_exists,
+    get_add_factor_challenges_generic, get_passkey_retrieval_challenge, parse_response_body,
+    send_post_request_with_environment, verify_s3_metadata_exists,
 };
 use axum::http::StatusCode;
 use backup_service_test_utils::{get_mock_passkey_client, make_credential_from_passkey_challenge};

@@ -1,6 +1,7 @@
 mod common;
 
 use crate::common::send_post_request;
+use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
@@ -37,5 +38,3 @@ async fn test_add_factor_challenge_shapes() {
     assert!(value["newFactorChallenge"].is_object());
     assert!(value["newFactorToken"].is_string());
 }
-
-
