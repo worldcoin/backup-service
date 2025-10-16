@@ -83,20 +83,21 @@ async fn test_add_factor_missing_turnkey_provider_id() {
 async fn test_add_factor_new_ec_signature_mismatch() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
-    // Challenges for EC(new)
     let challenges =
         get_add_factor_challenges_generic(json!({ "kind": "EC_KEYPAIR" }), Some("OIDC_ACCOUNT"))
             .await;
 
-    // Existing OIDC auth for this challenge
+    // Existing OIDC auth bound to this case's challenge using a fresh session keypair
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
     let existing_sig = crate::common::sign_keypair_challenge(
-        &test.secret_key,
+        &existing_session_secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
     );
     let existing_oidc_token = test.oidc_server.generate_token(
         &MockOidcProvider::Google,
         Some(SubjectIdentifier::new("sig-mismatch".to_string())),
-        &test.public_key,
+        &existing_session_public_key,
     );
 
     let (pub1, _sk1) = crate::common::generate_keypair();
@@ -112,7 +113,7 @@ async fn test_add_factor_new_ec_signature_mismatch() {
             "existingFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
-                "publicKey": test.public_key,
+                "publicKey": existing_session_public_key,
                 "signature": existing_sig,
             },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
