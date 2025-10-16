@@ -15,19 +15,21 @@ async fn test_add_factor_auth_validation_matrix() {
     // Setup OIDC as existing
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
-    // Request challenges for new EC
-    let challenges =
-        get_add_factor_challenges_generic(json!({ "kind": "EC_KEYPAIR" }), Some("OIDC_ACCOUNT"))
-            .await;
-
-    // Existing OIDC auth
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &test.secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
-    );
-
     // Case 1: Missing turnkeyProviderId for OIDC(new)
     {
+        // Fresh challenges for OIDC(new)
+        let challenges = get_add_factor_challenges_generic(
+            json!({ "kind": "OIDC_ACCOUNT", "oidcToken": test.oidc_token }),
+            Some("OIDC_ACCOUNT"),
+        )
+        .await;
+
+        // Existing OIDC auth bound to this case's challenge
+        let existing_sig = crate::common::sign_keypair_challenge(
+            &test.secret_key,
+            challenges["existingFactorChallenge"].as_str().unwrap(),
+        );
+
         let new_sig = crate::common::sign_keypair_challenge(
             &test.secret_key,
             challenges["newFactorChallenge"].as_str().unwrap(),
@@ -61,6 +63,19 @@ async fn test_add_factor_auth_validation_matrix() {
 
     // Case 2: New EC signature verification error (sign with different key)
     {
+        // Fresh challenges for EC(new)
+        let challenges = get_add_factor_challenges_generic(
+            json!({ "kind": "EC_KEYPAIR" }),
+            Some("OIDC_ACCOUNT"),
+        )
+        .await;
+
+        // Existing OIDC auth bound to this case's challenge
+        let existing_sig = crate::common::sign_keypair_challenge(
+            &test.secret_key,
+            challenges["existingFactorChallenge"].as_str().unwrap(),
+        );
+
         let (pub1, _sk1) = crate::common::generate_keypair();
         let (_pub2, sk2) = crate::common::generate_keypair();
         let wrong_sig = crate::common::sign_keypair_challenge(
