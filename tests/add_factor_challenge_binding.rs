@@ -82,3 +82,48 @@ async fn test_add_factor_challenge_binding_matrix() {
     let code = body4["error"]["code"].as_str().unwrap_or("");
     assert!(code == "unexpected_challenge_type" || code == "invalid_new_factor_type");
 }
+
+// Existing-factor kind mismatch: EFC expects EC_KEYPAIR but we submit PASSKEY assertion
+#[tokio::test]
+#[serial]
+async fn test_add_factor_existing_kind_mismatch() {
+    // Create a backup with passkey
+    let mut passkey_client = get_mock_passkey_client();
+    let (_cred, _create_resp) = create_test_backup(&mut passkey_client, b"DATA").await;
+
+    // Ask for EFC with EC_KEYPAIR kind (existing factor kind mismatch)
+    let challenges =
+        get_add_factor_challenges_generic(json!({ "kind": "EC_KEYPAIR" }), Some("EC_KEYPAIR"))
+            .await;
+
+    // Sign EFC using passkey (invalid for token’s challenge type)
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion =
+        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
+            .await;
+
+    // New EC
+    let (public_key, secret_key) = crate::common::generate_keypair();
+    let signature = crate::common::sign_keypair_challenge(
+        &secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let resp = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": { "kind": "EC_KEYPAIR", "publicKey": public_key, "signature": signature },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+        }),
+        None,
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(resp).await;
+    assert_eq!(body["error"]["code"], "unexpected_challenge_type");
+}
