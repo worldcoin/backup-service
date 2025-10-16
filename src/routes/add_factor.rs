@@ -217,7 +217,9 @@ pub async fn handler(
                 .verify(
                     &request.existing_factor_authorization,
                     FactorScope::Main,
-                    ChallengeContext::AddFactor { new_factor_type: new_factor_type.clone() },
+                    ChallengeContext::AddFactor {
+                        new_factor_type: new_factor_type.clone(),
+                    },
                     request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
@@ -229,9 +231,15 @@ pub async fn handler(
     // Step 2: Validate the new factor using AuthHandler
     // Enforce binding between expected_new_factor and new_factor_authorization
     match (&expected_new_factor, &request.new_factor_authorization) {
-        (NewFactorType::OidcAccount { oidc_token: expected }, Authorization::OidcAccount { oidc_token, .. }) => {
+        (
+            NewFactorType::OidcAccount {
+                oidc_token: expected,
+            },
+            Authorization::OidcAccount { oidc_token, .. },
+        ) => {
             let raw = match oidc_token {
-                crate::types::OidcToken::Google { token } | crate::types::OidcToken::Apple { token } => token,
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token } => token,
             };
             if raw != expected {
                 return Err(ErrorResponse::bad_request("invalid_oidc_token"));
@@ -284,21 +292,32 @@ pub async fn handler(
             crate::backup_storage::BackupManagerError::FactorAlreadyExists => {
                 // If factor already exists and we have a new encryption key, append it; otherwise no-op
                 if let Some(key) = request.encrypted_backup_key.clone() {
-                    backup_storage.add_encryption_key_only(&backup_id, key).await?;
+                    backup_storage
+                        .add_encryption_key_only(&backup_id, key)
+                        .await?;
                 }
                 // Determine existing factorId from metadata
-                if let Some((metadata, _)) = backup_storage.get_metadata_by_backup_id(&backup_id).await? {
-                    if let Some(existing) = metadata.factors.iter().find(|f| f.kind == new_factor_kind) {
+                if let Some((metadata, _)) =
+                    backup_storage.get_metadata_by_backup_id(&backup_id).await?
+                {
+                    if let Some(existing) =
+                        metadata.factors.iter().find(|f| f.kind == new_factor_kind)
+                    {
                         final_factor_id = existing.id.clone();
                     }
                 }
                 // best-effort cleanup if we inserted lookup above when not needed
-                let _ = factor_lookup.delete(FactorScope::Main, &factor_to_lookup).await;
+                let _ = factor_lookup
+                    .delete(FactorScope::Main, &factor_to_lookup)
+                    .await;
             }
             other => {
                 // Rollback lookup entry to avoid orphaned unrevokeable factor
                 if lookup_insert_succeeded {
-                    if let Err(err) = factor_lookup.delete(FactorScope::Main, &factor_to_lookup).await {
+                    if let Err(err) = factor_lookup
+                        .delete(FactorScope::Main, &factor_to_lookup)
+                        .await
+                    {
                         tracing::error!(message = "Failed to rollback factor lookup after metadata write failure", error = ?err, factor_pk = factor_to_lookup.primary_key());
                     }
                 }
@@ -308,5 +327,7 @@ pub async fn handler(
     }
 
     // Step 4: Return the new factor ID
-    Ok(Json(AddFactorResponse { factor_id: final_factor_id }))
+    Ok(Json(AddFactorResponse {
+        factor_id: final_factor_id,
+    }))
 }

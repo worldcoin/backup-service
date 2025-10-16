@@ -250,7 +250,7 @@ impl BackupStorage {
     }
 
     /// Appends only a new encryption key without adding a factor.
-    /// Succeeds even if the key already exists (idempotent append per `Vec` semantics).
+    /// Succeeds even if the key already exists
     ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
