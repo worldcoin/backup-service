@@ -98,8 +98,16 @@ async fn test_delete_backup_happy_path() {
     let sync_factor = FactorToLookup::from_ec_keypair(sync_public_key_str.clone());
 
     // Verify factors exist in DynamoDB before deletion
-    assert!(factor_lookup.lookup(FactorScope::Main, &main_factor).await.unwrap().is_some());
-    assert!(factor_lookup.lookup(FactorScope::Sync, &sync_factor).await.unwrap().is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_some());
 
     // Get a delete backup challenge
     let challenge_response = get_delete_backup_challenge().await;
@@ -131,8 +139,16 @@ async fn test_delete_backup_happy_path() {
     verify_backup_deleted(backup_id).await;
 
     // Verify all factors were deleted from DynamoDB
-    assert!(factor_lookup.lookup(FactorScope::Main, &main_factor).await.unwrap().is_none());
-    assert!(factor_lookup.lookup(FactorScope::Sync, &sync_factor).await.unwrap().is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Failure case - incorrectly signed request

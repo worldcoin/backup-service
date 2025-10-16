@@ -53,8 +53,16 @@ async fn test_delete_last_factor_happy_path() {
     let sync_factor = FactorToLookup::from_ec_keypair(sync_public_key_str.clone());
 
     // Verify both main and sync factors exist in DynamoDB before deletion
-    assert!(factor_lookup.lookup(FactorScope::Main, &main_factor).await.unwrap().is_some());
-    assert!(factor_lookup.lookup(FactorScope::Sync, &sync_factor).await.unwrap().is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_some());
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
@@ -124,8 +132,16 @@ async fn test_delete_last_factor_happy_path() {
     }
 
     // Verify all factors (including sync factors) were deleted from DynamoDB
-    assert!(factor_lookup.lookup(FactorScope::Main, &main_factor).await.unwrap().is_none());
-    assert!(factor_lookup.lookup(FactorScope::Sync, &sync_factor).await.unwrap().is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

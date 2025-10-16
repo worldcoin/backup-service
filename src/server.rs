@@ -50,7 +50,12 @@ impl<B> OnResponse<B> for ConditionalOnResponse {
     ) {
         if !span.is_disabled() && response.status() != StatusCode::NOT_FOUND {
             let message = format!(
-                "request completed with status {} in {}ms",
+                "{}Request completed with status {} in {}ms",
+                if response.status() == StatusCode::BAD_REQUEST {
+                    "🟡 Bad "
+                } else {
+                    ""
+                },
                 response.status(),
                 latency.as_millis()
             );

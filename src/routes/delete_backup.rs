@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -34,13 +35,19 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 2: Delete the backup and the metadata
-    backup_storage.delete_backup(&backup_id).await?;
+    let span = tracing::info_span!("delete_backup", backup_id = %backup_id);
 
-    // Step 3: Delete all factors from `FactorLookup`
-    factor_lookup
-        .delete_all_by_backup_id(backup_id.clone())
-        .await?;
+    async move {
+        // Step 2: Delete the backup and the metadata
+        backup_storage.delete_backup(&backup_id).await?;
 
-    Ok(StatusCode::NO_CONTENT)
+        // Step 3: Delete all factors from `FactorLookup`
+        factor_lookup
+            .delete_all_by_backup_id(backup_id.clone())
+            .await?;
+
+        Ok(StatusCode::NO_CONTENT)
+    }
+    .instrument(span)
+    .await
 }
