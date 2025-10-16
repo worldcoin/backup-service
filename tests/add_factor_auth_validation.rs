@@ -5,6 +5,7 @@ use crate::common::{
     send_post_request_with_environment,
 };
 use axum::http::StatusCode;
+use backup_service_test_utils::MockOidcProvider;
 use serde_json::json;
 use serial_test::serial;
 
@@ -17,9 +18,14 @@ async fn test_add_factor_auth_validation_matrix() {
 
     // Case 1: Missing turnkeyProviderId for OIDC(new)
     {
+        // Fresh OIDC token for the NEW factor to avoid replay with existing token
+        let new_oidc_token =
+            test.oidc_server
+                .generate_token(&MockOidcProvider::Google, None, &test.public_key);
+
         // Fresh challenges for OIDC(new)
         let challenges = get_add_factor_challenges_generic(
-            json!({ "kind": "OIDC_ACCOUNT", "oidcToken": test.oidc_token }),
+            json!({ "kind": "OIDC_ACCOUNT", "oidcToken": new_oidc_token }),
             Some("OIDC_ACCOUNT"),
         )
         .await;
@@ -46,7 +52,7 @@ async fn test_add_factor_auth_validation_matrix() {
                 "existingFactorChallengeToken": challenges["existingFactorToken"],
                 "newFactorAuthorization": {
                     "kind": "OIDC_ACCOUNT",
-                    "oidcToken": { "kind": "GOOGLE", "token": test.oidc_token },
+                    "oidcToken": { "kind": "GOOGLE", "token": new_oidc_token },
                     "publicKey": test.public_key,
                     "signature": new_sig,
                 },
