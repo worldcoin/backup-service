@@ -224,8 +224,8 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_not_found",
-                "message": "backup_not_found",
+                "code": "backup_untraceable",
+                "message": "backup_untraceable",
             }
         })
     );
@@ -277,14 +277,14 @@ async fn test_retrieve_backup_with_sync_keypair() {
         .to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // The service should respond with backup_not_found error
+    // The service should respond with backup_untraceable error
     assert_eq!(
         response,
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_not_found",
-                "message": "backup_not_found",
+                "code": "backup_untraceable",
+                "message": "backup_untraceable",
             }
         })
     );

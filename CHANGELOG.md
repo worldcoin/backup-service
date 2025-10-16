@@ -2,6 +2,29 @@
 
 
 
+# [0.7.6] - 2025-10-16
+
+## What's Changed
+* feat: add backup_deleted to /delete-factor by @paolodamico in https://github.com/worldcoin/backup-service/pull/123
+* feat: update encoding for turnkey nonce by @paolodamico in https://github.com/worldcoin/backup-service/pull/126
+* feat: improve logging by @paolodamico in https://github.com/worldcoin/backup-service/pull/127
+* chore(deps): bump thiserror from 2.0.12 to 2.0.17 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/125
+* chore(deps): bump aws-sdk-kms from 1.63.0 to 1.65.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/124
+* fix: don't log /health requests by @paolodamico in https://github.com/worldcoin/backup-service/pull/128
+* feat: improve logging of spans by @paolodamico in https://github.com/worldcoin/backup-service/pull/129
+* feat!: client-provided backup account id by @paolodamico in https://github.com/worldcoin/backup-service/pull/130
+* fix: prevent encryption key removal when not appropriate by @paolodamico in https://github.com/worldcoin/backup-service/pull/131
+* feat: allow providing a label for passkeys by @paolodamico in https://github.com/worldcoin/backup-service/pull/132
+* feat: only keep masked_email by @paolodamico in https://github.com/worldcoin/backup-service/pull/133
+* fix: spans aren't dropped correctly by @paolodamico in https://github.com/worldcoin/backup-service/pull/134
+* feat: return explicit error codes for when the backup cannot be found by @paolodamico in https://github.com/worldcoin/backup-service/pull/135
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.5...0.7.6
+
+
+
+
 # [0.7.5] - 2025-09-22
 
 ## What's Changed

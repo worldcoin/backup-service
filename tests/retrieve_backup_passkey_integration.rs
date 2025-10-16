@@ -199,8 +199,8 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "webauthn_client_error",
+                "message": "webauthn_client_error",
             }
         })
     );
@@ -253,8 +253,8 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_not_found",
-                "message": "backup_not_found",
+                "code": "backup_untraceable",
+                "message": "backup_untraceable",
             }
         })
     );

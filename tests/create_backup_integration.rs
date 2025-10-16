@@ -342,8 +342,8 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "webauthn_client_error",
+                "message": "webauthn_client_error",
             },
         })
     );
@@ -715,8 +715,8 @@ async fn test_create_backup_with_invalid_sync_factor() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "invalid_sync_factor",
-                "message": "invalid_sync_factor",
+                "code": "invalid_sync_factor_type",
+                "message": "invalid_sync_factor_type",
             },
         })
     );

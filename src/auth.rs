@@ -1,15 +1,21 @@
+#![allow(clippy::result_large_err)]
+
 use std::sync::Arc;
 
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential,
+    RegisterPublicKeyCredential, WebauthnError,
 };
 
+use crate::backup_storage::BackupManagerError;
+use crate::challenge_manager::ChallengeManagerError;
+use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
-use crate::oidc_token_verifier::OidcTokenVerifier;
+use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
+use crate::redis_cache::RedisCacheError;
 use crate::types::backup_metadata::{Factor, OidcAccountKind};
 use crate::types::OidcToken;
-use crate::verify_signature::verify_signature;
+use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
@@ -18,10 +24,93 @@ use crate::{
     redis_cache::RedisCacheManager,
     types::{
         backup_metadata::{BackupMetadata, FactorKind},
-        Authorization, Environment, ErrorResponse,
+        Authorization, Environment,
     },
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    /// Very rare case where a backup ID is resolved from the provided factor, but the backup does not actually exist.
+    #[error("backup_missing")]
+    BackupMissing,
+
+    /// The backup ID cannot be determined from the provided factor (from the `FactorLookup` reverse lookup). A backup may or may not exist.
+    #[error("backup_untraceable")]
+    BackupUntraceable,
+
+    /// Only returned when the client provides an explicit backup ID to lookup and the backup does not exist.
+    #[error("backup_does_not_exist")]
+    BackupDoesNotExist,
+
+    /// Only returned when the client provides an explicit backup ID to lookup and the provided ID does not match the ID from the factor lookup.
+    #[error("backup_id_mismatch")]
+    BackupIdMismatch,
+
+    #[error("factor_not_found")]
+    FactorNotFound,
+    #[error("invalid_authorization_type")]
+    InvalidAuthorizationType,
+    #[error("invalid_challenge_context")]
+    InvalidChallengeContext,
+    #[error("invalid_sync_factor_type")]
+    InvalidSyncFactorType,
+    #[error("missing_turnkey_provider_id")]
+    MissingTurnkeyProviderId,
+
+    /// Something is wrong with the `WebAuthN` payload (attributable to the client).
+    /// Separate logging is done on the auth module server-side to assist with debugging.
+    #[error("webauthn_client_error")]
+    WebauthnClientError,
+
+    #[error("webauthn_prf_results_not_allowed")]
+    WebauthnPrfResultsNotAllowed,
+
+    /// Unexpected server-side error with `WebAuthN`.
+    #[error("WebAuthN server error: {err}")]
+    WebauthnServerError { err: String },
+
+    /// Error serializing/deserializing a passkey credential where it has already been previously verified.
+    /// This is a server error and should be fixed.
+    #[error("Passkey serialization error: {err}")]
+    PasskeySerializationError { err: String },
+
+    /// The provided factor was found in the `FactorLookup` but is no longer authorized for the backup (remember
+    /// the `FactorLookup` is only a utility to faciliate lookup, the source of truth is the backup metadata).
+    ///
+    /// This should be a rare case where the `FactorLookup` is out of sync.
+    #[error("unauthorized_factor")]
+    UnauthorizedFactor,
+
+    #[error("missing_email")]
+    MissingEmail,
+    #[error(transparent)]
+    FactorLookupError(#[from] FactorLookupError),
+    #[error(transparent)]
+    ChallengeManagerError(#[from] ChallengeManagerError),
+    #[error(transparent)]
+    RedisCacheError(#[from] RedisCacheError),
+    #[error(transparent)]
+    BackupManagerError(#[from] BackupManagerError),
+    #[error(transparent)]
+    OidcTokenVerifierError(#[from] OidcTokenVerifierError),
+    #[error(transparent)]
+    VerifySignatureError(#[from] VerifySignatureError),
+}
+
+impl From<WebauthnError> for AuthError {
+    fn from(err: WebauthnError) -> Self {
+        if err == WebauthnError::Configuration {
+            tracing::error!(message = "Webauthn configuration error", error = ?err);
+            AuthError::WebauthnServerError {
+                err: err.to_string(),
+            }
+        } else {
+            tracing::info!(message = "Passkey webauthn parsing error", error = ?err);
+            AuthError::WebauthnClientError
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct ValidationResult {
@@ -70,13 +159,13 @@ impl AuthHandler {
         expected_factor_scope: FactorScope,
         expected_challenge_context: ChallengeContext,
         challenge_token: String,
-    ) -> Result<(String, BackupMetadata), ErrorResponse> {
+    ) -> Result<(String, BackupMetadata), AuthError> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
         if expected_factor_scope == FactorScope::Sync {
             match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
-                    return Err(ErrorResponse::bad_request("invalid_authorization_type"));
+                    return Err(AuthError::InvalidAuthorizationType);
                 }
                 Authorization::EcKeypair { .. } => {}
             }
@@ -90,7 +179,7 @@ impl AuthHandler {
 
         // Step 3: Verify the challenge context (i.e. the purpose of the challenge is correct)
         if challenge_context != expected_challenge_context {
-            return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            return Err(AuthError::InvalidChallengeContext);
         }
 
         // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
@@ -152,14 +241,14 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
-    ) -> Result<ValidationResult, ErrorResponse> {
+    ) -> Result<ValidationResult, AuthError> {
         // Step 1: Verify that the authorization type is valid for the factor scope
         // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
         if is_sync_factor {
             match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
                     tracing::info!(message = "Invalid sync factor type");
-                    return Err(ErrorResponse::bad_request("invalid_sync_factor"));
+                    return Err(AuthError::InvalidSyncFactorType);
                 }
                 Authorization::EcKeypair { .. } => {}
             }
@@ -175,7 +264,7 @@ impl AuthHandler {
         // Step 3: Verify the challenge context matches what we expect
         // This ensures the challenge was issued for the correct purpose (Create, AddSyncFactor, etc.)
         if challenge_context != expected_challenge_context {
-            return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            return Err(AuthError::InvalidChallengeContext);
         }
 
         // Step 4: Validate the specific authorization type and create the factor
@@ -196,8 +285,7 @@ impl AuthHandler {
                     public_key,
                     signature,
                     &challenge_token_payload,
-                    turnkey_provider_id
-                        .ok_or_else(|| ErrorResponse::bad_request("missing_turnkey_provider_id"))?,
+                    turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
                 )
                 .await?
             }
@@ -238,17 +326,16 @@ impl AuthHandler {
         credential: &serde_json::Value,
         challenge_token_payload: &[u8],
         label: String,
-    ) -> Result<(Factor, FactorToLookup), ErrorResponse> {
+    ) -> Result<(Factor, FactorToLookup), AuthError> {
         let passkey_state: PasskeyRegistration = serde_json::from_slice(challenge_token_payload)
-            .map_err(|err| {
-                tracing::error!(message = "Failed to deserialize passkey state", error = ?err);
-                ErrorResponse::internal_server_error()
+            .map_err(|err| AuthError::PasskeySerializationError {
+                err: err.to_string(),
             })?;
 
         let user_provided_credential: RegisterPublicKeyCredential =
             serde_json::from_value(credential.clone()).map_err(|err| {
                 tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                ErrorResponse::bad_request("webauthn_error")
+                AuthError::WebauthnClientError
             })?;
 
         let verified_passkey = self
@@ -260,8 +347,9 @@ impl AuthHandler {
         let factor = Factor::new_passkey(
             verified_passkey,
             serde_json::to_value(credential.clone()).map_err(|err| {
-                tracing::info!(message = "Failed to serialize passkey credential", error = ?err);
-                ErrorResponse::internal_server_error()
+                AuthError::PasskeySerializationError {
+                    err: err.to_string(),
+                }
             })?,
             label,
         );
@@ -280,11 +368,12 @@ impl AuthHandler {
         credential: &serde_json::Value,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), ErrorResponse> {
+    ) -> Result<(String, BackupMetadata), AuthError> {
         let passkey_state: DiscoverableAuthentication =
             serde_json::from_slice(challenge_token_payload).map_err(|err| {
-                tracing::error!(message = "Failed to deserialize passkey state", error = ?err);
-                ErrorResponse::internal_server_error()
+                AuthError::PasskeySerializationError {
+                    err: err.to_string(),
+                }
             })?;
 
         let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
@@ -303,8 +392,7 @@ impl AuthHandler {
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
-            tracing::info!(message = "No backup ID found for the given credential");
-            return Err(ErrorResponse::bad_request("backup_not_found"));
+            return Err(AuthError::BackupUntraceable);
         };
 
         let backup_metadata = self
@@ -312,8 +400,7 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            tracing::info!(message = "No backup metadata found for the given backup ID");
-            return Err(ErrorResponse::bad_request("webauthn_error"));
+            return Err(AuthError::BackupMissing);
         };
 
         let reference_credentials: Vec<DiscoverableKey> = backup_metadata
@@ -334,8 +421,7 @@ impl AuthHandler {
             .collect();
 
         if reference_credentials.is_empty() {
-            tracing::info!(message = "No reference credentials found");
-            return Err(ErrorResponse::bad_request("webauthn_error"));
+            return Err(AuthError::UnauthorizedFactor);
         }
 
         let _authentication_result = self
@@ -372,7 +458,7 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
-    ) -> Result<(Factor, FactorToLookup), ErrorResponse> {
+    ) -> Result<(Factor, FactorToLookup), AuthError> {
         let claims = self
             .oidc_token_verifier
             .verify_token(oidc_token, public_key.to_string())
@@ -382,10 +468,7 @@ impl AuthHandler {
 
         let email = claims
             .email()
-            .ok_or_else(|| {
-                tracing::info!(message = "Missing email in OIDC token");
-                ErrorResponse::bad_request("missing_email")
-            })?
+            .ok_or_else(|| AuthError::MissingEmail)?
             .to_string();
 
         let oidc_account = match oidc_token {
@@ -422,7 +505,7 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), ErrorResponse> {
+    ) -> Result<(String, BackupMetadata), AuthError> {
         let claims = self
             .oidc_token_verifier
             .verify_token(oidc_token, public_key.to_string())
@@ -445,8 +528,7 @@ impl AuthHandler {
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
-            tracing::info!(message = "No backup ID found for the given OIDC account");
-            return Err(ErrorResponse::bad_request("backup_not_found"));
+            return Err(AuthError::BackupUntraceable);
         };
 
         let backup_metadata = self
@@ -455,8 +537,7 @@ impl AuthHandler {
             .await?;
 
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            tracing::info!(message = "No backup metadata found for the given backup ID");
-            return Err(ErrorResponse::bad_request("oidc_account_error"));
+            return Err(AuthError::BackupMissing);
         };
 
         let is_oidc_account_in_factors = backup_metadata.factors.iter().any(|factor| {
@@ -476,8 +557,7 @@ impl AuthHandler {
         });
 
         if !is_oidc_account_in_factors {
-            tracing::info!(message = "OIDC account not found in backup factors. This should be a rare case where the FactorLookup is out of sync.");
-            return Err(ErrorResponse::bad_request("oidc_account_error"));
+            return Err(AuthError::UnauthorizedFactor);
         }
 
         // At this point the backup is now authenticated and authorized.
@@ -497,7 +577,7 @@ impl AuthHandler {
         public_key: &str,
         signature: &str,
         challenge_token_payload: &[u8],
-    ) -> Result<(Factor, FactorToLookup), ErrorResponse> {
+    ) -> Result<(Factor, FactorToLookup), AuthError> {
         verify_signature(public_key, signature, challenge_token_payload)?;
 
         let factor = Factor::new_ec_keypair(public_key.to_string());
@@ -515,7 +595,7 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), ErrorResponse> {
+    ) -> Result<(String, BackupMetadata), AuthError> {
         verify_signature(public_key, signature, challenge_token_payload)?;
 
         let not_verified_backup_id = self
@@ -527,8 +607,7 @@ impl AuthHandler {
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
-            tracing::info!(message = "No backup ID found for the given EC keypair.");
-            return Err(ErrorResponse::bad_request("backup_not_found"));
+            return Err(AuthError::BackupUntraceable);
         };
 
         let backup_metadata = self
@@ -536,8 +615,7 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            tracing::info!(message = "No backup metadata found for the given backup ID");
-            return Err(ErrorResponse::bad_request("backup_not_found"));
+            return Err(AuthError::BackupMissing);
         };
 
         let factors = if expected_factor_scope == FactorScope::Sync {
@@ -559,8 +637,7 @@ impl AuthHandler {
         });
 
         if !is_public_key_in_factors {
-            tracing::warn!(message = "Public key not found in backup factors. This should be a rare case where the FactorLookup is out of sync.");
-            return Err(ErrorResponse::bad_request("keypair_error"));
+            return Err(AuthError::UnauthorizedFactor);
         }
 
         // At this point the backup is now authenticated and authorized.
