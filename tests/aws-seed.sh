@@ -14,7 +14,13 @@ awslocal dynamodb create-table \
     --key-schema AttributeName=PK,KeyType=HASH \
     --attribute-definitions \
         AttributeName=PK,AttributeType=S  \
+        AttributeName=BackupId,AttributeType=S \
   --region us-east-1 \
-  --provisioned-throughput ReadCapacityUnits=10,WriteCapacityUnits=5
+  --provisioned-throughput ReadCapacityUnits=10,WriteCapacityUnits=5 \
+  --global-secondary-indexes \
+      "[{\"IndexName\": \"GSI_BackupId\", \
+                     \"KeySchema\":[{\"AttributeName\":\"BackupId\",\"KeyType\":\"HASH\"}], \
+                     \"Projection\":{\"ProjectionType\":\"KEYS_ONLY\"}, \
+                     \"ProvisionedThroughput\":{\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}]"
 
 echo "AWS LocalStack resources initialized successfully!"

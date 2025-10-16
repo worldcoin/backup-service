@@ -16,7 +16,11 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     let use_json = std::env::var("JSON_LOG_FORMAT").is_ok();
-    let builder = tracing_subscriber::fmt().with_target(true);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let builder = tracing_subscriber::fmt()
+        .with_target(true)
+        .with_env_filter(env_filter);
 
     if use_json {
         builder.json().flatten_event(true).init();

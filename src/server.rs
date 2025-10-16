@@ -48,7 +48,7 @@ impl<B> OnResponse<B> for ConditionalOnResponse {
         latency: std::time::Duration,
         span: &Span,
     ) {
-        if !span.is_disabled() {
+        if !span.is_disabled() && response.status() != StatusCode::NOT_FOUND {
             let message = format!(
                 "request completed with status {} in {}ms",
                 response.status(),
