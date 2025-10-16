@@ -19,10 +19,17 @@ async fn test_add_factor_auth_validation_matrix() {
 
     // Case 1: Missing turnkeyProviderId for OIDC(new)
     {
-        // Fresh OIDC token for the NEW factor to avoid replay with existing token
-        let new_oidc_token =
-            test.oidc_server
-                .generate_token(&MockOidcProvider::Google, None, &test.public_key);
+        // Use distinct session keypairs to avoid nonce/token reuse across paths
+        let (existing_session_public_key, existing_session_secret_key) =
+            crate::common::generate_keypair();
+        let (new_session_public_key, new_session_secret_key) = crate::common::generate_keypair();
+
+        // Fresh OIDC token for the NEW factor bound to a new session keypair
+        let new_oidc_token = test.oidc_server.generate_token(
+            &MockOidcProvider::Google,
+            None,
+            &new_session_public_key,
+        );
 
         // Fresh challenges for OIDC(new)
         let challenges = get_add_factor_challenges_generic(
@@ -31,19 +38,19 @@ async fn test_add_factor_auth_validation_matrix() {
         )
         .await;
 
-        // Existing OIDC auth bound to this case's challenge
+        // Existing OIDC auth bound to this case's challenge with its own session keypair
         let existing_sig = crate::common::sign_keypair_challenge(
-            &test.secret_key,
+            &existing_session_secret_key,
             challenges["existingFactorChallenge"].as_str().unwrap(),
         );
         let existing_oidc_token = test.oidc_server.generate_token(
             &MockOidcProvider::Google,
             Some(SubjectIdentifier::new("sig-mismatch".to_string())),
-            &test.public_key,
+            &existing_session_public_key,
         );
 
         let new_sig = crate::common::sign_keypair_challenge(
-            &test.secret_key,
+            &new_session_secret_key,
             challenges["newFactorChallenge"].as_str().unwrap(),
         );
         let resp = send_post_request_with_environment(
@@ -52,14 +59,14 @@ async fn test_add_factor_auth_validation_matrix() {
                 "existingFactorAuthorization": {
                     "kind": "OIDC_ACCOUNT",
                     "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
-                    "publicKey": test.public_key,
+                    "publicKey": existing_session_public_key,
                     "signature": existing_sig,
                 },
                 "existingFactorChallengeToken": challenges["existingFactorToken"],
                 "newFactorAuthorization": {
                     "kind": "OIDC_ACCOUNT",
                     "oidcToken": { "kind": "GOOGLE", "token": new_oidc_token },
-                    "publicKey": test.public_key,
+                    "publicKey": new_session_public_key,
                     "signature": new_sig,
                 },
                 "newFactorChallengeToken": challenges["newFactorToken"],
