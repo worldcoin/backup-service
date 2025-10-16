@@ -40,6 +40,13 @@ async fn test_add_factor_challenge_binding_matrix() {
         "existingFactorTurnkeyActivity": turnkey_activity,
         "newFactorAuthorization": { "kind": "EC_KEYPAIR", "publicKey": public_key, "signature": signature },
         "newFactorChallengeToken": challenges["newFactorToken"],
+        "encryptedBackupKey": {
+            "kind": "TURNKEY",
+            "encryptedKey": "ENCRYPTED_KEY",
+            "turnkeyAccountId": "org123",
+            "turnkeyUserId": "TURNKEY_USER_ID",
+            "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+        }
     });
 
     // 1) Reuse same tokens (already_used)
@@ -118,6 +125,13 @@ async fn test_add_factor_existing_kind_mismatch() {
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": { "kind": "EC_KEYPAIR", "publicKey": public_key, "signature": signature },
             "newFactorChallengeToken": challenges["newFactorToken"],
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
         }),
         None,
     )
