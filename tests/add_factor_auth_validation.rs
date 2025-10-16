@@ -6,6 +6,7 @@ use crate::common::{
 };
 use axum::http::StatusCode;
 use backup_service_test_utils::MockOidcProvider;
+use openidconnect::SubjectIdentifier;
 use serde_json::json;
 use serial_test::serial;
 
@@ -35,6 +36,11 @@ async fn test_add_factor_auth_validation_matrix() {
             &test.secret_key,
             challenges["existingFactorChallenge"].as_str().unwrap(),
         );
+        let existing_oidc_token = test.oidc_server.generate_token(
+            &MockOidcProvider::Google,
+            Some(SubjectIdentifier::new("sig-mismatch".to_string())),
+            &test.public_key,
+        );
 
         let new_sig = crate::common::sign_keypair_challenge(
             &test.secret_key,
@@ -45,7 +51,7 @@ async fn test_add_factor_auth_validation_matrix() {
             json!({
                 "existingFactorAuthorization": {
                     "kind": "OIDC_ACCOUNT",
-                    "oidcToken": { "kind": "GOOGLE", "token": test.oidc_token.clone() },
+                    "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
                     "publicKey": test.public_key,
                     "signature": existing_sig,
                 },
@@ -81,6 +87,11 @@ async fn test_add_factor_auth_validation_matrix() {
             &test.secret_key,
             challenges["existingFactorChallenge"].as_str().unwrap(),
         );
+        let existing_oidc_token = test.oidc_server.generate_token(
+            &MockOidcProvider::Google,
+            Some(SubjectIdentifier::new("sig-mismatch".to_string())),
+            &test.public_key,
+        );
 
         let (pub1, _sk1) = crate::common::generate_keypair();
         let (_pub2, sk2) = crate::common::generate_keypair();
@@ -94,7 +105,7 @@ async fn test_add_factor_auth_validation_matrix() {
             json!({
                 "existingFactorAuthorization": {
                     "kind": "OIDC_ACCOUNT",
-                    "oidcToken": { "kind": "GOOGLE", "token": test.oidc_token.clone() },
+                    "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
                     "publicKey": test.public_key,
                     "signature": existing_sig,
                 },
