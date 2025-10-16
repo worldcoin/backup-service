@@ -257,7 +257,25 @@ impl FactorLookup {
             .await;
 
         if let Ok(result) = result {
-            result.table().and_then(|t| t.table_status()).cloned() == Some(TableStatus::Active)
+            let table_active =
+                result.table().and_then(|t| t.table_status()).cloned() == Some(TableStatus::Active);
+
+            let gsi_name = self.environment.factor_lookup_dynamodb_gsi_name();
+            let gsi_exists = result.table().is_some_and(|t| {
+                t.global_secondary_indexes()
+                    .iter()
+                    .any(|gsi| gsi.index_name().is_some_and(|name| name == gsi_name))
+            });
+
+            if !(table_active && gsi_exists) {
+                tracing::error!(
+                    message =
+                        "FactorLookup is not ready. Table is not active or GSI does not exist.",
+                    table_active = table_active,
+                    gsi_exists = gsi_exists,
+                );
+            }
+            table_active && gsi_exists
         } else {
             tracing::error!(
                 "System is not ready. FactorLookup (DescribeTable): {:?}",
