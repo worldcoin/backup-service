@@ -1,4 +1,5 @@
 use crate::attestation_gateway::AttestationGatewayError;
+use crate::auth::AuthError;
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
 use crate::factor_lookup::FactorLookupError;
@@ -133,6 +134,52 @@ impl From<MultipartError> for ErrorResponse {
     }
 }
 
+impl From<AuthError> for ErrorResponse {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::BackupMissing => {
+                tracing::warn!(message = "Backup is missing from storage but found in factor lookup (signals out-of-sync state)");
+                Self::bad_request(&err.to_string())
+            }
+            AuthError::BackupUntraceable
+            | AuthError::BackupDoesNotExist
+            | AuthError::BackupIdMismatch
+            | AuthError::FactorNotFound
+            | AuthError::InvalidAuthorizationType
+            | AuthError::InvalidChallengeContext
+            | AuthError::InvalidSyncFactorType
+            | AuthError::MissingTurnkeyProviderId
+            | AuthError::WebauthnPrfResultsNotAllowed
+            | AuthError::MissingEmail => {
+                tracing::debug!(message = "Client-side auth failure", error = ?err);
+                Self::bad_request(&err.to_string())
+            }
+            AuthError::WebauthnClientError => {
+                // no additional logging is needed as where relevant it's handled by the auth module
+                Self::bad_request("webauthn_client_error")
+            }
+            AuthError::PasskeySerializationError { err } => {
+                tracing::error!(message = "Passkey serialization error", error = ?err);
+                Self::internal_server_error()
+            }
+            AuthError::WebauthnServerError { err } => {
+                tracing::error!(message = "Webauthn server error", error = ?err);
+                Self::internal_server_error()
+            }
+            AuthError::UnauthorizedFactor => {
+                tracing::warn!(message = "Unauthorized factor. Provided factor is in `FactorLookup` but is no longer authorized for the backup.");
+                Self::bad_request(&err.to_string())
+            }
+            AuthError::FactorLookupError(e) => e.into(),
+            AuthError::ChallengeManagerError(e) => e.into(),
+            AuthError::RedisCacheError(e) => e.into(),
+            AuthError::BackupManagerError(e) => e.into(),
+            AuthError::OidcTokenVerifierError(e) => e.into(),
+            AuthError::VerifySignatureError(e) => e.into(),
+        }
+    }
+}
+
 impl From<ChallengeManagerError> for ErrorResponse {
     fn from(err: ChallengeManagerError) -> Self {
         match &err {
@@ -147,14 +194,14 @@ impl From<ChallengeManagerError> for ErrorResponse {
             | ChallengeManagerError::NoValidChallengeTypeClaim
             | ChallengeManagerError::NoValidChallengeContextClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
-                tracing::info!(message = "Challenge manager error", error = ?err);
+                tracing::debug!(message = "Challenge manager client failure", error = ?err);
                 ErrorResponse::bad_request("jwt_error")
             }
             ChallengeManagerError::UnexpectedChallengeType {
                 expected: _,
                 actual: _,
             } => {
-                tracing::info!(message = err.to_string(), error = ?err);
+                tracing::debug!(message = err.to_string(), error = ?err);
                 ErrorResponse::bad_request("unexpected_challenge_type")
             }
         }

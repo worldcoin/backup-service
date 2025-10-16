@@ -177,8 +177,8 @@ async fn test_retrieve_backup_with_different_oidc_account() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_not_found",
-                "message": "backup_not_found",
+                "code": "backup_untraceable",
+                "message": "backup_untraceable",
             }
         })
     );

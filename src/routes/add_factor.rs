@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::auth::AuthHandler;
+use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
@@ -87,11 +87,11 @@ pub async fn handler(
                 )
                 .await?;
             let Some(backup_id) = backup_id else {
-                return Err(ErrorResponse::bad_request("backup_not_found"));
+                return Err(AuthError::BackupUntraceable.into());
             };
             let backup = backup_storage.get_by_backup_id(&backup_id).await?;
             let Some(backup) = backup else {
-                return Err(ErrorResponse::bad_request("backup_not_found"));
+                return Err(AuthError::BackupMissing.into());
             };
 
             // Step 1A.3: Verify the signature of the passkey assertion object using the public key
@@ -115,7 +115,7 @@ pub async fn handler(
                         None
                     }
                 })
-                .ok_or_else(|| ErrorResponse::bad_request("backup_not_found"))?;
+                .ok_or_else(|| AuthError::BackupUntraceable)?;
             verify_turnkey_activity_webauthn_stamp(
                 reference_passkey.get_public_key(),
                 turnkey_activity,
