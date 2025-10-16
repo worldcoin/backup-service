@@ -60,7 +60,13 @@ async fn test_add_factor_passkey_existing_to_ec_new_happy_path() {
                 "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": null
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
         }),
         None,
     )
@@ -99,9 +105,16 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &registration_state).await;
 
-    // Build existing OIDC authorization (use the session keypair from creation and sign EFC)
+    // Build existing OIDC authorization with a fresh session keypair and token to avoid nonce reuse
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
+    let fresh_existing_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject.clone())),
+        &existing_session_public_key,
+    );
     let existing_sig = crate::common::sign_keypair_challenge(
-        &test.secret_key,
+        &existing_session_secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
     );
     let response = send_post_request_with_environment(
@@ -111,10 +124,10 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
-                    "token": test.oidc_token
+                    "token": fresh_existing_oidc_token
                 },
                 // Use same public key used at creation (session keypair)
-                "publicKey": test.public_key,
+                "publicKey": existing_session_public_key,
                 "signature": existing_sig
             },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
