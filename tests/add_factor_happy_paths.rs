@@ -106,16 +106,9 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &registration_payload).await;
 
-    // Build existing OIDC authorization with a fresh session keypair and token to avoid nonce reuse
-    let (existing_session_public_key, existing_session_secret_key) =
-        crate::common::generate_keypair();
-    let fresh_existing_oidc_token = test.oidc_server.generate_token(
-        &backup_service_test_utils::MockOidcProvider::Google,
-        Some(openidconnect::SubjectIdentifier::new(subject.clone())),
-        &existing_session_public_key,
-    );
+    // Existing OIDC authorization uses the same session keypair and token from creation
     let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
+        &test.secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
     );
     let response = send_post_request_with_environment(
@@ -125,10 +118,9 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": {
                     "kind": "GOOGLE",
-                    "token": fresh_existing_oidc_token
+                    "token": test.oidc_token
                 },
-                // Use same public key used at creation (session keypair)
-                "publicKey": existing_session_public_key,
+                "publicKey": test.public_key,
                 "signature": existing_sig
             },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
