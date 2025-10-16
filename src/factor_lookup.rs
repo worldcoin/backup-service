@@ -239,10 +239,12 @@ impl FactorLookup {
                 error_count = error_count,
             );
         } else {
-            tracing::info!(
-                message = "Deleted all factors for backup successfully",
-                count = deleted_count,
-            );
+            let message = if total_count == 0 {
+                "No factors found when deleting the backup"
+            } else {
+                "Deleted all factors for backup successfully"
+            };
+            tracing::info!(message = message, count = deleted_count);
         }
 
         Ok(())
