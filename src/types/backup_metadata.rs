@@ -133,6 +133,14 @@ impl Factor {
             }
         }
     }
+
+    pub fn as_flattened_kind(&self) -> &'static str {
+        match &self.kind {
+            FactorKind::Passkey { .. } => "passkey",
+            FactorKind::OidcAccount { .. } => "oidc",
+            FactorKind::EcKeypair { .. } => "ec_keypair",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

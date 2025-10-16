@@ -77,7 +77,7 @@ pub async fn handler(
         )
         .await?;
 
-    let span = tracing::info_span!("delete_factor", backup_id = %backup_id);
+    let span = tracing::info_span!("delete_factor", backup_id = %backup_id, scope = %request.scope);
     async move {
         // Step 3: Find the factor to delete from the backup
         let factor_to_delete = match request.scope {
@@ -108,6 +108,14 @@ pub async fn handler(
                     .await?;
             }
         }
+
+        let msg = if backup_deleted {
+            "Backup deleted from removal of last main factor"
+        } else {
+            "Factor deleted from backup storage"
+        };
+        tracing::info!(message = msg, backup_id = %backup_id, scope = %request.scope, 
+            backup_deleted = %backup_deleted, factor_id = %factor_id, factor_kind = %factor_to_delete.as_flattened_kind());
 
         // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
         //   truth. Only factors in the S3 metadata are considered valid and allowed for authentication. In
