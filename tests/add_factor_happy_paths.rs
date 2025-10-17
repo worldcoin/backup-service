@@ -173,7 +173,7 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         &retrieve_challenge,
     )
     .await;
-    let retrieve_response = send_post_request_with_environment(
+    let retrieve_response = crate::common::send_post_request_with_bypass_attestation_token(
         "/v1/retrieve/from-challenge",
         json!({
             "authorization": { "kind": "PASSKEY", "credential": passkey_assertion },
