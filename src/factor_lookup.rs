@@ -233,16 +233,16 @@ impl FactorLookup {
 
         if error_count > 0 {
             tracing::warn!(
-                message = "Completed batch deletion with errors",
+                message = format!("Completed factor batch deletion with {error_count} errors"),
                 total_count = total_count,
                 deleted_count = deleted_count,
                 error_count = error_count,
             );
         } else {
             let message = if total_count == 0 {
-                "No factors found when deleting the backup"
+                "No factors found when deleting the backup".to_string()
             } else {
-                "Deleted all factors for backup successfully"
+                format!("Deleted {deleted_count} (all) factors for backup successfully")
             };
             tracing::info!(message = message, count = deleted_count);
         }
