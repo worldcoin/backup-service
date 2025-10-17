@@ -10,7 +10,8 @@ use crate::turnkey_activity::{
 };
 use crate::types::backup_metadata::FactorKind;
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, ErrorResponse};
+use crate::types::{Authorization, ErrorResponse, OidcToken};
+use crate::verify_signature::verify_signature;
 use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -227,6 +228,83 @@ pub async fn handler(
             (verified_backup_id, new_factor_type)
         }
     };
+
+    // Special-case: OIDC(existing) -> OIDC(new) with the SAME id_token.
+    // Handle metadata-only Turnkey key append: skip second OIDC verification to avoid
+    // nonce reuse; verify new-factor challenge signature, mark the token used, append
+    // TURNKEY key if provided, and return the existing OIDC factorId.
+    if let (
+        NewFactorType::OidcAccount { .. },
+        Authorization::OidcAccount {
+            oidc_token: existing_oidc_token,
+            ..
+        },
+        Authorization::OidcAccount {
+            oidc_token: new_oidc_token,
+            public_key: new_public_key,
+            signature: new_signature,
+        },
+    ) = (
+        &expected_new_factor,
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
+    ) {
+        let raw_existing = match existing_oidc_token {
+            OidcToken::Google { token } | OidcToken::Apple { token } => token,
+        };
+        let raw_new = match new_oidc_token {
+            OidcToken::Google { token } | OidcToken::Apple { token } => token,
+        };
+
+        if raw_existing == raw_new {
+            // Verify new-factor challenge binding without re-verifying the OIDC token
+            let (new_challenge_payload, new_challenge_context) = challenge_manager
+                .extract_token_payload(
+                    (&request.new_factor_authorization).into(),
+                    request.new_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            if !matches!(
+                new_challenge_context,
+                ChallengeContext::AddFactorByNewFactor { .. }
+            ) {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            }
+
+            // Ensure the client signed the challenge with the provided OIDC session keypair
+            verify_signature(new_public_key, new_signature, &new_challenge_payload)?;
+
+            // Mark the new-factor challenge token as used to prevent replay
+            redis_cache_manager
+                .use_challenge_token(request.new_factor_challenge_token.clone())
+                .await?;
+
+            // Append the TURNKEY key if provided
+            if let Some(key) = request.encrypted_backup_key.clone() {
+                backup_storage
+                    .add_encryption_key_only(&backup_id, key)
+                    .await?;
+            }
+
+            // Return the existing OIDC factor id
+            if let Some((metadata, _)) =
+                backup_storage.get_metadata_by_backup_id(&backup_id).await?
+            {
+                if let Some(existing) = metadata
+                    .factors
+                    .iter()
+                    .find(|f| matches!(&f.kind, FactorKind::OidcAccount { .. }))
+                {
+                    return Ok(Json(AddFactorResponse {
+                        factor_id: existing.id.clone(),
+                    }));
+                }
+            }
+
+            return Err(ErrorResponse::bad_request("factor_not_found"));
+        }
+    }
 
     // Step 2: Validate the new factor using AuthHandler
     // Enforce binding between expected_new_factor and new_factor_authorization
