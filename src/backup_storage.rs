@@ -249,6 +249,38 @@ impl BackupStorage {
         Ok(())
     }
 
+    /// Appends only a new encryption key without adding a factor.
+    /// Succeeds even if the key already exists
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
+    pub async fn add_encryption_key_only(
+        &self,
+        backup_id: &str,
+        encryption_key: BackupEncryptionKey,
+    ) -> Result<(), BackupManagerError> {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
+        };
+
+        metadata.keys.push(encryption_key);
+
+        self.s3_client
+            .put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
     /// Adds a sync factor to the backup metadata in S3.
     ///
     /// # Errors

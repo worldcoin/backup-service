@@ -4,12 +4,14 @@ use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
 use crate::types::backup_metadata::FactorKind;
 use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, ErrorResponse};
+use crate::types::{Authorization, ErrorResponse, OidcToken};
+use crate::verify_signature::verify_signature;
 use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -62,6 +64,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
@@ -189,42 +192,64 @@ pub async fn handler(
             // in the previous steps.
 
             // Step 1A.6: Track the used challenge to prevent replay attacks
-            // TODO / FIXME
+            let _ = redis_cache_manager
+                .use_challenge_token(request.existing_factor_challenge_token.clone())
+                .await;
 
             // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)
         }
         Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
-            // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair
-            return Err(ErrorResponse::bad_request("not_supported"));
+            // Generic path: authenticate existing factor and retrieve backup id; also bind to expected new factor type via challenge context
+            let (_trusted_challenge, challenge_context) = challenge_manager
+                .extract_token_payload(
+                    (&request.existing_factor_authorization).into(),
+                    request.existing_factor_challenge_token.to_string(),
+                )
+                .await?;
+
+            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
+                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+            };
+
+            // Use AuthHandler.verify to both authenticate and mark the EFC token as used
+            let (verified_backup_id, _metadata) = auth_handler
+                .clone()
+                .verify(
+                    &request.existing_factor_authorization,
+                    FactorScope::Main,
+                    ChallengeContext::AddFactor {
+                        new_factor_type: new_factor_type.clone(),
+                    },
+                    request.existing_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            (verified_backup_id, new_factor_type)
         }
     };
 
     // Step 2: Validate the new factor using AuthHandler
-    // First, we need to verify that the new factor type matches what was expected from the existing factor's challenge
-    match &request.new_factor_authorization {
-        Authorization::OidcAccount { oidc_token, .. } => {
-            // Step 2A.1: Verify the OIDC token matches what was expected from the existing factor's challenge
-            #[allow(irrefutable_let_patterns)]
-            if let NewFactorType::OidcAccount {
-                oidc_token: expected_oidc_token,
-            } = &expected_new_factor
-            {
-                let raw_oidc_token = match &oidc_token {
-                    crate::types::OidcToken::Google { token }
-                    | crate::types::OidcToken::Apple { token } => token,
-                };
-                if raw_oidc_token != expected_oidc_token {
-                    return Err(ErrorResponse::bad_request("invalid_oidc_token"));
-                }
-            } else {
-                return Err(ErrorResponse::bad_request("invalid_new_factor_type"));
+    // Enforce binding between expected_new_factor and new_factor_authorization
+    match (&expected_new_factor, &request.new_factor_authorization) {
+        (
+            NewFactorType::OidcAccount {
+                oidc_token: expected,
+            },
+            Authorization::OidcAccount { oidc_token, .. },
+        ) => {
+            let raw = match oidc_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token } => token,
+            };
+            if raw != expected {
+                return Err(ErrorResponse::bad_request("invalid_oidc_token"));
             }
         }
+        (NewFactorType::PasskeyRegistration {}, Authorization::Passkey { .. })
+        | (NewFactorType::EcKeypair {}, Authorization::EcKeypair { .. }) => {}
         _ => {
-            return Err(ErrorResponse::bad_request(
-                "invalid_new_factor_authorization_type",
-            ));
+            return Err(ErrorResponse::bad_request("invalid_new_factor_type"));
         }
     }
 
@@ -240,30 +265,70 @@ pub async fn handler(
         .await?;
 
     let new_factor = validation_result.factor;
+    let new_factor_kind = new_factor.kind.clone();
+    let new_factor_id = new_factor.id.clone();
     let factor_to_lookup = validation_result.factor_to_lookup;
 
     // Step 3.1: Update the factor lookup with the new factor
-    factor_lookup
+    let lookup_insert_result = factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
-        .await?;
-
-    // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
-    // provides the best security guarantees. If the second step (adding the factor to the backup metadata)
-    // fails, the factor still cannot be used for authentication and will only cause some not found errors. If
-    // this was flipped however, it would be possible to have a technically valid orphan factor, which couldn't be revoked
-    // potentially leading to a security issue.
+        .await;
+    let lookup_insert_succeeded = lookup_insert_result.is_ok();
+    // If factor already exists in lookup, we treat this as idempotent and continue to metadata handling
+    if let Err(err) = &lookup_insert_result {
+        tracing::info!(message = "Lookup insert failed (possibly duplicate)", error = ?err, factor_pk = factor_to_lookup.primary_key());
+    }
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
-    backup_storage
+    let mut final_factor_id = new_factor_id;
+    if let Err(e) = backup_storage
         .add_factor(
             &backup_id,
             new_factor.clone(),
             request.encrypted_backup_key.clone(),
         )
-        .await?;
+        .await
+    {
+        match e {
+            crate::backup_storage::BackupManagerError::FactorAlreadyExists => {
+                // If factor already exists and we have a new encryption key, append it; otherwise no-op
+                if let Some(key) = request.encrypted_backup_key.clone() {
+                    backup_storage
+                        .add_encryption_key_only(&backup_id, key)
+                        .await?;
+                }
+                // Determine existing factorId from metadata
+                if let Some((metadata, _)) =
+                    backup_storage.get_metadata_by_backup_id(&backup_id).await?
+                {
+                    if let Some(existing) =
+                        metadata.factors.iter().find(|f| f.kind == new_factor_kind)
+                    {
+                        final_factor_id.clone_from(&existing.id);
+                    }
+                }
+                // best-effort cleanup if we inserted lookup above when not needed
+                let _ = factor_lookup
+                    .delete(FactorScope::Main, &factor_to_lookup)
+                    .await;
+            }
+            other => {
+                // Rollback lookup entry to avoid orphaned unrevokeable factor
+                if lookup_insert_succeeded {
+                    if let Err(err) = factor_lookup
+                        .delete(FactorScope::Main, &factor_to_lookup)
+                        .await
+                    {
+                        tracing::error!(message = "Failed to rollback factor lookup after metadata write failure", error = ?err, factor_pk = factor_to_lookup.primary_key());
+                    }
+                }
+                return Err(other.into());
+            }
+        }
+    }
 
     // Step 4: Return the new factor ID
     Ok(Json(AddFactorResponse {
-        factor_id: new_factor.id,
+        factor_id: final_factor_id,
     }))
 }

@@ -15,9 +15,11 @@ use backup_service::challenge_manager::ChallengeManager;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::types::Environment;
 use backup_service_test_utils::{
-    make_credential_from_passkey_challenge, MockOidcProvider, MockOidcServer, MockPasskeyClient,
+    get_passkey_assertion, make_credential_from_passkey_challenge, MockOidcProvider,
+    MockOidcServer, MockPasskeyClient,
 };
 use base64::engine::general_purpose::STANDARD;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Duration, Utc};
 use http::Method;
@@ -33,9 +35,16 @@ use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
 use rand::RngCore;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+/// Parses a response body into JSON
+pub async fn parse_response_body(response: Response) -> serde_json::Value {
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&body).unwrap()
+}
 
 /// Generic retry helper for S3 operations with exponential backoff.
 /// Executes the provided future up to max_attempts times, with exponential backoff on failure.
@@ -284,6 +293,70 @@ pub async fn send_post_request_with_bypass_attestation_token(
     )
     .await
     .unwrap()
+}
+
+/// Request challenges for adding a new factor. Allows specifying the `existingFactorKind`.
+pub async fn get_add_factor_challenges_generic(
+    new_factor: serde_json::Value,
+    existing_factor_kind: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = json!({
+        "newFactor": new_factor,
+    });
+    if let Some(kind) = existing_factor_kind {
+        payload["existingFactorKind"] = json!(kind);
+    }
+    let resp = send_post_request("/v1/add-factor/challenge", payload).await;
+    parse_response_body(resp).await
+}
+
+/// Convenience helper to request OIDC-account new-factor challenges; defaults existing to PASSKEY unless overridden.
+pub async fn get_add_factor_challenges_for_oidc(
+    oidc_token: &str,
+    existing_factor_kind: Option<&str>,
+) -> serde_json::Value {
+    get_add_factor_challenges_generic(
+        json!({
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": oidc_token,
+        }),
+        existing_factor_kind,
+    )
+    .await
+}
+
+/// Create a Turnkey activity JSON embedding the backup-service challenge and return (activity_json, activity_hash_b64url)
+pub fn create_turnkey_activity_and_hash(challenge_b64: &str) -> (String, String) {
+    let turnkey_activity = json!({
+        "type": "ACTIVITY_TYPE_CREATE_API_KEYS_V2",
+        "organizationId": "org123",
+        "timestampMs": Utc::now().timestamp_millis().to_string(),
+        "metadata": {
+            "challenge": challenge_b64
+        }
+    })
+    .to_string();
+
+    let challenge_hash_b64url = {
+        let mut hasher = Sha256::new();
+        hasher.update(turnkey_activity.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes())
+    };
+
+    (turnkey_activity, challenge_hash_b64url)
+}
+
+/// For a given Turnkey activity, obtain a passkey assertion using the challenge hash computed from the activity JSON.
+pub async fn passkey_assertion_for_turnkey_activity(
+    passkey_client: &mut MockPasskeyClient,
+    activity_json: &str,
+) -> serde_json::Value {
+    let mut hasher = Sha256::new();
+    hasher.update(activity_json.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    let challenge_hash_b64url = BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes());
+    get_passkey_assertion(passkey_client, &challenge_hash_b64url).await
 }
 
 // Get a passkey challenge response from the server
