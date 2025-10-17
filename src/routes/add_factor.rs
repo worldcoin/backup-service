@@ -381,7 +381,7 @@ pub async fn handler(
                     if let Some(existing) =
                         metadata.factors.iter().find(|f| f.kind == new_factor_kind)
                     {
-                        final_factor_id = existing.id.clone();
+                        final_factor_id.clone_from(&existing.id);
                     }
                 }
                 // best-effort cleanup if we inserted lookup above when not needed
