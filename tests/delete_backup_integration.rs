@@ -7,10 +7,13 @@ use crate::common::{
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::http::StatusCode;
+use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use backup_service::types::Environment;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
+use std::sync::Arc;
 
 /// Helper function to get a delete backup challenge
 async fn get_delete_backup_challenge() -> serde_json::Value {
@@ -68,8 +71,16 @@ async fn verify_backup_deleted(backup_id: &str) {
 /// Happy path - successfully delete a backup using a sync factor
 #[tokio::test]
 async fn test_delete_backup_happy_path() {
+    // Setup test environment
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup = FactorLookup::new(environment, dynamodb_client.clone());
+
     // Create a backup with a sync keypair
-    let ((_, _), response, sync_secret_key) =
+    let ((main_public_key, _), response, sync_secret_key) =
         create_test_backup_with_sync_keypair(b"TEST BACKUP DATA").await;
 
     // Extract the backup ID from the response
@@ -81,11 +92,27 @@ async fn test_delete_backup_happy_path() {
     // Verify backup exists before deletion
     let _metadata = verify_s3_metadata_exists(backup_id).await;
 
+    // Extract factor information to verify they exist in DynamoDB
+    let main_factor = FactorToLookup::from_ec_keypair(main_public_key);
+    let sync_public_key_str = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let sync_factor = FactorToLookup::from_ec_keypair(sync_public_key_str.clone());
+
+    // Verify factors exist in DynamoDB before deletion
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_some());
+
     // Get a delete backup challenge
     let challenge_response = get_delete_backup_challenge().await;
 
     // Sign the challenge with the sync factor secret key
-    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
     let signature = sign_keypair_challenge(
         &sync_secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -97,7 +124,7 @@ async fn test_delete_backup_happy_path() {
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
-                "publicKey": sync_public_key,
+                "publicKey": sync_public_key_str,
                 "signature": signature,
             },
             "challengeToken": challenge_response["token"],
@@ -110,6 +137,18 @@ async fn test_delete_backup_happy_path() {
 
     // Verify the backup was deleted
     verify_backup_deleted(backup_id).await;
+
+    // Verify all factors were deleted from DynamoDB
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Failure case - incorrectly signed request

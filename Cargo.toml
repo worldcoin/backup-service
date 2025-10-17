@@ -74,6 +74,7 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3.20", default-features = false, features = [
   "fmt",
   "json",
+  "env-filter",
 ] }
 uuid = { workspace = true }
 # TODO/FIXME: Investigate how dangerous this is considering we're going to be tracking used challenges

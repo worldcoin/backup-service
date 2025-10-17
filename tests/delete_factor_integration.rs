@@ -24,8 +24,17 @@ use serde_json::json;
 /// Deleting the last factor also deletes the backup.
 #[tokio::test]
 async fn test_delete_last_factor_happy_path() {
+    // Setup test environment
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup =
+        backup_service::factor_lookup::FactorLookup::new(environment, dynamodb_client.clone());
+
     // Create a backup with a keypair and a sync factor
-    let ((_, _), response, sync_secret_key) =
+    let ((main_public_key, _), response, sync_secret_key) =
         create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
 
     // Extract the backup ID and the main factor ID from the response
@@ -37,6 +46,23 @@ async fn test_delete_last_factor_happy_path() {
     let metadata = verify_s3_metadata_exists(backup_id).await;
 
     let factor_id = metadata["factors"][0]["id"].as_str().unwrap().to_string();
+
+    // Extract factor information to verify they exist in DynamoDB
+    let main_factor = FactorToLookup::from_ec_keypair(main_public_key);
+    let sync_public_key_str = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let sync_factor = FactorToLookup::from_ec_keypair(sync_public_key_str.clone());
+
+    // Verify both main and sync factors exist in DynamoDB before deletion
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_some());
 
     // Get a delete factor challenge
     let challenge_response = common::send_post_request(
@@ -56,8 +82,6 @@ async fn test_delete_last_factor_happy_path() {
         serde_json::from_slice(&challenge_response_body).unwrap();
 
     // Sign the challenge with the sync factor secret key
-    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
-
     let signature = sign_keypair_challenge(
         &sync_secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -69,7 +93,7 @@ async fn test_delete_last_factor_happy_path() {
         json!({
             "authorization": {
                 "kind": "EC_KEYPAIR",
-                "publicKey": sync_public_key,
+                "publicKey": sync_public_key_str,
                 "signature": signature,
             },
             "challengeToken": challenge_response["token"],
@@ -106,6 +130,18 @@ async fn test_delete_last_factor_happy_path() {
         }
         _ => panic!("Expected NoSuchKey error"),
     }
+
+    // Verify all factors (including sync factors) were deleted from DynamoDB
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &sync_factor)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

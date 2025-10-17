@@ -4,11 +4,12 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::types::{Authorization, Environment, ErrorResponse};
+use crate::types::{Authorization, ErrorResponse};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -19,14 +20,13 @@ pub struct DeleteBackupRequest {
 
 /// Request to delete the entire backup and all related metadata.
 pub async fn handler(
-    Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<DeleteBackupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    let (backup_id, backup_metadata) = auth_handler
+    let (backup_id, _backup_metadata) = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Sync,
@@ -35,40 +35,19 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 2: Delete the backup and the metadata
-    backup_storage.delete_backup(&backup_id).await?;
+    let span = tracing::info_span!("delete_backup", backup_id = %backup_id);
 
-    // Step 3: Delete all `Sync` factors from `FactorLookup`
-    for factor in backup_metadata.sync_factors {
-        let result = factor_lookup
-            .delete(FactorScope::Sync, &factor.as_factor_to_lookup(&environment))
-            .await;
+    async move {
+        // Step 2: Delete the backup and the metadata
+        backup_storage.delete_backup(&backup_id).await?;
 
-        if let Err(e) = result {
-            tracing::warn!(
-                message = "[DeleteBackup] - Failed to delete `Sync` factor from FactorLookup, but continuing.",
-                error = ?e,
-                backup_id = backup_id,
-                factor_id = factor.id,
-            );
-        }
+        // Step 3: Delete all factors from `FactorLookup`
+        factor_lookup
+            .delete_all_by_backup_id(backup_id.clone())
+            .await?;
+
+        Ok(StatusCode::NO_CONTENT)
     }
-
-    // Step 4: Delete all `Main` factors from `FactorLookup`
-    for factor in backup_metadata.factors {
-        let result = factor_lookup
-            .delete(FactorScope::Main, &factor.as_factor_to_lookup(&environment))
-            .await;
-
-        if let Err(e) = result {
-            tracing::warn!(
-                message = "[DeleteBackup] - Failed to delete `Main` factor from FactorLookup, but continuing.",
-                error = ?e,
-                backup_id = backup_id,
-                factor_id = factor.id,
-            );
-        }
-    }
-
-    Ok(StatusCode::NO_CONTENT)
+    .instrument(span)
+    .await
 }
