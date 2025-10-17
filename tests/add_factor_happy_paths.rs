@@ -99,28 +99,33 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     )
     .await;
 
-    // Complete passkey registration from challenge
+    // Complete passkey registration from challeng
     let mut passkey_client = get_mock_passkey_client();
     let registration_state = challenges["newFactorChallenge"].clone();
     let registration_payload = json!({ "challenge": registration_state });
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &registration_payload).await;
 
-    // Existing OIDC authorization uses the same session keypair and token from creation
+    // Use a fresh session keypair and OIDC token for existing-factor auth to avoid nonce replay
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
+    let fresh_existing_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject.clone())),
+        &existing_session_public_key,
+    );
     let existing_sig = crate::common::sign_keypair_challenge(
-        &test.secret_key,
+        &existing_session_secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
     );
+
     let response = send_post_request_with_environment(
         "/v1/add-factor",
         json!({
             "existingFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
-                "oidcToken": {
-                    "kind": "GOOGLE",
-                    "token": test.oidc_token
-                },
-                "publicKey": test.public_key,
+                "oidcToken": { "kind": "GOOGLE", "token": fresh_existing_oidc_token },
+                "publicKey": existing_session_public_key,
                 "signature": existing_sig
             },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
@@ -144,7 +149,6 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         .to_string();
 
     // Verify metadata now contains the new passkey factor
-    // Extract backupId by retrieving metadata from S3 (need to parse from the created backup response)
     let body = test
         .response
         .into_body()
