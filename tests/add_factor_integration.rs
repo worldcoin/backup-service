@@ -1,5 +1,8 @@
 mod common;
 
+use std::sync::Arc;
+
+use crate::common::get_test_s3_client;
 use crate::common::{
     create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
@@ -7,6 +10,9 @@ use crate::common::{
 };
 use axum::http::StatusCode;
 use axum::response::Response;
+use backup_service::backup_storage::BackupStorage;
+use backup_service::types::backup_metadata::{Factor, OidcAccountKind};
+use backup_service::types::encryption_key::BackupEncryptionKey;
 use backup_service::types::Environment;
 use backup_service_test_utils::get_mock_passkey_client;
 use backup_service_test_utils::get_passkey_assertion;
@@ -628,7 +634,28 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
 #[serial]
 async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encrypted_backup_key() {
     // Setup test environment
-    let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
+    let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
+
+    // Update the backup metadata with a pre-registered OIDC factor
+    let s3_client = Arc::new(get_test_s3_client().await);
+    let backup_storage = BackupStorage::new(environment, s3_client.clone());
+    let factor = Factor::new_oidc_account(
+        OidcAccountKind::Google {
+            sub: "12345".to_string(),
+            masked_email: "t****@example.com".to_string(),
+        },
+        "turnkey_provider_id".to_string(),
+    );
+    let encryption_key = BackupEncryptionKey::Turnkey {
+        encrypted_key: "ENCRYPTED_KEY".to_string(),
+        turnkey_account_id: "org_123".to_string(),
+        turnkey_user_id: "TURNKEY_USER_ID".to_string(),
+        turnkey_private_key_id: "TURNKEY_PRIVATE_KEY_ID".to_string(),
+    };
+    backup_storage
+        .add_factor(&backup_id, factor, Some(encryption_key))
+        .await
+        .unwrap();
 
     // Create keypair for new factor
     let (new_public_key, new_secret_key) = common::generate_keypair();
@@ -673,7 +700,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
-                // Different account ID than in the activity, not org123
+                // Different account ID than in the activity, not `org123` (doesn't match the existing backup metadata)
                 "turnkeyAccountId": "different_account_id",
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
