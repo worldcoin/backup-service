@@ -255,6 +255,10 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Factor would be orphaned by removing the specific encryption key.", error = ?err);
                 ErrorResponse::bad_request("factor_orphaned_from_encryption_key")
             }
+            BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed => {
+                tracing::info!(message = "Only one encryption key per type is allowed", error = ?err);
+                ErrorResponse::bad_request("only_one_encryption_key_per_type_allowed")
+            }
         }
     }
 }
