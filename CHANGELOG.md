@@ -2,6 +2,19 @@
 
 
 
+# [0.7.7] - 2025-10-23
+
+## What's Changed
+* feat!: improvements to deletion process by @paolodamico in https://github.com/worldcoin/backup-service/pull/139
+* fix: tiny log improvements & use Docker Hub token for CI by @paolodamico in https://github.com/worldcoin/backup-service/pull/140
+* feat: only allow one key per type by @paolodamico in https://github.com/worldcoin/backup-service/pull/141
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.6...0.7.7
+
+
+
+
 # [0.7.6] - 2025-10-16
 
 ## What's Changed
