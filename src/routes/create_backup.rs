@@ -28,7 +28,10 @@ pub struct CreateBackupRequest {
     /// First `Sync` factor that will be registered for this backup.
     initial_sync_factor: Authorization,
     initial_sync_challenge_token: String,
-    /// Provider ID from Turnkey ID. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
+    /// Provider ID from Turnkey. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
+    ///
+    /// To avoid confusion, this is NOT the Turnkey account ID, it is specifically the provider ID.
+    /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
     turnkey_provider_id: Option<String>,
     /// The initial manifest hash of the backup.
     #[serde(deserialize_with = "normalize_hex_32")]

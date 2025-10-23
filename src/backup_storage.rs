@@ -233,6 +233,13 @@ impl BackupStorage {
 
         // Add the new encryption key if provided
         if let Some(encryption_key) = new_encryption_key {
+            if metadata
+                .keys
+                .iter()
+                .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+            {
+                return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
+            }
             metadata.keys.push(encryption_key);
         }
 
@@ -562,6 +569,10 @@ pub enum BackupManagerError {
     ManifestHashMismatch,
     #[error("A factor would be orphaned by removing the specific encryption key.")]
     FactorOrphanedFromEncryptionKey,
+    /// Today only one encryption key per type is allowed. In practice a user cannot have any combination of factors that would
+    /// result in multiple encryption keys and this prevents a broken state.
+    #[error("Only one encryption key per type is allowed")]
+    OnlyOneEncryptionKeyPerTypeAllowed,
 }
 
 #[cfg(test)]
@@ -849,7 +860,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a test factor and new encryption key
+        // Create a test factor and new encryption key (different type from initial)
         let new_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "67890".to_string(),
@@ -858,8 +869,11 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
 
-        let new_key = BackupEncryptionKey::Prf {
+        let new_key = BackupEncryptionKey::Turnkey {
             encrypted_key: "NEW_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
         };
 
         // Add the factor with the new encryption key
@@ -881,10 +895,10 @@ mod tests {
         // Check that both keys are present
         assert_eq!(updated_backup.metadata.keys.len(), 2);
         match &updated_backup.metadata.keys[1] {
-            BackupEncryptionKey::Prf { encrypted_key } => {
+            BackupEncryptionKey::Turnkey { encrypted_key, .. } => {
                 assert_eq!(encrypted_key, "NEW_KEY");
             }
-            _ => panic!("Expected Prf key"),
+            _ => panic!("Expected Turnkey key"),
         }
     }
 
@@ -1119,6 +1133,91 @@ mod tests {
 
         assert_eq!(updated_backup.metadata.factors.len(), 2);
         assert_eq!(updated_backup.metadata.keys.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_only_one_encryption_key_per_type_allowed() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Create a test backup with one PRF key
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_prf_key = BackupEncryptionKey::Prf {
+            encrypted_key: "INITIAL_PRF_KEY".to_string(),
+        };
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![initial_prf_key],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        backup_storage
+            .create(test_backup_data.clone(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Try to add a factor with another PRF key - should fail
+        let new_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                masked_email: "t****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+
+        let duplicate_prf_key = BackupEncryptionKey::Prf {
+            encrypted_key: "DUPLICATE_PRF_KEY".to_string(),
+        };
+
+        let result = backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(duplicate_prf_key))
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {
+                // Expected error - cannot add a second PRF key
+            }
+            _ => panic!("Expected OnlyOneEncryptionKeyPerTypeAllowed"),
+        }
+
+        // Verify that adding a different type of key is allowed
+        let turnkey_key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "TURNKEY_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        let result = backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(turnkey_key))
+            .await;
+
+        assert!(result.is_ok());
+
+        // Verify the backup now has both PRF and Turnkey keys
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.keys.len(), 2);
+        assert!(updated_backup
+            .metadata
+            .keys
+            .iter()
+            .any(|k| matches!(k, BackupEncryptionKey::Prf { .. })));
+        assert!(updated_backup
+            .metadata
+            .keys
+            .iter()
+            .any(|k| matches!(k, BackupEncryptionKey::Turnkey { .. })));
     }
 
     #[tokio::test]
