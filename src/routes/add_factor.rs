@@ -116,6 +116,7 @@ pub async fn handler(
                     }
                 })
                 .ok_or_else(|| AuthError::BackupUntraceable)?;
+
             verify_turnkey_activity_webauthn_stamp(
                 reference_passkey.get_public_key(),
                 turnkey_activity,
@@ -125,34 +126,22 @@ pub async fn handler(
             )?;
 
             // Step 1A.4: Verify the Turnkey activity is valid and matches what we know about the user.
-            let expected_turnkey_account_id = match &request.encrypted_backup_key {
-                // If user is creating a new Turnkey account as part of this flow, new account ID
-                // should be the expected one.
-                Some(BackupEncryptionKey::Turnkey {
+
+            // If the user already has a Turnkey account registered, we expect the Turnkey activity to contain the same account ID.
+            let expected_turnkey_account_id = backup.metadata.keys.iter().find_map(|key| {
+                if let BackupEncryptionKey::Turnkey {
                     turnkey_account_id, ..
-                }) => turnkey_account_id.clone(),
-                // Otherwise, we expect the Turnkey account ID to be the same as the one in
-                // the existing backup.
-                _ => {
-                    if let Some(turnkey_account_id) = backup.metadata.keys.iter().find_map(|key| {
-                        if let BackupEncryptionKey::Turnkey {
-                            turnkey_account_id, ..
-                        } = key
-                        {
-                            Some(turnkey_account_id.clone())
-                        } else {
-                            None
-                        }
-                    }) {
-                        turnkey_account_id
-                    } else {
-                        return Err(ErrorResponse::bad_request("no_turnkey_account_id"));
-                    }
+                } = key
+                {
+                    Some(turnkey_account_id.clone())
+                } else {
+                    None
                 }
-            };
+            });
+
             verify_turnkey_activity_parameters(
                 turnkey_activity,
-                &expected_turnkey_account_id,
+                expected_turnkey_account_id,
                 EXPECTED_TURNKEY_ACTIVITY_TYPE,
                 TURNKEY_ACTIVITY_TTL,
             )?;
@@ -164,6 +153,7 @@ pub async fn handler(
                 tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
                 ErrorResponse::bad_request("webauthn_error")
             })?;
+
             let backup_service_challenge = turnkey_activity_json["metadata"]["challenge"]
                 .as_str()
                 .ok_or_else(|| {
@@ -179,9 +169,12 @@ pub async fn handler(
                     request.existing_factor_challenge_token.to_string(),
                 )
                 .await?;
+
+            // This is the most important piece, it binds the user's passkey signature to the challenge we provided originally in `/add-factor/challenge`
             if STANDARD.encode(trusted_challenge) != backup_service_challenge {
                 return Err(ErrorResponse::bad_request("invalid_challenge"));
             }
+
             let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
                 return Err(ErrorResponse::bad_request("invalid_challenge_context"));
             };
