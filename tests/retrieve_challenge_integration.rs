@@ -85,7 +85,7 @@ async fn test_retrieve_challenge_without_attestation() {
             endpoint
         );
         assert_eq!(
-            response["error"]["message"], "missing_attestation_token_header",
+            response["error"]["message"], "Attestation token header is missing",
             "error.message mismatch on {}",
             endpoint
         );
@@ -127,7 +127,7 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
             endpoint
         );
         assert_eq!(
-            response["error"]["message"], "invalid_attestation_token",
+            response["error"]["message"], "Invalid attestation token.",
             "error.message mismatch on {}",
             endpoint
         );

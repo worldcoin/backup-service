@@ -342,8 +342,8 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_client_error",
-                "message": "webauthn_client_error",
+                "code": "webauthn_error",
+                "message": "The JSON from the client did not indicate webauthn.<method> correctly",
             },
         })
     );
@@ -920,7 +920,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_payload",
-                "message": "invalid_payload",
+                "message": "Failed to deserialize payload",
             },
         })
     );

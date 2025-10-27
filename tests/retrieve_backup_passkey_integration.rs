@@ -141,7 +141,7 @@ async fn test_retrieve_backup_with_incorrect_token() {
             "allowRetry": false,
             "error": {
                 "code": "jwt_error",
-                "message": "jwt_error",
+                "message": "Invalid or expired token.",
             }
         })
     );
@@ -199,8 +199,8 @@ async fn test_retrieve_backup_with_incorrectly_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_client_error",
-                "message": "webauthn_client_error",
+                "code": "webauthn_error",
+                "message": "The JSON from the client did not indicate webauthn.<method> correctly",
             }
         })
     );
@@ -254,7 +254,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
             "allowRetry": false,
             "error": {
                 "code": "backup_untraceable",
-                "message": "backup_untraceable",
+                "message": "Client-side auth failure: backup_untraceable",
             }
         })
     );

@@ -66,10 +66,6 @@ pub enum AuthError {
     #[error("webauthn_prf_results_not_allowed")]
     WebauthnPrfResultsNotAllowed,
 
-    /// Unexpected server-side error with `WebAuthN`.
-    #[error("WebAuthN server error: {err}")]
-    WebauthnServerError { err: String },
-
     /// Error serializing/deserializing a passkey credential where it has already been previously verified.
     /// This is a server error and should be fixed.
     #[error("Passkey serialization error: {err}")]
@@ -96,20 +92,8 @@ pub enum AuthError {
     OidcTokenVerifierError(#[from] OidcTokenVerifierError),
     #[error(transparent)]
     VerifySignatureError(#[from] VerifySignatureError),
-}
-
-impl From<WebauthnError> for AuthError {
-    fn from(err: WebauthnError) -> Self {
-        if err == WebauthnError::Configuration {
-            tracing::error!(message = "Webauthn configuration error", error = ?err);
-            AuthError::WebauthnServerError {
-                err: err.to_string(),
-            }
-        } else {
-            tracing::info!(message = "Passkey webauthn parsing error", error = ?err);
-            AuthError::WebauthnClientError
-        }
-    }
+    #[error(transparent)]
+    WebauthnError(#[from] WebauthnError),
 }
 
 #[derive(Debug)]

@@ -108,7 +108,7 @@ async fn test_retrieve_backup_with_oidc_account() {
             "allowRetry": false,
             "error": {
                 "code": "already_used",
-                "message": "already_used",
+                "message": "Token has already been used.",
             }
         })
     );
@@ -178,7 +178,7 @@ async fn test_retrieve_backup_with_different_oidc_account() {
             "allowRetry": false,
             "error": {
                 "code": "backup_untraceable",
-                "message": "backup_untraceable",
+                "message": "Client-side auth failure: backup_untraceable",
             }
         })
     );
@@ -251,7 +251,7 @@ async fn test_retrieve_backup_with_different_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed.",
             }
         })
     );
@@ -319,7 +319,7 @@ async fn test_retrieve_backup_with_incorrect_nonce() {
             "allowRetry": false,
             "error": {
                 "code": "oidc_token_verification_error",
-                "message": "oidc_token_verification_error",
+                "message": "Failed to verify OIDC token.",
             }
         })
     );

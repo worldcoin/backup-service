@@ -191,10 +191,6 @@ impl From<AuthError> for ErrorResponse {
                 tracing::error!(message = "Passkey serialization error", error = ?err);
                 Self::internal_server_error()
             }
-            AuthError::WebauthnServerError { err } => {
-                tracing::error!(message = "Webauthn server error", error = ?err);
-                Self::internal_server_error()
-            }
             AuthError::UnauthorizedFactor => {
                 tracing::warn!(message = "Unauthorized factor. Provided factor is in `FactorLookup` but is no longer authorized for the backup.");
                 Self::bad_request(
@@ -208,6 +204,7 @@ impl From<AuthError> for ErrorResponse {
             AuthError::BackupManagerError(e) => e.into(),
             AuthError::OidcTokenVerifierError(e) => e.into(),
             AuthError::VerifySignatureError(e) => e.into(),
+            AuthError::WebauthnError(e) => e.into(),
         }
     }
 }
