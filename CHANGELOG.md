@@ -2,6 +2,18 @@
 
 
 
+# [0.7.8] - 2025-10-27
+
+## What's Changed
+* fix: only verify passkey challenge for existing Turnkey by @paolodamico in https://github.com/worldcoin/backup-service/pull/143
+* feat: improved error messages by @paolodamico in https://github.com/worldcoin/backup-service/pull/144
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.7...0.7.8
+
+
+
+
 # [0.7.7] - 2025-10-23
 
 ## What's Changed
