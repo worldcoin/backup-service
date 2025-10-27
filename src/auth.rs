@@ -57,18 +57,11 @@ pub enum AuthError {
     InvalidSyncFactorType,
     #[error("missing_turnkey_provider_id")]
     MissingTurnkeyProviderId,
-
-    /// Something is wrong with the `WebAuthN` payload (attributable to the client).
-    /// Separate logging is done on the auth module server-side to assist with debugging.
-    #[error("webauthn_client_error")]
-    WebauthnClientError,
+    #[error("webauthn_invalid_payload")]
+    WebauthnInvalidPayload,
 
     #[error("webauthn_prf_results_not_allowed")]
     WebauthnPrfResultsNotAllowed,
-
-    /// Unexpected server-side error with `WebAuthN`.
-    #[error("WebAuthN server error: {err}")]
-    WebauthnServerError { err: String },
 
     /// Error serializing/deserializing a passkey credential where it has already been previously verified.
     /// This is a server error and should be fixed.
@@ -96,20 +89,8 @@ pub enum AuthError {
     OidcTokenVerifierError(#[from] OidcTokenVerifierError),
     #[error(transparent)]
     VerifySignatureError(#[from] VerifySignatureError),
-}
-
-impl From<WebauthnError> for AuthError {
-    fn from(err: WebauthnError) -> Self {
-        if err == WebauthnError::Configuration {
-            tracing::error!(message = "Webauthn configuration error", error = ?err);
-            AuthError::WebauthnServerError {
-                err: err.to_string(),
-            }
-        } else {
-            tracing::info!(message = "Passkey webauthn parsing error", error = ?err);
-            AuthError::WebauthnClientError
-        }
-    }
+    #[error(transparent)]
+    WebauthnError(#[from] WebauthnError),
 }
 
 #[derive(Debug)]
@@ -335,7 +316,7 @@ impl AuthHandler {
         let user_provided_credential: RegisterPublicKeyCredential =
             serde_json::from_value(credential.clone()).map_err(|err| {
                 tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                AuthError::WebauthnClientError
+                AuthError::WebauthnInvalidPayload
             })?;
 
         let verified_passkey = self

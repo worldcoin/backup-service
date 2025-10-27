@@ -116,7 +116,7 @@ async fn test_retrieve_backup_with_incorrect_token_ec_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "jwt_error",
-                "message": "jwt_error",
+                "message": "Invalid or expired token.",
             }
         })
     );
@@ -173,7 +173,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed.",
             }
         })
     );
@@ -225,7 +225,7 @@ async fn test_retrieve_backup_with_nonexistent_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "backup_untraceable",
-                "message": "backup_untraceable",
+                "message": "Client-side auth failure: backup_untraceable",
             }
         })
     );
@@ -284,7 +284,7 @@ async fn test_retrieve_backup_with_sync_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "backup_untraceable",
-                "message": "backup_untraceable",
+                "message": "Client-side auth failure: backup_untraceable",
             }
         })
     );

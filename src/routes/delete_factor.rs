@@ -59,7 +59,10 @@ pub async fn handler(
 
     // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
     if request.scope == FactorScope::Sync && encryption_key.is_some() {
-        return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
+        return Err(ErrorResponse::bad_request(
+            "encryption_key_not_allowed",
+            "Removing an encryption key is not allowed when removing sync factors",
+        ));
     }
 
     // Step 2: Auth. Verify the solved challenge
@@ -90,7 +93,7 @@ pub async fn handler(
 
         let Some(factor_to_delete) = factor_to_delete else {
             tracing::info!(message = "Factor not found in backup metadata");
-            return Err(ErrorResponse::bad_request("factor_not_found"));
+            return Err(ErrorResponse::bad_request("factor_not_found", "Factor not found in backup"));
         };
 
         // Step 4: Delete the factor from the backup storage

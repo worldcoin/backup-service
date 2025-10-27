@@ -112,7 +112,7 @@ async fn test_create_backup_with_passkey() {
             "allowRetry": false,
             "error": {
                 "code": "already_used",
-                "message": "already_used",
+                "message": "Token has already been used.",
             },
         })
     );
@@ -280,7 +280,7 @@ async fn test_create_backup_with_incorrect_token() {
             "allowRetry": false,
             "error": {
                 "code": "jwt_error",
-                "message": "jwt_error",
+                "message": "Invalid or expired token.",
             },
         })
     );
@@ -342,8 +342,8 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_client_error",
-                "message": "webauthn_client_error",
+                "code": "webauthn_error",
+                "message": "The JSON from the client did not indicate webauthn.<method> correctly",
             },
         })
     );
@@ -397,7 +397,7 @@ async fn test_create_backup_with_empty_file() {
             "allowRetry": false,
             "error": {
                 "code": "empty_backup_file",
-                "message": "empty_backup_file",
+                "message": "Empty backup file",
             },
         })
     );
@@ -451,7 +451,7 @@ async fn test_create_backup_with_large_file() {
             "allowRetry": false,
             "error": {
                 "code": "backup_file_too_large",
-                "message": "backup_file_too_large",
+                "message": "Backup file too large",
             },
         })
     );
@@ -518,7 +518,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
             "allowRetry": false,
             "error": {
                 "code": "oidc_token_verification_error",
-                "message": "oidc_token_verification_error",
+                "message": "Failed to verify OIDC token.",
             },
         })
     );
@@ -588,7 +588,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
             "allowRetry": false,
             "error": {
                 "code": "oidc_token_verification_error",
-                "message": "oidc_token_verification_error",
+                "message": "Failed to verify OIDC token.",
             },
         })
     );
@@ -647,7 +647,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed.",
             },
         })
     );
@@ -716,7 +716,7 @@ async fn test_create_backup_with_invalid_sync_factor() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_sync_factor_type",
-                "message": "invalid_sync_factor_type",
+                "message": "Client-side auth failure: invalid_sync_factor_type",
             },
         })
     );
@@ -776,7 +776,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed.",
             },
         })
     );
@@ -867,7 +867,7 @@ async fn test_create_backup_with_duplicate_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "backup_account_id_already_exists",
-                "message": "backup_account_id_already_exists",
+                "message": "Backup ID already exists. Please `/sync` instead.",
             },
         })
     );
@@ -920,7 +920,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_payload",
-                "message": "invalid_payload",
+                "message": "Failed to deserialize payload",
             },
         })
     );
@@ -962,7 +962,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_payload",
-                "message": "invalid_payload",
+                "message": "Failed to deserialize payload",
             },
         })
     );

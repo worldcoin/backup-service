@@ -61,25 +61,37 @@ pub async fn handler(
     let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
         tracing::info!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request("missing_payload_field")
+        ErrorResponse::bad_request(
+            "missing_payload_field",
+            "Missing payload field in multipart data",
+        )
     })?;
     let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
         tracing::info!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload")
+        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
     let backup = multipart_fields.get("backup").ok_or_else(|| {
         tracing::info!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request("missing_backup_field")
+        ErrorResponse::bad_request(
+            "missing_backup_field",
+            "Missing backup field in multipart data",
+        )
     })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
         tracing::info!(message = "Empty backup file");
-        return Err(ErrorResponse::bad_request("empty_backup_file"));
+        return Err(ErrorResponse::bad_request(
+            "empty_backup_file",
+            "Empty backup file",
+        ));
     }
     if backup.len() > environment.max_backup_file_size() {
         tracing::info!(message = "Backup file too large");
-        return Err(ErrorResponse::bad_request("backup_file_too_large"));
+        return Err(ErrorResponse::bad_request(
+            "backup_file_too_large",
+            "Backup file too large",
+        ));
     }
 
     // Step 2: Verify the main authentication factor
@@ -122,7 +134,10 @@ pub async fn handler(
             message = "Backup account ID already exists",
             backup_account_id = request.backup_account_id
         );
-        return Err(ErrorResponse::conflict("backup_account_id_already_exists"));
+        return Err(ErrorResponse::conflict(
+            "backup_account_id_already_exists",
+            "Backup ID already exists. Please `/sync` instead.",
+        ));
     }
     let mut lock_guard = redis_cache_manager
         .try_acquire_lock_guard(
