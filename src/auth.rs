@@ -57,11 +57,8 @@ pub enum AuthError {
     InvalidSyncFactorType,
     #[error("missing_turnkey_provider_id")]
     MissingTurnkeyProviderId,
-
-    /// Something is wrong with the `WebAuthN` payload (attributable to the client).
-    /// Separate logging is done on the auth module server-side to assist with debugging.
-    #[error("webauthn_client_error")]
-    WebauthnClientError,
+    #[error("webauthn_invalid_payload")]
+    WebauthnInvalidPayload,
 
     #[error("webauthn_prf_results_not_allowed")]
     WebauthnPrfResultsNotAllowed,
@@ -319,7 +316,7 @@ impl AuthHandler {
         let user_provided_credential: RegisterPublicKeyCredential =
             serde_json::from_value(credential.clone()).map_err(|err| {
                 tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                AuthError::WebauthnClientError
+                AuthError::WebauthnInvalidPayload
             })?;
 
         let verified_passkey = self

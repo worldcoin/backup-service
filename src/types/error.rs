@@ -183,9 +183,9 @@ impl From<AuthError> for ErrorResponse {
                     &format!("Client-side auth failure: {err}"),
                 )
             }
-            AuthError::WebauthnClientError => {
+            AuthError::WebauthnInvalidPayload => {
                 // no additional logging is needed as where relevant it's handled by the auth module
-                Self::bad_request("webauthn_client_error", "WebAuthn client error occurred.")
+                Self::bad_request("webauthn_invalid_payload", "WebAuthN payload is invalid.")
             }
             AuthError::PasskeySerializationError { err } => {
                 tracing::error!(message = "Passkey serialization error", error = ?err);
