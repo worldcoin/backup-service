@@ -59,7 +59,10 @@ pub async fn handler(
 
     // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
     if request.scope == FactorScope::Sync && encryption_key.is_some() {
-        return Err(ErrorResponse::bad_request("encryption_key_not_allowed", "Removing an encryption key is not allowed when removing sync factors"));
+        return Err(ErrorResponse::bad_request(
+            "encryption_key_not_allowed",
+            "Removing an encryption key is not allowed when removing sync factors",
+        ));
     }
 
     // Step 2: Auth. Verify the solved challenge
