@@ -72,7 +72,10 @@ pub async fn handler(
 
             // Turnkey activity is required for passkeys
             let Some(turnkey_activity) = &request.existing_factor_turnkey_activity else {
-                return Err(ErrorResponse::bad_request("missing_turnkey_activity"));
+                return Err(ErrorResponse::bad_request(
+                    "missing_turnkey_activity",
+                    "Turnkey activity is missing",
+                ));
             };
             // Parse credential per the WebAuthn spec
             let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
@@ -151,7 +154,10 @@ pub async fn handler(
             let turnkey_activity_json: serde_json::Value = serde_json::from_str(turnkey_activity)
                 .map_err(|err| {
                 tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
-                ErrorResponse::bad_request("webauthn_error")
+                ErrorResponse::bad_request(
+                    "invalid_turnkey_activity",
+                    "Provided Turnkey activity is invalid",
+                )
             })?;
 
             let backup_service_challenge = turnkey_activity_json["metadata"]["challenge"]
@@ -161,7 +167,10 @@ pub async fn handler(
                         message =
                             "Failed to get the backup-service challenge from Turnkey activity"
                     );
-                    ErrorResponse::bad_request("webauthn_error")
+                    ErrorResponse::bad_request(
+                        "invalid_turnkey_activity",
+                        "Turnkey activity is missing server challenge",
+                    )
                 })?;
             let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(
@@ -172,11 +181,17 @@ pub async fn handler(
 
             // This is the most important piece, it binds the user's passkey signature to the challenge we provided originally in `/add-factor/challenge`
             if STANDARD.encode(trusted_challenge) != backup_service_challenge {
-                return Err(ErrorResponse::bad_request("invalid_challenge"));
+                return Err(ErrorResponse::bad_request(
+                    "invalid_challenge",
+                    "Challenge mismatch with Turnkey activity",
+                ));
             }
 
             let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
-                return Err(ErrorResponse::bad_request("invalid_challenge_context"));
+                return Err(ErrorResponse::bad_request(
+                    "invalid_challenge_context",
+                    "Challenge context mismatch",
+                ));
             };
             // We do not need to check signature here, because whole activity is signed and verified
             // in the previous steps.
@@ -189,7 +204,7 @@ pub async fn handler(
         }
         Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
             // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair
-            return Err(ErrorResponse::bad_request("not_supported"));
+            return Err(ErrorResponse::bad_request("not_supported", "Not supported"));
         }
     };
 
@@ -208,15 +223,22 @@ pub async fn handler(
                     | crate::types::OidcToken::Apple { token } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
-                    return Err(ErrorResponse::bad_request("invalid_oidc_token"));
+                    return Err(ErrorResponse::bad_request(
+                        "oidc_token_mismatch",
+                        "OIDC Token mismatch",
+                    ));
                 }
             } else {
-                return Err(ErrorResponse::bad_request("invalid_new_factor_type"));
+                return Err(ErrorResponse::bad_request(
+                    "invalid_new_factor_type",
+                    "Invalid new factor type",
+                ));
             }
         }
         _ => {
             return Err(ErrorResponse::bad_request(
                 "invalid_new_factor_authorization_type",
+                "Invalid new factor authorization type",
             ));
         }
     }

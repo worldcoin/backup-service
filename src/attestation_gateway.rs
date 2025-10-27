@@ -353,10 +353,13 @@ impl AttestationGateway {
 
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
             .await
-            .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
+            .map_err(|_| {
+                ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+            })?;
 
-        let body_str = String::from_utf8(body_bytes.to_vec())
-            .map_err(|_| ErrorResponse::bad_request("invalid_payload"))?;
+        let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|_| {
+            ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+        })?;
 
         let attestation_token = parts.headers.attestation_token()?;
 
@@ -421,14 +424,25 @@ impl AttestationHeaderExt for HeaderMap {
     fn attestation_token(&self) -> Result<&str, ErrorResponse> {
         let value = self
             .get(ATTESTATION_GATEWAY_HEADER)
-            .ok_or_else(|| ErrorResponse::bad_request("missing_attestation_token_header"))?
+            .ok_or_else(|| {
+                ErrorResponse::bad_request(
+                    "missing_attestation_token_header",
+                    "Attestation token header is missing",
+                )
+            })?
             .to_str()
-            .map_err(|_| ErrorResponse::bad_request("invalid_attestation_token_header"))?;
+            .map_err(|_| {
+                ErrorResponse::bad_request(
+                    "invalid_attestation_token_header",
+                    "Attestation token header is invalid",
+                )
+            })?;
 
         if value.is_empty() {
             tracing::info!("Attestation gateway token is empty");
             return Err(ErrorResponse::bad_request(
                 "missing_attestation_token_header",
+                "Attestation token header is missing",
             ));
         }
 
