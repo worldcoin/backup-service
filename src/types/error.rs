@@ -387,7 +387,7 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
 impl From<TurnkeyActivityError> for ErrorResponse {
     fn from(err: TurnkeyActivityError) -> Self {
         tracing::info!(message = "Turnkey activity error", error = ?err);
-        ErrorResponse::bad_request("webauthn_error", &err.to_string())
+        ErrorResponse::bad_request("turnkey_activity_error", &err.to_string())
     }
 }
 

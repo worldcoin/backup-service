@@ -316,8 +316,8 @@ async fn test_add_factor_with_mismatched_oidc_token() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "invalid_oidc_token",
-                "message": "invalid_oidc_token",
+                "code": "oidc_token_mismatch",
+                "message": "OIDC Token mismatch",
             }
         })
     );
@@ -401,7 +401,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     // Verify the request was rejected with an error
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let error_response = parse_response_body(response).await;
-    assert_eq!(error_response["error"]["code"], "webauthn_error");
+    assert_eq!(error_response["error"]["code"], "invalid_turnkey_activity");
 }
 
 // Modified Turnkey activity after signing
@@ -466,7 +466,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     // Verify the request was rejected with an error
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let error_response = parse_response_body(response).await;
-    assert_eq!(error_response["error"]["code"], "webauthn_error");
+    assert_eq!(error_response["error"]["code"], "turnkey_activity_error");
 }
 
 // Incorrectly signed challenge for new keypair
@@ -536,7 +536,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed.",
             }
         })
     );
@@ -622,8 +622,8 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "turnkey_activity_error",
+                "message": "Signature verification failed",
             }
         })
     );
@@ -719,8 +719,8 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "turnkey_activity_error",
+                "message": "organizationId does not match expected Turnkey account ID",
             }
         })
     );
