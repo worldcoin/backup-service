@@ -275,6 +275,15 @@ pub enum OidcAccountKind {
     },
 }
 
+impl OidcAccountKind {
+    pub fn as_flattened_kind(&self) -> &'static str {
+        match self {
+            OidcAccountKind::Google { .. } => "GOOGLE",
+            OidcAccountKind::Apple { .. } => "APPLE",
+        }
+    }
+}
+
 impl PartialEq for OidcAccountKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

@@ -4,7 +4,19 @@ use axum::{extract::Path, Extension, Json};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::{backup_storage::BackupStorage, types::ErrorResponse};
+use crate::{
+    backup_storage::BackupStorage,
+    types::{backup_metadata::FactorKind, ErrorResponse},
+};
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedFactorSlim {
+    /// The kind of factor. E.g. `"PASSKEY"`, `"EC_KEYPAIR"`, `"OIDC_ACCOUNT"`.
+    kind: String,
+    /// The kind of account if the factor is an OIDC account. E.g. `"GOOGLE"`, `"APPLE"`.
+    account_kind: Option<String>,
+}
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +24,7 @@ pub struct BackupStatusResponse {
     /// The ID of the backup.
     backup_id: String,
     /// The flattened list of factor kinds associated with the backup. E.g. `["PASSKEY", "EC_KEYPAIR"]`.
-    factor_kinds_flattened: Vec<String>,
+    factors: Vec<ExportedFactorSlim>,
 }
 
 /// This public endpoint is used to check whether a backup exists and what are the factors associated with it.
@@ -31,16 +43,21 @@ pub async fn handler(
     }
     .0;
 
-    let factor_kinds_flattened: Vec<String> = metadata
+    let factors: Vec<ExportedFactorSlim> = metadata
         .factors
         .iter()
-        .map(|factor| factor.as_flattened_kind().to_string())
+        .map(|factor| ExportedFactorSlim {
+            kind: factor.as_flattened_kind().to_string(),
+            account_kind: match &factor.kind {
+                FactorKind::OidcAccount { account, .. } => {
+                    Some(account.as_flattened_kind().to_string())
+                }
+                _ => None,
+            },
+        })
         .collect();
 
-    let response = BackupStatusResponse {
-        backup_id,
-        factor_kinds_flattened,
-    };
+    let response = BackupStatusResponse { backup_id, factors };
 
     Ok(Json(response))
 }
