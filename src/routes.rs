@@ -20,6 +20,7 @@ mod add_factor;
 mod add_factor_challenge;
 mod add_sync_factor;
 mod add_sync_factor_challenge_keypair;
+mod backup_status;
 mod create_backup;
 mod create_challenge_keypair;
 mod create_challenge_passkey;
@@ -41,6 +42,8 @@ mod sync_challenge_keypair;
 
 pub fn handler(environment: Environment) -> ApiRouter {
     let v1_routes = ApiRouter::new()
+        // Public
+        .api_route("/backup/{backup_id}", get(backup_status::handler))
         // Create new backup
         .api_route(
             "/create/challenge/passkey",
