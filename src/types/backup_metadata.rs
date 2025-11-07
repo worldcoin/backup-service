@@ -330,8 +330,7 @@ pub enum ExportedFactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey {
         /// The credential ID of the passkey, base64url-encoded (no padding).
-        /// This matches the WebAuthn standard format used by iOS, Android, and web platforms.
-        /// The encoding is base64url (RFC 4648 §5): URL-safe alphabet with no padding.
+        /// This matches the `WebAuthN` standard format used by iOS and Android.
         credential_id: String,
         /// TODO: Remove once the client migrates to create the Turnkey account immediately upon registration.
         /// Registration object presented by the client when signing up. Used by the client to be
