@@ -1,10 +1,11 @@
 use http::StatusCode;
 use http_body_util::BodyExt;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::common::{
     create_test_backup_with_keypair, create_test_backup_with_oidc_account,
-    generate_random_backup_id, send_get_request,
+    generate_random_backup_id, send_post_request,
 };
 
 mod common;
@@ -17,7 +18,7 @@ async fn test_fetch_backup_status_happy_path() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let backup_id = response["backupId"].as_str().unwrap();
 
-    let response = send_get_request(format!("/v1/backup/{}", backup_id).as_str()).await;
+    let response = send_post_request("/v1/backup/status", json!({"backupId": backup_id})).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -43,7 +44,7 @@ async fn test_fetch_backup_status_with_oidc_account() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let backup_id = response["backupId"].as_str().unwrap();
 
-    let response = send_get_request(format!("/v1/backup/{}", backup_id).as_str()).await;
+    let response = send_post_request("/v1/backup/status", json!({"backupId": backup_id})).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -56,7 +57,11 @@ async fn test_fetch_backup_status_with_oidc_account() {
 
 #[tokio::test]
 async fn test_fetch_backup_not_found() {
-    let response =
-        send_get_request(format!("/v1/backup/{}", generate_random_backup_id()).as_str()).await;
+    let response = send_post_request(
+        "/v1/backup/status",
+        json!({"backupId": generate_random_backup_id()}),
+    )
+    .await;
+
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

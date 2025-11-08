@@ -176,13 +176,6 @@ pub async fn send_post_request(route: &str, payload: serde_json::Value) -> Respo
     .unwrap()
 }
 
-pub async fn send_get_request(route: &str) -> Response {
-    let app = get_test_router(None, None).await;
-    app.oneshot(Request::builder().uri(route).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-}
-
 /// Send a POST request with a specific environment. Helpful when trying to fetch a backup from
 /// an environment that's attached to a specific mock JWT issuer.
 pub async fn send_post_request_with_environment(

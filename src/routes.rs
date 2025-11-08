@@ -43,7 +43,7 @@ mod sync_challenge_keypair;
 pub fn handler(environment: Environment) -> ApiRouter {
     let v1_routes = ApiRouter::new()
         // Public
-        .api_route("/backup/{backup_id}", get(backup_status::handler))
+        .api_route("/backup/status", post(backup_status::handler))
         // Create new backup
         .api_route(
             "/create/challenge/passkey",
