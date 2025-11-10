@@ -3,7 +3,7 @@
 members = [".", "test-utils"]
 
 [workspace.package]
-version = "0.7.8"
+version = "0.7.9"
 
 [workspace.dependencies]
 base64 = "0.22.1"

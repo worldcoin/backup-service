@@ -2,6 +2,19 @@
 
 
 
+# [0.7.9] - 2025-11-10
+
+## What's Changed
+* feat: expose credential_id for passkeys by @paolodamico in https://github.com/worldcoin/backup-service/pull/146
+* feat: backup status endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/147
+* fix!: update backup ID requirements by @paolodamico in https://github.com/worldcoin/backup-service/pull/148
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.8...0.7.9
+
+
+
+
 # [0.7.8] - 2025-10-27
 
 ## What's Changed
