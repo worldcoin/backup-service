@@ -379,8 +379,9 @@ pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
 }
 
 pub fn generate_random_backup_id() -> String {
-    let mut test_backup_id: [u8; 32] = [0; 32];
+    let mut test_backup_id: [u8; 33] = [0; 33];
     OsRng.fill_bytes(&mut test_backup_id);
+    test_backup_id[0] = 0x3;
     format!("backup_account_{}", hex::encode(test_backup_id))
 }
 

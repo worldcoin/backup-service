@@ -80,9 +80,10 @@ where
         ));
     }
     let bytes = hex::decode(s.trim_start_matches("backup_account_")).map_err(de::Error::custom)?;
-    if bytes.len() != 32 {
+    // 33 bytes because we expect a SEC.1 compressed public key
+    if bytes.len() != 33 {
         return Err(de::Error::custom(
-            "Invalid backup account ID. Expected 32 bytes after the prefix.",
+            "Invalid backup account ID. Expected 33 bytes after the prefix.",
         ));
     }
     Ok(s)
