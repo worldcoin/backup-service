@@ -137,9 +137,9 @@ impl Factor {
 
     pub fn as_flattened_kind(&self) -> &'static str {
         match &self.kind {
-            FactorKind::Passkey { .. } => "passkey",
-            FactorKind::OidcAccount { .. } => "oidc",
-            FactorKind::EcKeypair { .. } => "ec_keypair",
+            FactorKind::Passkey { .. } => "PASSKEY",
+            FactorKind::OidcAccount { .. } => "OIDC_ACCOUNT",
+            FactorKind::EcKeypair { .. } => "EC_KEYPAIR",
         }
     }
 }
@@ -274,6 +274,15 @@ pub enum OidcAccountKind {
         #[serde(default)]
         masked_email: String,
     },
+}
+
+impl OidcAccountKind {
+    pub fn as_flattened_kind(&self) -> &'static str {
+        match self {
+            OidcAccountKind::Google { .. } => "GOOGLE",
+            OidcAccountKind::Apple { .. } => "APPLE",
+        }
+    }
 }
 
 impl PartialEq for OidcAccountKind {

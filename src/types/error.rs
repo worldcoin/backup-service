@@ -71,6 +71,15 @@ impl ErrorResponse {
             status: StatusCode::CONFLICT,
         }
     }
+
+    #[must_use]
+    pub fn not_found() -> Self {
+        Self {
+            code: "not_found".to_string(),
+            message: "Not Found".to_string(),
+            status: StatusCode::NOT_FOUND,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
