@@ -89,6 +89,7 @@ webauthn-rs = { version = "0.5.2", features = [
 backup-service-test-utils = { path = "test-utils/" }
 chrono = "0.4.40"
 http-body-util = "0.1.3"
+md-5 = "0.10.6"
 mockito = { workspace = true }
 tower = "0.5.2"
 serial_test = "3.2.0"
