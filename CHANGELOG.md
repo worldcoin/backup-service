@@ -2,6 +2,18 @@
 
 
 
+# [0.7.10] - 2025-11-20
+
+## What's Changed
+* feat: return metadata on endpoints by @paolodamico in https://github.com/worldcoin/backup-service/pull/152
+* feat: add support for SSE on S3 bucket by @paolodamico in https://github.com/worldcoin/backup-service/pull/150
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.9...0.7.10
+
+
+
+
 # [0.7.9] - 2025-11-10
 
 ## What's Changed
