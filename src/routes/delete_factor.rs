@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::{BackupStorage, DeletionResult};
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use aide::transform::TransformOperation;
@@ -31,6 +32,7 @@ pub struct DeleteFactorRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFactorResponse {
     backup_deleted: bool,
+    backup_metadata: Option<ExportedBackupMetadata>,
 }
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
@@ -97,20 +99,28 @@ pub async fn handler(
         };
 
         // Step 4: Delete the factor from the backup storage
-        let mut backup_deleted = false;
-        match request.scope {
+        let metadata = match request.scope {
             FactorScope::Main => {
                 let result = backup_storage
                     .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
                     .await?;
-                backup_deleted = matches!(result, DeletionResult::BackupDeleted);
+               match result {
+                DeletionResult::BackupDeleted => {
+                    None
+                }
+                DeletionResult::OnlyFactorDeleted(metadata) => {
+                    Some(metadata)
+                }
+               }
             }
             FactorScope::Sync => {
-                backup_storage
+                Some(backup_storage
                     .remove_sync_factor(&backup_id, &factor_id)
-                    .await?;
+                    .await?)
             }
-        }
+        };
+
+        let backup_deleted = metadata.is_none();
 
         let msg = if backup_deleted {
             "Backup deleted from removal of last main factor"
@@ -136,7 +146,7 @@ pub async fn handler(
                 .await?;
         }
 
-        Ok(Json(DeleteFactorResponse { backup_deleted }))
+        Ok(Json(DeleteFactorResponse { backup_deleted, backup_metadata: metadata.map(|m| m.exported()) }))
     }
     .instrument(span)
     .await

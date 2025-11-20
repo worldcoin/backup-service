@@ -211,7 +211,7 @@ impl BackupStorage {
         backup_id: &str,
         factor: Factor,
         new_encryption_key: Option<BackupEncryptionKey>,
-    ) -> Result<(), BackupManagerError> {
+    ) -> Result<BackupMetadata, BackupManagerError> {
         // Get the current metadata
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -253,7 +253,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(metadata)
     }
 
     /// Adds a sync factor to the backup metadata in S3.
@@ -416,7 +416,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(DeletionResult::OnlyFactorDeleted)
+        Ok(DeletionResult::OnlyFactorDeleted(metadata))
     }
 
     /// Removes a `Sync` factor from the backup metadata in S3 by factor ID.
@@ -428,7 +428,7 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         factor_id: &str,
-    ) -> Result<(), BackupManagerError> {
+    ) -> Result<BackupMetadata, BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
@@ -454,7 +454,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(metadata)
     }
 
     /// Deletes a backup and its metadata from S3.
@@ -533,10 +533,23 @@ fn get_metadata_key(backup_id: &str) -> String {
     format!("{backup_id}/metadata")
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DeletionResult {
     BackupDeleted,
-    OnlyFactorDeleted,
+    OnlyFactorDeleted(BackupMetadata),
+}
+
+impl PartialEq for DeletionResult {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DeletionResult::BackupDeleted, DeletionResult::BackupDeleted) => true,
+            (
+                DeletionResult::OnlyFactorDeleted(metadata),
+                DeletionResult::OnlyFactorDeleted(other_metadata),
+            ) => metadata == other_metadata,
+            _ => false,
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -1313,7 +1326,10 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), DeletionResult::OnlyFactorDeleted);
+        assert!(matches!(
+            result.unwrap(),
+            DeletionResult::OnlyFactorDeleted(_)
+        ));
 
         // Verify the backup now has only the Passkey factor and PRF key
         let updated_backup = backup_storage

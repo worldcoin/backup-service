@@ -7,7 +7,7 @@ use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
-use crate::types::backup_metadata::FactorKind;
+use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse};
 use crate::webauthn::TryFromValue;
@@ -51,6 +51,7 @@ pub struct AddFactorRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AddFactorResponse {
     factor_id: String,
+    backup_metadata: ExportedBackupMetadata,
 }
 
 /// Adds a new factor to an existing backup.
@@ -269,7 +270,7 @@ pub async fn handler(
     // potentially leading to a security issue.
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
-    backup_storage
+    let updated_metadata = backup_storage
         .add_factor(
             &backup_id,
             new_factor.clone(),
@@ -277,8 +278,9 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 4: Return the new factor ID
+    // Step 4: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {
         factor_id: new_factor.id,
+        backup_metadata: updated_metadata.exported(),
     }))
 }
