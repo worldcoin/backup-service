@@ -110,7 +110,12 @@ impl Environment {
     /// `BACKUP_S3_BUCKET_KMS_KEY_ARN` should be the ARN of a KMS key that is used to encrypt the data in the S3 bucket
     #[must_use]
     pub fn s3_sse_kms_key_arn(&self) -> Option<String> {
-        env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()
+        let val = env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()?;
+        if val.is_empty() {
+            None
+        } else {
+            Some(val)
+        }
     }
 
     /// Returns whether the API docs should be visible
