@@ -99,6 +99,7 @@ impl BackupStorage {
         backup_id: &str,
     ) -> Result<Option<(BackupMetadata, ETag)>, BackupManagerError> {
         let result = self
+            .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
@@ -130,6 +131,7 @@ impl BackupStorage {
         backup_id: &str,
     ) -> Result<Option<Vec<u8>>, BackupManagerError> {
         let backup = self
+            .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
@@ -478,6 +480,7 @@ impl BackupStorage {
     /// Will error if something goes unexpectedly wrong calling the S3 API.
     pub async fn does_backup_exist(&self, backup_id: &str) -> Result<bool, BackupManagerError> {
         let result = self
+            .s3_client
             .head_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
@@ -511,35 +514,10 @@ impl BackupStorage {
     /// Helper to create a `PutObject` builder with SSE-C if configured
     fn put_object(&self) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
         let mut builder = self.s3_client.put_object();
-        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
+        if let Some(key_arn) = self.environment.s3_sse_kms_key_arn() {
             builder = builder
-                .sse_customer_key(key_arn)
-                .sse_customer_algorithm("AES256")
-                .sse_customer_key_md5(key_md5);
-        }
-        builder
-    }
-
-    /// Helper to create a `GetObject` builder with SSE-C if configured
-    fn get_object(&self) -> aws_sdk_s3::operation::get_object::builders::GetObjectFluentBuilder {
-        let mut builder = self.s3_client.get_object();
-        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
-            builder = builder
-                .sse_customer_key(key_arn)
-                .sse_customer_algorithm("AES256")
-                .sse_customer_key_md5(key_md5);
-        }
-        builder
-    }
-
-    /// Helper to create a `HeadObject` builder with SSE-C if configured
-    fn head_object(&self) -> aws_sdk_s3::operation::head_object::builders::HeadObjectFluentBuilder {
-        let mut builder = self.s3_client.head_object();
-        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
-            builder = builder
-                .sse_customer_key(key_arn)
-                .sse_customer_algorithm("AES256")
-                .sse_customer_key_md5(key_md5);
+                .ssekms_key_id(key_arn)
+                .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms);
         }
         builder
     }
@@ -608,9 +586,7 @@ mod tests {
     use crate::types::Environment;
     use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
-    use base64::Engine;
     use chrono::DateTime;
-    use md5::Digest;
     use rand::rngs::OsRng;
     use rand::RngCore;
     use serde_json::json;
@@ -1365,38 +1341,19 @@ mod tests {
     async fn test_sse_encryption_with_localstack() {
         dotenvy::from_filename(".env.example").unwrap();
 
-        let environment = Environment::development(None);
-
-        // Generate a data key from KMS for SSE-C
-        let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
         let kms_key_id =
             "arn:aws:kms:us-east-1:000000000000:key/00000000-f510-7227-9b63-da8e18607616";
+        std::env::set_var("BACKUP_S3_BUCKET_KMS_KEY_ARN", kms_key_id);
+        let environment = Environment::development(None);
+        let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
 
-        let data_key_response = kms_client
-            .generate_data_key()
+        kms_client
+            .enable_key()
             .key_id(kms_key_id)
-            .key_spec(aws_sdk_kms::types::DataKeySpec::Aes256)
             .send()
             .await
-            .expect("Failed to generate data key from KMS");
+            .unwrap();
 
-        let plaintext_key = data_key_response.plaintext().expect("No plaintext key");
-        let key_bytes = plaintext_key.as_ref();
-
-        // For SSE-C, we need the key in base64 and its MD5 hash in base64
-
-        let key_base64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-        let mut hasher = md5::Md5::new();
-        hasher.update(key_bytes);
-        let key_md5 = hasher.finalize();
-        let key_md5_base64 = base64::engine::general_purpose::STANDARD.encode(key_md5.as_slice());
-
-        // Use separate bucket for SSE testing
-        std::env::set_var("BACKUP_S3_BUCKET", "backup-service-bucket-sse");
-        std::env::set_var("BACKUP_S3_BUCKET_KMS_KEY_ARN", &key_base64);
-        std::env::set_var("BACKUP_S3_BUCKET_KMS_KEY_MD5", &key_md5_base64);
-
-        let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
         let backup_storage = BackupStorage::new(environment, s3_client.clone());
 
@@ -1410,13 +1367,27 @@ mod tests {
             manifest_hash: hex::encode([1u8; 32]),
         };
 
-        // Test 1: Create backup with SSE
+        // Test 1: Create backup with SSE-KMS
         backup_storage
             .create(test_backup_data.clone(), &test_metadata)
             .await
             .unwrap();
 
-        // Test 2: Get backup with SSE (should succeed with correct key)
+        // Verify the object is encrypted with SSE-KMS
+        let head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_backup_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(head_result.ssekms_key_id(), Some(kms_key_id));
+
+        // Test 2: Get backup with SSE-KMS (should succeed with correct key)
         let found_backup = backup_storage
             .get_by_backup_id(&test_backup_id)
             .await
@@ -1425,7 +1396,7 @@ mod tests {
         assert_eq!(found_backup.backup, test_backup_data);
         assert_eq!(found_backup.metadata, test_metadata);
 
-        // Test 3: Get metadata with SSE
+        // Test 3: Get metadata with SSE-KMS
         let (metadata, _) = backup_storage
             .get_metadata_by_backup_id(&test_backup_id)
             .await
@@ -1433,7 +1404,7 @@ mod tests {
             .expect("Metadata not found");
         assert_eq!(metadata, test_metadata);
 
-        // Test 4: Update backup with SSE
+        // Test 4: Update backup with SSE-KMS
         let updated_backup_data = vec![6, 7, 8, 9, 10];
         backup_storage
             .update_backup(
@@ -1453,7 +1424,7 @@ mod tests {
         assert_eq!(found_backup.backup, updated_backup_data);
         assert_eq!(found_backup.metadata.manifest_hash, hex::encode([2u8; 32]));
 
-        // Test 5: Add factor with SSE
+        // Test 5: Add factor with SSE-KMS
         let new_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "12345".to_string(),
@@ -1473,7 +1444,7 @@ mod tests {
             .expect("Metadata not found");
         assert_eq!(metadata.factors.len(), 1);
 
-        // Test 6: Add sync factor with SSE
+        // Test 6: Add sync factor with SSE-KMS
         let sync_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
             .add_sync_factor(&test_backup_id, sync_factor.clone())
@@ -1487,7 +1458,7 @@ mod tests {
             .expect("Metadata not found");
         assert_eq!(metadata.sync_factors.len(), 1);
 
-        // Test 7: Remove sync factor with SSE
+        // Test 7: Remove sync factor with SSE-KMS
         backup_storage
             .remove_sync_factor(&test_backup_id, &sync_factor.id)
             .await
@@ -1500,36 +1471,25 @@ mod tests {
             .expect("Metadata not found");
         assert_eq!(metadata.sync_factors.len(), 0);
 
-        // Test 8: Head object with SSE
+        // Test 8: Head object with SSE-KMS
         let exists = backup_storage
             .does_backup_exist(&test_backup_id)
             .await
             .unwrap();
         assert!(exists);
 
-        // Test 9: Test that without the correct key, we cannot access the backup
-        // Unset the KMS key to simulate missing credentials
-        std::env::remove_var("BACKUP_S3_BUCKET_KMS_KEY_ARN");
-        std::env::remove_var("BACKUP_S3_BUCKET_KMS_KEY_MD5");
-
-        let environment_no_key = Environment::development(None);
-        let backup_storage_no_key = BackupStorage::new(environment_no_key, s3_client.clone());
-
-        // This should fail because we don't have the encryption key
-        let result = backup_storage_no_key
-            .get_backup_by_backup_id(&test_backup_id)
-            .await
-            .unwrap_err();
-        assert!(matches!(result, BackupManagerError::GetObjectError(_)));
-
-        // Test 10: Delete backup does not require SSE
-        backup_storage.delete_backup(&test_backup_id).await.unwrap();
-        let exists = backup_storage
-            .does_backup_exist(&test_backup_id)
+        // Test 9: Verify encryption is applied to all objects
+        let metadata_head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_metadata_key(&test_backup_id))
+            .send()
             .await
             .unwrap();
-        assert!(!exists);
-
-        std::env::remove_var("BACKUP_S3_BUCKET");
+        assert_eq!(
+            metadata_head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(metadata_head_result.ssekms_key_id(), Some(kms_key_id));
     }
 }

@@ -106,14 +106,11 @@ impl Environment {
 
     /// Optional KMS key configuration if the S3 bucket has SSE-KMS encryption enabled.
     ///
-    /// If **both** are set, all S3 operations will use SSE-C encryption
+    /// If **both** are set, all S3 operations will use SSE-KMS encryption
     /// `BACKUP_S3_BUCKET_KMS_KEY_ARN` should be the ARN of a KMS key that is used to encrypt the data in the S3 bucket
-    /// `BACKUP_S3_BUCKET_KMS_KEY_MD5` should be the base64-encoded MD5 hash of the key (16 bytes in base64)
     #[must_use]
-    pub fn kms_key_config(&self) -> Option<(String, String)> {
-        let key_arn = env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()?;
-        let key_md5 = env::var("BACKUP_S3_BUCKET_KMS_KEY_MD5").ok()?;
-        Some((key_arn, key_md5))
+    pub fn s3_sse_kms_key_arn(&self) -> Option<String> {
+        env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()
     }
 
     /// Returns whether the API docs should be visible
