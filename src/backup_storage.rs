@@ -38,8 +38,7 @@ impl BackupStorage {
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
         // Save encrypted backup to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
@@ -48,8 +47,7 @@ impl BackupStorage {
             .await?;
 
         // Save metadata to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(&backup_metadata.id))
             .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
@@ -101,7 +99,6 @@ impl BackupStorage {
         backup_id: &str,
     ) -> Result<Option<(BackupMetadata, ETag)>, BackupManagerError> {
         let result = self
-            .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
@@ -133,7 +130,6 @@ impl BackupStorage {
         backup_id: &str,
     ) -> Result<Option<Vec<u8>>, BackupManagerError> {
         let backup = self
-            .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
@@ -176,8 +172,7 @@ impl BackupStorage {
 
         metadata.manifest_hash = new_manifest_hash;
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
@@ -187,8 +182,7 @@ impl BackupStorage {
         // Save the new metadata
         // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
         // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -244,8 +238,7 @@ impl BackupStorage {
         }
 
         // Save the updated metadata
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -299,8 +292,7 @@ impl BackupStorage {
         metadata.sync_factors.push(sync_factor);
 
         // Save the updated metadata
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -407,8 +399,7 @@ impl BackupStorage {
             }
         }
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -445,8 +436,7 @@ impl BackupStorage {
 
         metadata.sync_factors.remove(index);
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -488,7 +478,6 @@ impl BackupStorage {
     /// Will error if something goes unexpectedly wrong calling the S3 API.
     pub async fn does_backup_exist(&self, backup_id: &str) -> Result<bool, BackupManagerError> {
         let result = self
-            .s3_client
             .head_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
@@ -517,6 +506,42 @@ impl BackupStorage {
                 false
             }
         }
+    }
+
+    /// Helper to create a `PutObject` builder with SSE-C if configured
+    fn put_object(&self) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
+        let mut builder = self.s3_client.put_object();
+        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
+            builder = builder
+                .sse_customer_key(key_arn)
+                .sse_customer_algorithm("AES256")
+                .sse_customer_key_md5(key_md5);
+        }
+        builder
+    }
+
+    /// Helper to create a `GetObject` builder with SSE-C if configured
+    fn get_object(&self) -> aws_sdk_s3::operation::get_object::builders::GetObjectFluentBuilder {
+        let mut builder = self.s3_client.get_object();
+        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
+            builder = builder
+                .sse_customer_key(key_arn)
+                .sse_customer_algorithm("AES256")
+                .sse_customer_key_md5(key_md5);
+        }
+        builder
+    }
+
+    /// Helper to create a `HeadObject` builder with SSE-C if configured
+    fn head_object(&self) -> aws_sdk_s3::operation::head_object::builders::HeadObjectFluentBuilder {
+        let mut builder = self.s3_client.head_object();
+        if let Some((key_arn, key_md5)) = self.environment.kms_key_config() {
+            builder = builder
+                .sse_customer_key(key_arn)
+                .sse_customer_algorithm("AES256")
+                .sse_customer_key_md5(key_md5);
+        }
+        builder
     }
 }
 
