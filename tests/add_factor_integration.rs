@@ -169,6 +169,20 @@ async fn test_add_factor_happy_path() {
     assert_eq!(response.status(), StatusCode::OK);
     let add_factor_response = parse_response_body(response).await;
     assert!(add_factor_response["factorId"].as_str().is_some());
+    assert!(add_factor_response["backupMetadata"].is_object());
+    assert_eq!(
+        add_factor_response["backupMetadata"]["id"]
+            .as_str()
+            .unwrap(),
+        backup_id
+    );
+    assert_eq!(
+        add_factor_response["backupMetadata"]["factors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // Verify the factor was added to the backup metadata
     let metadata = verify_s3_metadata_exists(&backup_id).await;

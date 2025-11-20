@@ -109,6 +109,7 @@ async fn test_delete_last_factor_happy_path() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(response["backupDeleted"], true);
+    assert!(response["backupMetadata"].is_null());
 
     // Verify the backup was deleted by trying to get the metadata (should fail)
     let s3_client = common::get_test_s3_client().await;
@@ -240,6 +241,25 @@ async fn test_delete_sync_factor_happy_path() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(response["backupDeleted"], false);
+    assert!(response["backupMetadata"].is_object());
+    assert_eq!(
+        response["backupMetadata"]["id"].as_str().unwrap(),
+        backup_id
+    );
+    assert_eq!(
+        response["backupMetadata"]["factors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        response["backupMetadata"]["syncFactors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     let metadata = verify_s3_metadata_exists(backup_id).await;
 
