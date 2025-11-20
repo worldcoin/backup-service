@@ -242,9 +242,24 @@ async fn test_delete_sync_factor_happy_path() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(response["backupDeleted"], false);
     assert!(response["backupMetadata"].is_object());
-    assert_eq!(response["backupMetadata"]["id"].as_str().unwrap(), backup_id);
-    assert_eq!(response["backupMetadata"]["factors"].as_array().unwrap().len(), 1);
-    assert_eq!(response["backupMetadata"]["syncFactors"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        response["backupMetadata"]["id"].as_str().unwrap(),
+        backup_id
+    );
+    assert_eq!(
+        response["backupMetadata"]["factors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        response["backupMetadata"]["syncFactors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     let metadata = verify_s3_metadata_exists(backup_id).await;
 
