@@ -38,8 +38,7 @@ impl BackupStorage {
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
         // Save encrypted backup to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
@@ -48,8 +47,7 @@ impl BackupStorage {
             .await?;
 
         // Save metadata to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(&backup_metadata.id))
             .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
@@ -176,8 +174,7 @@ impl BackupStorage {
 
         metadata.manifest_hash = new_manifest_hash;
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
@@ -187,8 +184,7 @@ impl BackupStorage {
         // Save the new metadata
         // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
         // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -244,8 +240,7 @@ impl BackupStorage {
         }
 
         // Save the updated metadata
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -299,8 +294,7 @@ impl BackupStorage {
         metadata.sync_factors.push(sync_factor);
 
         // Save the updated metadata
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -407,8 +401,7 @@ impl BackupStorage {
             }
         }
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -445,8 +438,7 @@ impl BackupStorage {
 
         metadata.sync_factors.remove(index);
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -517,6 +509,17 @@ impl BackupStorage {
                 false
             }
         }
+    }
+
+    /// Helper to create a `PutObject` builder with SSE-C if configured
+    fn put_object(&self) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
+        let mut builder = self.s3_client.put_object();
+        if let Some(key_arn) = self.environment.s3_sse_kms_key_arn() {
+            builder = builder
+                .ssekms_key_id(key_arn)
+                .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms);
+        }
+        builder
     }
 }
 
@@ -1347,5 +1350,162 @@ mod tests {
             }
             _ => panic!("Expected only PRF key to remain"),
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn test_sse_encryption_with_localstack() {
+        dotenvy::from_filename(".env.example").unwrap();
+
+        let kms_key_id =
+            "arn:aws:kms:us-east-1:000000000000:key/00000000-f510-7227-9b63-da8e18607616";
+        std::env::set_var("BACKUP_S3_BUCKET_KMS_KEY_ARN", kms_key_id);
+        let environment = Environment::development(None);
+        let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
+
+        kms_client
+            .enable_key()
+            .key_id(kms_key_id)
+            .send()
+            .await
+            .unwrap();
+
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let test_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        // Test 1: Create backup with SSE-KMS
+        backup_storage
+            .create(test_backup_data.clone(), &test_metadata)
+            .await
+            .unwrap();
+
+        // Verify the object is encrypted with SSE-KMS
+        let head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_backup_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(head_result.ssekms_key_id(), Some(kms_key_id));
+
+        // Test 2: Get backup with SSE-KMS (should succeed with correct key)
+        let found_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(found_backup.backup, test_backup_data);
+        assert_eq!(found_backup.metadata, test_metadata);
+
+        // Test 3: Get metadata with SSE-KMS
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata, test_metadata);
+
+        // Test 4: Update backup with SSE-KMS
+        let updated_backup_data = vec![6, 7, 8, 9, 10];
+        backup_storage
+            .update_backup(
+                &test_backup_id,
+                updated_backup_data.clone(),
+                hex::encode([1u8; 32]),
+                hex::encode([2u8; 32]),
+            )
+            .await
+            .unwrap();
+
+        let found_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(found_backup.backup, updated_backup_data);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([2u8; 32]));
+
+        // Test 5: Add factor with SSE-KMS
+        let new_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                masked_email: "test@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), None)
+            .await
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.factors.len(), 1);
+
+        // Test 6: Add sync factor with SSE-KMS
+        let sync_factor = Factor::new_ec_keypair("public-key".to_string());
+        backup_storage
+            .add_sync_factor(&test_backup_id, sync_factor.clone())
+            .await
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.sync_factors.len(), 1);
+
+        // Test 7: Remove sync factor with SSE-KMS
+        backup_storage
+            .remove_sync_factor(&test_backup_id, &sync_factor.id)
+            .await
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.sync_factors.len(), 0);
+
+        // Test 8: Head object with SSE-KMS
+        let exists = backup_storage
+            .does_backup_exist(&test_backup_id)
+            .await
+            .unwrap();
+        assert!(exists);
+
+        // Test 9: Verify encryption is applied to all objects
+        let metadata_head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_metadata_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(metadata_head_result.ssekms_key_id(), Some(kms_key_id));
     }
 }

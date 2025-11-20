@@ -51,7 +51,9 @@ impl Environment {
             Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
                 .expect("BACKUP_S3_BUCKET environment variable is not set")
                 .to_string(),
-            Self::Development { .. } => "backup-service-bucket".to_string(),
+            Self::Development { .. } => {
+                env::var("BACKUP_S3_BUCKET").unwrap_or_else(|_| "backup-service-bucket".to_string())
+            }
         }
     }
 
@@ -100,6 +102,20 @@ impl Environment {
             builder.set_force_path_style(Some(true));
         }
         builder.build()
+    }
+
+    /// Optional KMS key configuration if the S3 bucket has SSE-KMS encryption enabled.
+    ///
+    /// If **both** are set, all S3 operations will use SSE-KMS encryption
+    /// `BACKUP_S3_BUCKET_KMS_KEY_ARN` should be the ARN of a KMS key that is used to encrypt the data in the S3 bucket
+    #[must_use]
+    pub fn s3_sse_kms_key_arn(&self) -> Option<String> {
+        let val = env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()?;
+        if val.is_empty() {
+            None
+        } else {
+            Some(val)
+        }
     }
 
     /// Returns whether the API docs should be visible
