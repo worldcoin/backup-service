@@ -76,10 +76,7 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
 
     # Get challenge for main keypair
     print("Requesting main challenge...")
-    headers = {}
-    if attestation_token:
-        headers["attestation-token"] = attestation_token
-    challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={}, headers=headers)
+    challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={})
     print(f"Challenge status code: {challenge_response.status_code}")
     try:
         challenge_data = challenge_response.json()
@@ -98,7 +95,7 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
     
     # Get challenge for sync keypair
     print("Requesting sync factor challenge...")
-    sync_challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={}, headers=headers)
+    sync_challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={})
     sync_challenge_data = sync_challenge_response.json()
     
     sync_challenge = sync_challenge_data["challenge"]
@@ -110,6 +107,10 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
     
     # Create backup
     print("Creating backup...")
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
     payload = {
         "authorization": {
             "kind": "EC_KEYPAIR",
@@ -207,13 +208,8 @@ def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.Ellipt
     """Retrieve backup metadata using the sync factor keypair."""
     print(f"Retrieving metadata for backup {backup_id}...")
 
-    # Add attestation token header if provided
-    headers = {}
-    if attestation_token:
-        headers["attestation-token"] = attestation_token
-
     # Get challenge for keypair
-    challenge_response = requests.post(f"{base_url}/v1/retrieve-metadata/challenge/keypair", json={}, headers=headers)
+    challenge_response = requests.post(f"{base_url}/v1/retrieve-metadata/challenge/keypair", json={})
     challenge_data = challenge_response.json()
     
     challenge = challenge_data["challenge"]
@@ -239,7 +235,12 @@ def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.Ellipt
         },
         "challengeToken": token,
     }
-    
+
+    # Add attestation token header if provided
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
     retrieve_response = requests.post(f"{base_url}/v1/retrieve-metadata", json=retrieve_payload, headers=headers)
 
     if retrieve_response.status_code != 200:
@@ -264,13 +265,8 @@ def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurv
     """Sync (update) a backup using the sync factor keypair."""
     print(f"Syncing backup {backup_id}...")
 
-    # Add attestation token header if provided
-    headers = {}
-    if attestation_token:
-        headers["attestation-token"] = attestation_token
-
     # Get challenge for sync keypair
-    challenge_response = requests.post(f"{base_url}/v1/sync/challenge/keypair", json={}, headers=headers)
+    challenge_response = requests.post(f"{base_url}/v1/sync/challenge/keypair", json={})
     challenge_data = challenge_response.json()
     
     challenge = challenge_data["challenge"]
@@ -304,7 +300,12 @@ def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurv
         'payload': ('payload.json', json.dumps(payload), 'application/json'),
         'backup': ('backup.bin', new_content, 'application/octet-stream')
     }
-    
+
+    # Add attestation token header if provided
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
     sync_response = requests.post(f"{base_url}/v1/sync", files=files, headers=headers)
 
     if sync_response.status_code != 200:
