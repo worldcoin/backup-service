@@ -24,7 +24,7 @@ async fn test_sync_backup_happy_path() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -83,7 +83,7 @@ async fn test_sync_backup_with_incorrect_authorization() {
     // Get the backup ID
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let _backup_id = response["backupId"].as_str().unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -150,7 +150,7 @@ async fn test_sync_backup_with_wrong_current_manifest_hash() {
     // Get the backup ID
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -270,7 +270,10 @@ async fn test_concurrent_sync_backup_prevention() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap().to_string();
+    let backup_id = response["backupMetadata"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Counter for tracking results
     let success_count = Arc::new(AtomicU32::new(0));
@@ -309,7 +312,7 @@ async fn test_concurrent_sync_backup_prevention() {
             let response = common::send_post_request_with_multipart(
                 "/v1/sync",
                 json!({
-                    "authorization": { 
+                    "authorization": {
                         "kind": "EC_KEYPAIR",
                         "publicKey": sync_public_key,
                         "signature": signature,
@@ -386,7 +389,7 @@ async fn test_lock_release_allows_subsequent_operations() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // First sync operation
     let challenge_response1 =

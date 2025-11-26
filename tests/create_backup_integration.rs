@@ -60,7 +60,7 @@ async fn test_create_backup_with_passkey() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
     assert_eq!(backup_id, backup_account_id);
 
     // Check that backup was successfully created on S3
@@ -176,7 +176,7 @@ async fn test_create_backup_with_oidc_token() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Check that backup was successfully created on S3
     verify_s3_backup_exists(backup_id, b"TEST FILE").await;
@@ -226,7 +226,7 @@ async fn test_create_backup_with_ec_keypair() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Check that backup was successfully created on S3
     verify_s3_backup_exists(backup_id, b"TEST FILE").await;

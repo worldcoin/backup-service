@@ -17,7 +17,7 @@ async fn test_retrieve_metadata_happy_path() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a metadata challenge
     let challenge_response =
@@ -90,7 +90,7 @@ async fn test_retrieve_metadata_with_incorrect_authorization() {
     // Get the backup ID
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let _backup_id = response["backupId"].as_str().unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a metadata challenge
     let challenge_response =
@@ -149,7 +149,7 @@ async fn test_retrieve_metadata_when_sync_factor_is_revoked() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get the metadata to extract the sync factor ID
     let metadata = common::verify_s3_metadata_exists(backup_id).await;
@@ -289,7 +289,7 @@ async fn test_retrieve_metadata_when_backup_no_longer_exists() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Verify backup exists before deletion
     let _metadata = common::verify_s3_metadata_exists(backup_id).await;
