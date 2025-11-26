@@ -5,7 +5,7 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::redis_cache::RedisCacheManager;
-use crate::types::backup_metadata::BackupMetadata;
+use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
@@ -44,7 +44,10 @@ pub struct CreateBackupRequest {
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupResponse {
-    pub backup_id: String,
+    /// DEPRECATED. Please use `backup_metadata.id` instead.
+    backup_id: String,
+    /// The current state of the backup metadata for the newly created backup.
+    backup_metadata: ExportedBackupMetadata,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -198,7 +201,10 @@ pub async fn handler(
         return Err(e.into());
     }
 
+    let backup_id = backup_metadata.id.clone();
+
     Ok(Json(CreateBackupResponse {
-        backup_id: backup_metadata.id,
+        backup_id,
+        backup_metadata: backup_metadata.exported(),
     }))
 }
