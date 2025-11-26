@@ -2,6 +2,18 @@
 
 
 
+# [0.7.11] - 2025-11-26
+
+## What's Changed
+* feat: return backup meta on creation by @paolodamico in https://github.com/worldcoin/backup-service/pull/154
+* chore(e2e): attestation token support to E2E test script by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/151
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.10...0.7.11
+
+
+
+
 # [0.7.10] - 2025-11-20
 
 ## What's Changed
