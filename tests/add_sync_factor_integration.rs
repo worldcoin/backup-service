@@ -26,7 +26,7 @@ async fn test_add_sync_factor_happy_path() {
         .unwrap()
         .to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
-    let backup_id = create_response["backupId"].as_str().unwrap();
+    let backup_id = create_response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a backup retrieval challenge
     let retrieve_challenge = get_passkey_retrieval_challenge().await;

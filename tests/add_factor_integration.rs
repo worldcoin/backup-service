@@ -44,7 +44,10 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = create_response["backupId"].as_str().unwrap().to_string();
+    let backup_id = create_response["backupMetadata"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     (oidc_server, environment, backup_id, passkey_client)
 }
