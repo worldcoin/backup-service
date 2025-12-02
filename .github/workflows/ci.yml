@@ -55,7 +55,7 @@ jobs:
 
     # Log in to Docker Hub if a token is provided to avoid public rate limiting
     env:
-      IS_DOCKER_TOKEN_SET: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_USERNAME != '' }}
+      IS_DOCKER_TOKEN_SET: ${{ (secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME != '') && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -67,9 +67,9 @@ jobs:
 
       - name: Log in to Docker Hub
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0 https://github.com/docker/login-action/releases/tag/v3.6.0
-        if: ${{ env.IS_DOCKER_TOKEN_SET }}
+        if: ${{ env.IS_DOCKER_TOKEN_SET == 'true' }}
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          username: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN }}
 
       - name: Start LocalStack
@@ -94,7 +94,7 @@ jobs:
       contents: read
 
     env:
-      IS_DOCKER_TOKEN_SET: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_USERNAME != '' }}
+      IS_DOCKER_TOKEN_SET: ${{ (secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME != '') && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -102,9 +102,9 @@ jobs:
 
       - name: Log in to Docker Hub
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0 https://github.com/docker/login-action/releases/tag/v3.6.0
-        if: ${{ env.IS_DOCKER_TOKEN_SET }}
+        if: ${{ env.IS_DOCKER_TOKEN_SET == 'true' }}
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          username: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN }}
 
       - name: Set up Docker Buildx
@@ -149,7 +149,7 @@ jobs:
     runs-on: arc-large-amd64-runner
 
     env:
-      IS_DOCKER_TOKEN_SET: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_USERNAME != '' }}
+      IS_DOCKER_TOKEN_SET: ${{ (secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME != '') && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -157,9 +157,9 @@ jobs:
 
       - name: Log in to Docker Hub
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0 https://github.com/docker/login-action/releases/tag/v3.6.0
-        if: ${{ env.IS_DOCKER_TOKEN_SET }}
+        if: ${{ env.IS_DOCKER_TOKEN_SET == 'true' }}
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          username: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # 2025-04-29
