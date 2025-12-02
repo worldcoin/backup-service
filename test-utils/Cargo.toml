@@ -6,7 +6,7 @@ license = "MIT"
 version.workspace = true
 
 [dependencies]
-async-trait = "0.1.88"
+async-trait = "0.1.89"
 base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
