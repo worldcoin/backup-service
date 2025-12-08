@@ -2,6 +2,21 @@
 
 
 
+# [0.7.12] - 2025-12-08
+
+## What's Changed
+* fix: docker hub login CI by @paolodamico in https://github.com/worldcoin/backup-service/pull/162
+* chore(deps): bump tokio from 1.47.1 to 1.48.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/157
+* chore(deps): bump async-trait from 0.1.88 to 0.1.89 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/160
+* chore(deps): bump tower-http from 0.6.6 to 0.6.7 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/156
+* feat: improve errors for failed signature by @paolodamico in https://github.com/worldcoin/backup-service/pull/163
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.11...0.7.12
+
+
+
+
 # [0.7.11] - 2025-12-02
 
 ## What's Changed
