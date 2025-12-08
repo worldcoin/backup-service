@@ -355,7 +355,7 @@ impl From<VerifySignatureError> for ErrorResponse {
         tracing::info!(message = "Signature verification error", error = ?err);
         ErrorResponse::bad_request(
             "signature_verification_error",
-            "Signature verification failed.",
+            &err.to_string().chars().take(50).collect::<String>(),
         )
     }
 }
