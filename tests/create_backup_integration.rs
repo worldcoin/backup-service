@@ -647,7 +647,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "Signature verification failed.",
+                "message": "Signature verification failed",
             },
         })
     );
@@ -776,7 +776,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "Signature verification failed.",
+                "message": "Failed to decode a value from base64: Invalid padd",
             },
         })
     );
