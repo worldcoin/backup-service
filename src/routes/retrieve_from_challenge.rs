@@ -11,6 +11,7 @@ use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -45,6 +46,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    headers: HeaderMap,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
@@ -57,7 +59,18 @@ pub async fn handler(
         )
         .await?;
 
-    let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = %backup_id);
+    let client_version = headers
+        .get("client-version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+
+    let client_name = headers
+        .get("client-name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+
+    let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = %backup_id, client_version = %client_version, client_name = %client_name);
+
     async move {
         // Step 2: Fetch the backup from S3
         let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;

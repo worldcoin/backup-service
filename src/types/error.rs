@@ -371,12 +371,12 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 tracing::info!(message = "Failed to parse OIDC token", error = ?err);
                 ErrorResponse::bad_request("oidc_token_parse_error", "Failed to parse OIDC token.")
             }
-            OidcTokenVerifierError::TokenVerificationError => {
-                tracing::info!(message = "Failed to verify OIDC token", error = ?err);
-                ErrorResponse::bad_request(
-                    "oidc_token_verification_error",
-                    "Failed to verify OIDC token.",
-                )
+            OidcTokenVerifierError::TokenVerificationError => ErrorResponse::bad_request(
+                "oidc_token_verification_error",
+                "Failed to verify OIDC token.",
+            ),
+            OidcTokenVerifierError::InvalidNonce(e) => {
+                ErrorResponse::bad_request("oidc_token_invalid_nonce", &e.to_string())
             }
             OidcTokenVerifierError::MissingNonce => {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);

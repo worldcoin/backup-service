@@ -582,16 +582,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "oidc_token_verification_error",
-                "message": "Failed to verify OIDC token.",
-            },
-        })
-    );
+    assert_eq!(response["error"]["code"], "oidc_token_invalid_nonce");
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@ use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
-use openidconnect::{reqwest, JsonWebKeySetUrl};
+use openidconnect::{reqwest, ClaimsVerificationError, JsonWebKeySetUrl};
 use openidconnect::{EmptyAdditionalClaims, IdTokenClaims};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -125,7 +125,7 @@ impl OidcTokenVerifier {
 
         // Step 3: Create the token verifier
         let token_verifier =
-            CoreIdTokenVerifier::new_public_client(client_id, issuer_url, signature_keys)
+            CoreIdTokenVerifier::new_public_client(client_id, issuer_url.clone(), signature_keys)
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
         // Step 4: Verify the token and extract claims
@@ -141,8 +141,12 @@ impl OidcTokenVerifier {
                 OidcNonceVerifier::new(expected_public_key_sec1_base64),
             )
             .map_err(|err| {
-                tracing::error!(message = "Token verification error", err = ?err);
-                OidcTokenVerifierError::TokenVerificationError
+                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url);
+                match err {
+                    ClaimsVerificationError::InvalidNonce(e) =>
+                        OidcTokenVerifierError::InvalidNonce(e.to_string()),
+                    _ => OidcTokenVerifierError::TokenVerificationError
+                }
             })?;
 
         // Step 6: Track the nonce to prevent replays
@@ -167,6 +171,8 @@ pub enum OidcTokenVerifierError {
     TokenParseError,
     #[error("Failed to verify OIDC token")]
     TokenVerificationError,
+    #[error("Invalid nonce: {0}")]
+    InvalidNonce(String),
     #[error("OIDC token is missing nonce claim")]
     MissingNonce,
     #[error(transparent)]
@@ -328,7 +334,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issuer
-            let token = oidc_server.generate_token_with_incorrect_issuer(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_issuer(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -356,7 +363,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect audience
-            let token = oidc_server.generate_token_with_incorrect_audience(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_audience(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -384,7 +392,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issued_at
-            let token = oidc_server.generate_token_with_incorrect_issued_at(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_issued_at(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -430,7 +439,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result,
-                Err(OidcTokenVerifierError::TokenVerificationError)
+                Err(OidcTokenVerifierError::InvalidNonce(_))
             ));
         }
     }
