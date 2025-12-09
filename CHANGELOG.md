@@ -2,6 +2,18 @@
 
 
 
+# [0.8.0] - 2025-12-09
+
+## What's Changed
+* feat: debug invalid oidc tokens by @paolodamico in https://github.com/worldcoin/backup-service/pull/165
+* chore: MIT license by @paolodamico in https://github.com/worldcoin/backup-service/pull/166
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.12...0.8.0
+
+
+
+
 # [0.7.12] - 2025-12-08
 
 ## What's Changed
