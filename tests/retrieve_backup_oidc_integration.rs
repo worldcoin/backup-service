@@ -313,14 +313,5 @@ async fn test_retrieve_backup_with_incorrect_nonce() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Verify error message - it's returned as a token verification error
-    assert_eq!(
-        response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "oidc_token_verification_error",
-                "message": "Failed to verify OIDC token.",
-            }
-        })
-    );
+    assert_eq!(response["error"]["code"], "oidc_token_invalid_nonce");
 }

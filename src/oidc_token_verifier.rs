@@ -334,7 +334,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issuer
-            let token = oidc_server.generate_token_with_incorrect_issuer(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_issuer(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -362,7 +363,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect audience
-            let token = oidc_server.generate_token_with_incorrect_audience(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_audience(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -390,7 +392,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issued_at
-            let token = oidc_server.generate_token_with_incorrect_issued_at(provider.into());
+            let token =
+                oidc_server.generate_token_with_incorrect_issued_at(provider.into(), &public_key);
 
             // Verify the token
             let result =
@@ -436,7 +439,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result,
-                Err(OidcTokenVerifierError::TokenVerificationError)
+                Err(OidcTokenVerifierError::InvalidNonce(_))
             ));
         }
     }
