@@ -49,7 +49,8 @@ jobs:
 
   docker-build:
     name: Docker Build
-    runs-on: ubuntu-latest
+    runs-on:
+      group: arc-public-large-amd64-runner
     needs: [pre-release-checks]
     permissions:
       contents: read
@@ -106,7 +107,8 @@ jobs:
 
   create-github-release:
     needs: [pre-release-checks, docker-build]
-    runs-on: ubuntu-latest
+    runs-on:
+      group: arc-public-large-amd64-runner
     permissions:
       contents: write
 
