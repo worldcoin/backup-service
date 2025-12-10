@@ -14,7 +14,8 @@ permissions:
 jobs:
   lint:
     name: Format & Clippy
-    runs-on: arc-large-amd64-runner
+    runs-on:
+      group: arc-public-large-amd64-runner
 
     steps:
       - name: Checkout code
@@ -36,7 +37,8 @@ jobs:
 
   build-release:
     name: Build Release
-    runs-on: arc-large-amd64-runner
+    runs-on:
+      group: arc-public-large-amd64-runner
 
     steps:
       - name: Checkout code
@@ -51,7 +53,8 @@ jobs:
 
   test:
     name: Tests
-    runs-on: arc-4xlarge-amd64-runner
+    runs-on:
+      group: arc-public-4xlarge-amd64-runner
 
     # Log in to Docker Hub if a token is provided to avoid public rate limiting
     env:
@@ -89,7 +92,8 @@ jobs:
 
   docker:
     name: Test Docker build
-    runs-on: arc-4xlarge-amd64-runner
+    runs-on:
+      group: arc-public-4xlarge-amd64-runner
     permissions:
       contents: read
 
@@ -146,7 +150,8 @@ jobs:
 
   deny:
     name: Cargo deny
-    runs-on: arc-large-amd64-runner
+    runs-on:
+      group: arc-public-large-amd64-runner
 
     env:
       IS_DOCKER_TOKEN_SET: ${{ (secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN != '' && secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_USERNAME != '') && 'true' || 'false' }}
