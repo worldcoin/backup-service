@@ -14,7 +14,8 @@ permissions:
 jobs:
   lint:
     name: Format & Clippy
-    runs-on: arc-large-amd64-runner
+    runs-on:
+      group: arc-public-large-amd64-runner
 
     steps:
       - name: Checkout code
