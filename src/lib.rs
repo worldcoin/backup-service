@@ -62,7 +62,7 @@ where
     if bytes.len() != 32 {
         return Err(de::Error::custom("Expected 32 bytes"));
     }
-    Ok(s.to_string())
+    Ok(s.to_lowercase())
 }
 
 /// Deserializes a provided backup account ID and verifies it has the correct format.
