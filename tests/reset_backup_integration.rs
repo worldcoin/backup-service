@@ -162,21 +162,7 @@ async fn create_test_backup_with_backup_account_id(
         None,
     )
     .await;
-
-    if create_response.status() != StatusCode::OK {
-        let error_body = create_response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
-        let error_text = String::from_utf8_lossy(&error_body);
-        panic!(
-            "Failed to create backup. Status: {}, Body: {}",
-            StatusCode::from_u16(400).unwrap(),
-            error_text
-        );
-    }
+    assert!(create_response.status() == StatusCode::OK);
 
     (
         backup_account_id,
@@ -371,9 +357,6 @@ async fn test_reset_backup_with_mismatched_public_key() {
 async fn test_reset_backup_challenge_token_reuse() {
     // Generate a keypair for the backup_account_id
     let backup_account_secret_key = SecretKey::random(&mut OsRng);
-    let backup_account_signing_key = SigningKey::from(&backup_account_secret_key);
-    let backup_account_public_key =
-        STANDARD.encode(backup_account_signing_key.verifying_key().to_sec1_bytes());
 
     // Create first backup
     let (backup_account_id_1, _, _) =
@@ -394,7 +377,6 @@ async fn test_reset_backup_challenge_token_reuse() {
         "/v1/reset",
         json!({
             "backupAccountId": backup_account_id_1,
-            "publicKey": backup_account_public_key.clone(),
             "signature": signature.clone(),
             "challengeToken": challenge_response["token"].clone(),
         }),
