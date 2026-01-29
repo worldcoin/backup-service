@@ -1,3 +1,4 @@
+use crate::middleware::validate_content_length;
 use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
 use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
@@ -58,9 +59,11 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/create",
-            post(create_backup::handler).layer(DefaultBodyLimit::max(
-                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
-            )),
+            post(create_backup::handler)
+                .route_layer(middleware::from_fn(validate_content_length))
+                .layer(DefaultBodyLimit::max(
+                    environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer - fallback safety limit
+                )),
         )
         // Recovery
         .api_route(
@@ -95,9 +98,11 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/sync",
-            post(sync_backup::handler).layer(DefaultBodyLimit::max(
-                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
-            )),
+            post(sync_backup::handler)
+                .route_layer(middleware::from_fn(validate_content_length))
+                .layer(DefaultBodyLimit::max(
+                    environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer - fallback safety limit
+                )),
         )
         // Metadata retrieval
         .api_route(

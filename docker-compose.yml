@@ -1,10 +1,10 @@
 name: backup-service
 services:
-  redis:
+  redis-backup-service:
     image: redis:latest
     ports:
       - "6379:6379"
-  localstack:
+  localstack-backup-service:
     image: localstack/localstack
     ports:
       - "4566:4566"

@@ -256,6 +256,7 @@ pub async fn send_post_request_with_multipart(
             "Content-Type",
             format!("multipart/form-data; boundary={}", boundary),
         )
+        .header("Content-Length", body_bytes.len())
         .body(Body::from(body_bytes))
         .unwrap();
 
