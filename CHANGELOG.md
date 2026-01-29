@@ -2,6 +2,21 @@
 
 
 
+# [0.8.1] - 2026-01-29
+
+## What's Changed
+* Update GH workflows to use public runner groups by @ernish in https://github.com/worldcoin/backup-service/pull/168
+* chore(deps): bump openidconnect from 4.0.0 to 4.0.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/159
+* feat: improve max file size handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/177
+
+## New Contributors
+* @ernish made their first contribution in https://github.com/worldcoin/backup-service/pull/168
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.0...0.8.1
+
+
+
+
 # [0.8.0] - 2025-12-09
 
 ## What's Changed
