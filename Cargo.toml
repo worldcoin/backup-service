@@ -40,10 +40,10 @@ aide = { version = "0.14.2", features = [
 ] }
 
 anyhow = "1.0.98"
-aws-config = "1.6.1"
-aws-sdk-dynamodb = "1.71.2"
-aws-sdk-kms = "1.63.0"
-aws-sdk-s3 = "1.82.0"
+aws-config = "1.8.12"
+aws-sdk-dynamodb = "1.103.0"
+aws-sdk-kms = "1.98.0"
+aws-sdk-s3 = "1.120.0"
 axum = { version = "0.8.1", features = ["macros", "multipart"] }
 base64 = { workspace = true }
 chrono = { workspace = true }

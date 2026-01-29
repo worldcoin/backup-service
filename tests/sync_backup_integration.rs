@@ -475,3 +475,137 @@ async fn test_lock_release_allows_subsequent_operations() {
     // Verify the final backup content
     verify_s3_backup_exists(backup_id, b"UPDATED BACKUP 2").await;
 }
+
+#[tokio::test]
+async fn test_sync_backup_with_large_file() {
+    // Create a backup with a keypair and get the sync factor secret key
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
+
+    // Get a sync challenge
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Sync the backup with a file that's too large (15 MB + 1 byte)
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+            "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
+        }),
+        Bytes::from(vec![0; 15 * 1024 * 1024 + 1]), // 15 MB + 1 byte
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_file_too_large",
+                "message": "Backup file too large",
+            },
+        })
+    );
+}
+
+/// We test the header parser works as expected using the bona-fide `Content-Length`.
+///
+/// This is useful because Axum will truncate the multipart data if it exceeds the safety
+/// max length, and an esoteric error gets returned to the user.
+#[tokio::test]
+async fn test_sync_backup_with_extremely_large_file() {
+    // Create a backup with a keypair and get the sync factor secret key
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
+
+    // Get a sync challenge
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Sync the backup with a file that's too large (15 MB + 1 byte)
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+            "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
+        }),
+        Bytes::from(vec![0; 30 * 1024 * 1024]), // 30 MB is way past the safety limit
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "backup_file_too_large",
+                "message": "Backup file too large",
+            },
+        })
+    );
+}
