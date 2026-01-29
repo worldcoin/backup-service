@@ -435,7 +435,7 @@ async fn test_create_backup_with_large_file() {
             "manifestHash": hex::encode([1u8; 32]),
             "backupAccountId": generate_random_backup_id(),
         }),
-        Bytes::from(vec![0; 10 * 1024 * 1024 + 1]), // 10 MB file + 1 byte
+        Bytes::from(vec![0; 15 * 1024 * 1024 + 1]), // 15 MB file + 1 byte
         None,
     )
     .await;
