@@ -2,6 +2,7 @@ use crate::middleware::validate_content_length;
 use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
 use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
+use crate::routes::reset_challenge_keypair::ResetChallengeKeypairRequest;
 use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
 use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
 use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
@@ -33,6 +34,8 @@ mod docs;
 mod health;
 mod keypair_challenge;
 mod ready;
+mod reset;
+mod reset_challenge_keypair;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
@@ -122,7 +125,13 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/delete-backup/challenge/keypair",
             post(keypair_challenge::handler::<DeleteBackupChallengeKeypairRequest>),
         )
-        .api_route("/delete-backup", post(delete_backup::handler));
+        .api_route("/delete-backup", post(delete_backup::handler))
+        // Reset backup (when all factors are lost)
+        .api_route(
+            "/reset/challenge/keypair",
+            post(keypair_challenge::handler::<ResetChallengeKeypairRequest>),
+        )
+        .api_route("/reset", post(reset::handler));
 
     // Compose the final router: keep docs & health at root, nest business logic under /v1
     ApiRouter::new()
