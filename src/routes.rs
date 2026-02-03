@@ -58,9 +58,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/create",
             post(create_backup::handler)
                 .route_layer(middleware::from_fn(validate_content_length))
-                .layer(DefaultBodyLimit::max(
-                    environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer - fallback safety limit
-                )),
+                .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Recovery
         .api_route(
@@ -97,9 +95,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/sync",
             post(sync_backup::handler)
                 .route_layer(middleware::from_fn(validate_content_length))
-                .layer(DefaultBodyLimit::max(
-                    environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer - fallback safety limit
-                )),
+                .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Metadata retrieval
         .api_route(

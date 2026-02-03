@@ -59,18 +59,18 @@ pub async fn handler(
     // and the attached backup file.
     let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::info!(message = "Missing payload field in multipart data");
+        tracing::debug!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request(
             "missing_payload_field",
             "Missing payload field in multipart data",
         )
     })?;
     let request: SyncBackupRequest = serde_json::from_slice(request).map_err(|err| {
-        tracing::info!(message = "Failed to deserialize payload", error = ?err);
+        tracing::debug!(message = "Failed to deserialize payload", error = ?err);
         ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
     let backup = multipart_fields.get("backup").ok_or_else(|| {
-        tracing::info!(message = "Missing backup field in multipart data");
+        tracing::debug!(message = "Missing backup field in multipart data");
         ErrorResponse::bad_request(
             "missing_backup_field",
             "Missing backup field in multipart data",
@@ -79,17 +79,16 @@ pub async fn handler(
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
-        tracing::info!(message = "Empty backup file");
+        tracing::debug!(message = "Empty backup file");
         return Err(ErrorResponse::bad_request(
             "empty_backup_file",
             "Empty backup file",
         ));
     }
     if backup.len() > environment.max_backup_file_size() {
-        tracing::info!(message = "Backup file too large");
-        return Err(ErrorResponse::bad_request(
-            "backup_file_too_large",
-            "Backup file too large",
+        tracing::debug!(message = "Backup file too large");
+        return Err(ErrorResponse::content_too_large(
+            "Backup file exceeds maximum allowed size.".to_string(),
         ));
     }
 

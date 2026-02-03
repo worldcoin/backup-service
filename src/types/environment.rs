@@ -189,6 +189,13 @@ impl Environment {
         15 * 1024 * 1024 // 15 MB
     }
 
+    /// Max size of the entire request body for requests that create/sync the backup
+    #[must_use]
+    pub fn max_request_size(&self) -> usize {
+        // Max request size is backup file size + 1MB buffer for metadata
+        self.max_backup_file_size() + 1024 * 1024 // 1 MB
+    }
+
     /// JWK Set URL for the Google OIDC provider
     ///
     /// # Panics

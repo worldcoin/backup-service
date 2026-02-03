@@ -22,18 +22,14 @@ pub async fn validate_content_length(
     if let Some(content_length_header) = req.headers().get("content-length") {
         if let Ok(content_length_str) = content_length_header.to_str() {
             if let Ok(content_length) = content_length_str.parse::<usize>() {
-                let max_allowed = environment.max_backup_file_size() + 1024 * 1024; // 1MB overhead for metadata
-
-                if content_length > max_allowed {
+                if content_length > environment.max_request_size() {
                     tracing::debug!(
-                        message = "Request Content-Length exceeds maximum allowed size",
+                        message = "Request Content-Length exceeds maximum allowed size.",
                         content_length = content_length,
-                        max_allowed = max_allowed
                     );
-                    return Err(ErrorResponse::bad_request(
-                        "backup_file_too_large",
-                        "Backup file too large",
-                    ));
+                    return Err(ErrorResponse::content_too_large(format!(
+                        "Request body of {content_length} bytes is too large.",
+                    )));
                 }
             }
         }
