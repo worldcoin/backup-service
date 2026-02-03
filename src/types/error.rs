@@ -177,8 +177,10 @@ impl From<MultipartError> for ErrorResponse {
         ErrorResponse::bad_request(
             "multipart_error",
             err.source()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default()
+                .map_or(
+                    "Failed to read multipart form data.".to_string(),
+                    std::string::ToString::to_string,
+                )
                 .as_str(),
         )
     }

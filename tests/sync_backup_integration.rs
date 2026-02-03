@@ -524,7 +524,7 @@ async fn test_sync_backup_with_large_file() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -534,8 +534,8 @@ async fn test_sync_backup_with_large_file() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_file_too_large",
-                "message": "Backup file too large",
+                "code": "content_too_large",
+                "message": "Backup file exceeds maximum allowed size.",
             },
         })
     );
