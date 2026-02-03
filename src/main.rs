@@ -14,6 +14,10 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     dotenv().ok();
     let use_json = std::env::var("JSON_LOG_FORMAT").is_ok();
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
