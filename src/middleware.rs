@@ -27,10 +27,9 @@ pub async fn validate_content_length(
                         message = "Request Content-Length exceeds maximum allowed size.",
                         content_length = content_length,
                     );
-                    return Err(ErrorResponse::bad_request(
-                        "backup_file_too_large",
-                        "Backup file too large",
-                    ));
+                    return Err(ErrorResponse::content_too_large(format!(
+                        "Request body of {content_length} bytes is too large.",
+                    )));
                 }
             }
         }
