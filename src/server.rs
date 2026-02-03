@@ -133,7 +133,8 @@ pub async fn start(
                 .make_span_with(ConditionalMakeSpan {})
                 .on_response(ConditionalOnResponse {}),
         )
-        .layer(tower_http::timeout::TimeoutLayer::new(
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
         ));
 

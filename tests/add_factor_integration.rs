@@ -553,7 +553,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "Signature verification failed.",
+                "message": "Signature verification failed",
             }
         })
     );

@@ -80,6 +80,15 @@ impl ErrorResponse {
             status: StatusCode::NOT_FOUND,
         }
     }
+
+    #[must_use]
+    pub fn content_too_large(message: String) -> Self {
+        Self {
+            code: "content_too_large".to_string(),
+            message,
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -165,7 +174,15 @@ impl From<serde_json::Error> for ErrorResponse {
 impl From<MultipartError> for ErrorResponse {
     fn from(err: MultipartError) -> Self {
         tracing::info!(message = "Error when reading Multipart form data", error = ?err);
-        ErrorResponse::bad_request("multipart_error", "Error reading multipart form data")
+        ErrorResponse::bad_request(
+            "multipart_error",
+            err.source()
+                .map_or(
+                    "Failed to read multipart form data.".to_string(),
+                    std::string::ToString::to_string,
+                )
+                .as_str(),
+        )
     }
 }
 
@@ -355,7 +372,7 @@ impl From<VerifySignatureError> for ErrorResponse {
         tracing::info!(message = "Signature verification error", error = ?err);
         ErrorResponse::bad_request(
             "signature_verification_error",
-            "Signature verification failed.",
+            &err.to_string().chars().take(50).collect::<String>(),
         )
     }
 }
@@ -371,12 +388,12 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 tracing::info!(message = "Failed to parse OIDC token", error = ?err);
                 ErrorResponse::bad_request("oidc_token_parse_error", "Failed to parse OIDC token.")
             }
-            OidcTokenVerifierError::TokenVerificationError => {
-                tracing::info!(message = "Failed to verify OIDC token", error = ?err);
-                ErrorResponse::bad_request(
-                    "oidc_token_verification_error",
-                    "Failed to verify OIDC token.",
-                )
+            OidcTokenVerifierError::TokenVerificationError => ErrorResponse::bad_request(
+                "oidc_token_verification_error",
+                "Failed to verify OIDC token.",
+            ),
+            OidcTokenVerifierError::InvalidNonce(e) => {
+                ErrorResponse::bad_request("oidc_token_invalid_nonce", &e.to_string())
             }
             OidcTokenVerifierError::MissingNonce => {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);

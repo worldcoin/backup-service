@@ -173,7 +173,7 @@ async fn test_retrieve_backup_with_wrong_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "Signature verification failed.",
+                "message": "Signature verification failed",
             }
         })
     );

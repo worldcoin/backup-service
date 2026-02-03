@@ -84,7 +84,7 @@ impl Environment {
 
     /// AWS configuration to be used for the application, including any environment-specific overrides
     pub async fn aws_config(&self) -> aws_config::SdkConfig {
-        let mut aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
+        let mut aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2026_01_12());
         if let Some(endpoint_url) = self.override_aws_endpoint_url() {
             aws_config = aws_config.endpoint_url(endpoint_url);
         }
@@ -186,7 +186,14 @@ impl Environment {
     #[must_use]
     pub fn max_backup_file_size(&self) -> usize {
         // generally each PCP is ~4MB, plus some buffer
-        10 * 1024 * 1024 // 10 MB
+        15 * 1024 * 1024 // 15 MB
+    }
+
+    /// Max size of the entire request body for requests that create/sync the backup
+    #[must_use]
+    pub fn max_request_size(&self) -> usize {
+        // Max request size is backup file size + 1MB buffer for metadata
+        self.max_backup_file_size() + 1024 * 1024 // 1 MB
     }
 
     /// JWK Set URL for the Google OIDC provider

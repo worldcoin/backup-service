@@ -2,6 +2,48 @@
 
 
 
+# [0.8.1] - 2026-01-29
+
+## What's Changed
+* Update GH workflows to use public runner groups by @ernish in https://github.com/worldcoin/backup-service/pull/168
+* chore(deps): bump openidconnect from 4.0.0 to 4.0.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/159
+* feat: improve max file size handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/177
+
+## New Contributors
+* @ernish made their first contribution in https://github.com/worldcoin/backup-service/pull/168
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.0...0.8.1
+
+
+
+
+# [0.8.0] - 2025-12-09
+
+## What's Changed
+* feat: debug invalid oidc tokens by @paolodamico in https://github.com/worldcoin/backup-service/pull/165
+* chore: MIT license by @paolodamico in https://github.com/worldcoin/backup-service/pull/166
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.12...0.8.0
+
+
+
+
+# [0.7.12] - 2025-12-08
+
+## What's Changed
+* fix: docker hub login CI by @paolodamico in https://github.com/worldcoin/backup-service/pull/162
+* chore(deps): bump tokio from 1.47.1 to 1.48.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/157
+* chore(deps): bump async-trait from 0.1.88 to 0.1.89 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/160
+* chore(deps): bump tower-http from 0.6.6 to 0.6.7 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/156
+* feat: improve errors for failed signature by @paolodamico in https://github.com/worldcoin/backup-service/pull/163
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.11...0.7.12
+
+
+
+
 # [0.7.11] - 2025-12-02
 
 ## What's Changed
