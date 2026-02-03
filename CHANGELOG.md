@@ -2,6 +2,17 @@
 
 
 
+# [0.8.2] - 2026-02-03
+
+## What's Changed
+* feat: improve multipart request handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/179
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.1...0.8.2
+
+
+
+
 # [0.8.1] - 2026-01-29
 
 ## What's Changed
