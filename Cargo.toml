@@ -55,7 +55,7 @@ josekit = { version = "0.10.1", features = ["vendored"] }
 openidconnect = { workspace = true }
 p256 = { workspace = true }
 rand = { workspace = true }
-redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp"] }
+redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
 schemars = "0.8.21"
 serde = { version = "1.0.219", features = ["derive"] }
