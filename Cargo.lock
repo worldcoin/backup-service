@@ -765,6 +765,7 @@ dependencies = [
  "rand 0.8.5",
  "redis",
  "reqwest",
+ "rustls 0.23.36",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -1955,7 +1956,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -2978,9 +2979,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.32.5"
+version = "0.32.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd3650deebc68526b304898b192fa4102a4ef0b9ada24da096559cb60e0eef8"
+checksum = "014cc767fefab6a3e798ca45112bccad9c6e0e218fbd49720042716c73cfef44"
 dependencies = [
  "arc-swap",
  "backon",
@@ -2993,10 +2994,13 @@ dependencies = [
  "num-bigint",
  "percent-encoding",
  "pin-project-lite",
+ "rustls 0.23.36",
+ "rustls-native-certs",
  "ryu",
  "sha1_smol",
  "socket2 0.6.0",
  "tokio",
+ "tokio-rustls 0.26.2",
  "tokio-util",
  "url",
 ]
