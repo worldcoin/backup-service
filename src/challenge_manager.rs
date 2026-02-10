@@ -213,6 +213,10 @@ pub enum ChallengeContext {
     /// Signed by sync factor when deleting the entire backup.
     #[serde(rename_all = "camelCase")]
     DeleteBackup {},
+    /// Signed by the private key corresponding to the `backup_account_id` when resetting the backup.
+    /// Used when access to all main and sync factors is lost.
+    #[serde(rename_all = "camelCase")]
+    Reset { backup_account_id: String },
     /// Challenge used as part of adding a new factor to the backup. This challenge has to be
     /// signed by the existing factor and include reference to the new factor. It allows to verify
     /// that new factor has been "authorized" by the existing factor.
