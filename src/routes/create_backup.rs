@@ -102,7 +102,7 @@ pub async fn handler(
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.authorization,
-            request.challenge_token.to_string(),
+            request.challenge_token.clone(),
             ChallengeContext::Create {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
@@ -117,7 +117,7 @@ pub async fn handler(
     let sync_validation_result = auth_handler
         .validate_factor_registration(
             &request.initial_sync_factor,
-            request.initial_sync_challenge_token.to_string(),
+            request.initial_sync_challenge_token.clone(),
             ChallengeContext::Create {},
             None,
             true, // is a sync factor

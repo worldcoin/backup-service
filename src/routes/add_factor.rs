@@ -176,7 +176,7 @@ pub async fn handler(
             let (trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(
                     ChallengeType::Passkey,
-                    request.existing_factor_challenge_token.to_string(),
+                    request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
 

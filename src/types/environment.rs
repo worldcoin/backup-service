@@ -49,8 +49,7 @@ impl Environment {
     pub fn s3_bucket(&self) -> String {
         match self {
             Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
-                .expect("BACKUP_S3_BUCKET environment variable is not set")
-                .to_string(),
+                .expect("BACKUP_S3_BUCKET environment variable is not set"),
             Self::Development { .. } => {
                 env::var("BACKUP_S3_BUCKET").unwrap_or_else(|_| "backup-service-bucket".to_string())
             }
