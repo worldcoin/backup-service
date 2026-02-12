@@ -2,6 +2,18 @@
 
 
 
+# [0.8.3] - 2026-02-12
+
+## What's Changed
+* feat: introduce /reset endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/176
+* chore(tfh-backup): bump rust to 1.91, configure ConnectionManager timeouts by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/183
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.2...0.8.3
+
+
+
+
 # [0.8.2] - 2026-02-04
 
 ## What's Changed
