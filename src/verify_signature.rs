@@ -37,8 +37,10 @@ pub fn verify_signature(
 
     // Decode the signature from base64
     let signature = STANDARD.decode(signature)?;
-    // Check if the signature is between 70 and 72 bytes (DER format)
-    if signature.len() < 70 || signature.len() > 72 {
+    // Check if the signature is between 68 and 72 bytes (DER format)
+    // DER-encoded P-256 ECDSA: 6 bytes overhead + 2x(1-33 bytes for r,s)
+    // r and s are each 32 bytes but can be 31 (leading zero trimmed) or 33 (0x00 prefix)
+    if signature.len() < 68 || signature.len() > 72 {
         return Err(VerifySignatureError::DecodeSignatureError(format!(
             "Invalid signature length. Received {} bytes",
             signature.len()
@@ -116,6 +118,39 @@ mod tests {
             Err(VerifySignatureError::SignatureVerificationError) => {}
             _ => panic!("Expected SignatureVerificationError"),
         }
+    }
+
+    #[test]
+    fn test_valid_signature_all_der_lengths() {
+        // DER-encoded P-256 signatures can be 68-72 bytes depending on r,s leading zeros.
+        // Generate many signatures until we cover all lengths to ensure none are rejected.
+        let payload = b"test payload for length coverage";
+        let mut seen_lengths = std::collections::HashSet::new();
+
+        for _ in 0..1000 {
+            let (signing_key, verifying_key) = generate_test_keypair();
+            let signature = sign_payload(&signing_key, payload);
+            let signature_der = signature.to_der();
+            seen_lengths.insert(signature_der.as_bytes().len());
+
+            let public_key_base64 = STANDARD.encode(verifying_key.to_sec1_bytes());
+            let der_len = signature_der.as_bytes().len();
+            let signature_base64 = STANDARD.encode(signature_der);
+
+            let result = verify_signature(&public_key_base64, &signature_base64, payload);
+            assert!(result.is_ok(), "Failed for DER length {}", der_len);
+
+            if seen_lengths.len() == 5 {
+                break;
+            }
+        }
+
+        // We should see at least lengths 70, 71, 72 (68 and 69 are rare but valid)
+        assert!(
+            seen_lengths.contains(&70) && seen_lengths.contains(&71) && seen_lengths.contains(&72),
+            "Expected to see DER lengths 70, 71, 72 but only saw: {:?}",
+            seen_lengths
+        );
     }
 
     #[test]
