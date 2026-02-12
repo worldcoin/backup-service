@@ -121,16 +121,16 @@ impl Factor {
             } => {
                 let (issuer_url, sub) = match account {
                     OidcAccountKind::Google { sub, .. } => {
-                        (environment.google_issuer_url().to_string(), sub.to_string())
+                        (environment.google_issuer_url().to_string(), sub.clone())
                     }
                     OidcAccountKind::Apple { sub, .. } => {
-                        (environment.apple_issuer_url().to_string(), sub.to_string())
+                        (environment.apple_issuer_url().to_string(), sub.clone())
                     }
                 };
                 FactorToLookup::from_oidc_account(issuer_url, sub)
             }
             FactorKind::EcKeypair { public_key } => {
-                FactorToLookup::from_ec_keypair(public_key.to_string())
+                FactorToLookup::from_ec_keypair(public_key.clone())
             }
         }
     }

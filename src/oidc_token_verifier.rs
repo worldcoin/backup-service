@@ -144,7 +144,7 @@ impl OidcTokenVerifier {
                 tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url);
                 match err {
                     ClaimsVerificationError::InvalidNonce(e) =>
-                        OidcTokenVerifierError::InvalidNonce(e.to_string()),
+                        OidcTokenVerifierError::InvalidNonce(e.clone()),
                     _ => OidcTokenVerifierError::TokenVerificationError
                 }
             })?;
