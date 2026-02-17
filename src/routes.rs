@@ -6,6 +6,7 @@ use crate::routes::reset_challenge_keypair::ResetChallengeKeypairRequest;
 use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
 use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
 use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
+use crate::routes::verify_factor_challenge_keypair::VerifyFactorChallengeKeypairRequest;
 use crate::types::Environment;
 use crate::{
     attestation_gateway::AttestationGateway,
@@ -43,6 +44,9 @@ mod retrieve_metadata;
 mod retrieve_metadata_challenge_keypair;
 mod sync_backup;
 mod sync_challenge_keypair;
+mod verify_factor;
+mod verify_factor_challenge_keypair;
+mod verify_factor_challenge_passkey;
 
 pub fn handler(environment: Environment) -> ApiRouter {
     let v1_routes = ApiRouter::new()
@@ -79,6 +83,20 @@ pub fn handler(environment: Environment) -> ApiRouter {
                 retrieve_from_challenge::docs,
             )
             .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
+        // Verify factor (authenticate a main factor without retrieving the backup)
+        .api_route(
+            "/verify-factor/challenge/passkey",
+            post(verify_factor_challenge_passkey::handler),
+        )
+        .api_route(
+            "/verify-factor/challenge/keypair",
+            post(keypair_challenge::handler::<VerifyFactorChallengeKeypairRequest>),
+        )
+        .api_route(
+            "/verify-factor",
+            post_with(verify_factor::handler, verify_factor::docs)
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         // Add new factor for future sync after recovery
         .api_route(
