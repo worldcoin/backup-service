@@ -2,6 +2,17 @@
 
 
 
+# [0.8.4] - 2026-02-17
+
+## What's Changed
+* feat: introduce verify factor endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/186
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.3...0.8.4
+
+
+
+
 # [0.8.3] - 2026-02-12
 
 ## What's Changed
