@@ -226,6 +226,9 @@ pub enum ChallengeContext {
     /// signed by the new factor. It allows to verify that user has access to the new factor.
     #[serde(rename_all = "camelCase")]
     AddFactorByNewFactor {},
+    /// Signed by a main factor to verify the user's factors without needing to retrieve the whole backup.
+    #[serde(rename_all = "camelCase")]
+    VerifyFactor {},
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
