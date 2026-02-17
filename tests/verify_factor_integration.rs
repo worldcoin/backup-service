@@ -16,15 +16,13 @@ use serial_test::serial;
 use tower::ServiceExt;
 
 async fn get_verify_factor_passkey_challenge() -> serde_json::Value {
-    let response =
-        send_post_request("/v1/verify-factor/challenge/passkey", json!({})).await;
+    let response = send_post_request("/v1/verify-factor/challenge/passkey", json!({})).await;
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 async fn get_verify_factor_keypair_challenge() -> serde_json::Value {
-    let response =
-        send_post_request("/v1/verify-factor/challenge/keypair", json!({})).await;
+    let response = send_post_request("/v1/verify-factor/challenge/keypair", json!({})).await;
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
@@ -211,6 +209,43 @@ async fn test_verify_factor_rejects_sync_factor() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(response["error"]["code"], "backup_untraceable");
+}
+
+#[tokio::test]
+async fn test_verify_factor_without_attestation_token() {
+    let response = send_post_request("/v1/verify-factor", json!({})).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        response["error"]["code"],
+        "missing_attestation_token_header"
+    );
+}
+
+#[tokio::test]
+async fn test_verify_factor_with_invalid_attestation_token() {
+    let router = get_test_router(None, None).await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/v1/verify-factor")
+                .method("POST")
+                .header("Content-Type", "application/json")
+                .header(ATTESTATION_GATEWAY_HEADER, "ey1")
+                .body(json!({}).to_string())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["error"]["code"], "invalid_attestation_token");
 }
 
 /// A retrieve challenge token should not be accepted by verify_factor (wrong context)
