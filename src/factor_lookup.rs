@@ -146,7 +146,7 @@ impl FactorLookup {
         };
 
         // Return the backup ID as a string
-        Ok(Some(backup_id.to_string()))
+        Ok(Some(backup_id.clone()))
     }
 
     /// Deletes a factor from the lookup table.

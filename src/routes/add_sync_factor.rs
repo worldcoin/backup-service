@@ -41,7 +41,7 @@ pub async fn handler(
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.sync_factor,
-            request.challenge_token.to_string(),
+            request.challenge_token.clone(),
             ChallengeContext::AddSyncFactor {},
             None,
             true, // is_sync_factor
@@ -53,7 +53,7 @@ pub async fn handler(
 
     // Step 2: Verify the sync factor token and extract the backup ID
     let backup_id = redis_cache_manager
-        .use_sync_factor_token(request.sync_factor_token.to_string())
+        .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
     // Step 3: Add the sync factor to backup lookup
@@ -76,7 +76,7 @@ pub async fn handler(
         }
 
         if let Err(e) = redis_cache_manager
-            .unuse_sync_factor_token(request.sync_factor_token.to_string())
+            .unuse_sync_factor_token(request.sync_factor_token.clone())
             .await
         {
             tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);

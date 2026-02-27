@@ -1,7 +1,7 @@
 use crate::types::{Environment, OidcProvider};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
-use redis::aio::ConnectionManager;
+use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, Script, SetExpiry, SetOptions};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -28,9 +28,16 @@ impl RedisCacheManager {
     /// * `RedisError` - if the Redis connection cannot be established
     pub async fn new(environment: Environment, default_ttl: Duration) -> Result<Self, RedisError> {
         let client: redis::Client = redis::Client::open(environment.redis_endpoint_url())?;
-        let redis = ConnectionManager::new(client).await?;
+        let config = ConnectionManagerConfig::new()
+            .set_connection_timeout(Duration::from_secs(3))
+            .set_response_timeout(Duration::from_secs(3))
+            .set_number_of_retries(3)
+            .set_exponent_base(2)
+            .set_factor(100)
+            .set_max_delay(5000);
+        let redis = ConnectionManager::new_with_config(client, config).await?;
 
-        tracing::info!("✅ Redis connection pool built successfully.");
+        tracing::info!("Redis connection pool built successfully.");
 
         Ok(Self { default_ttl, redis })
     }

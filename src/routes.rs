@@ -1,9 +1,12 @@
+use crate::middleware::validate_content_length;
 use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
 use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
+use crate::routes::reset_challenge_keypair::ResetChallengeKeypairRequest;
 use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
 use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
 use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
+use crate::routes::verify_factor_challenge_keypair::VerifyFactorChallengeKeypairRequest;
 use crate::types::Environment;
 use crate::{
     attestation_gateway::AttestationGateway,
@@ -32,6 +35,8 @@ mod docs;
 mod health;
 mod keypair_challenge;
 mod ready;
+mod reset;
+mod reset_challenge_keypair;
 mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
@@ -39,6 +44,9 @@ mod retrieve_metadata;
 mod retrieve_metadata_challenge_keypair;
 mod sync_backup;
 mod sync_challenge_keypair;
+mod verify_factor;
+mod verify_factor_challenge_keypair;
+mod verify_factor_challenge_passkey;
 
 pub fn handler(environment: Environment) -> ApiRouter {
     let v1_routes = ApiRouter::new()
@@ -55,9 +63,9 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/create",
-            post(create_backup::handler).layer(DefaultBodyLimit::max(
-                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
-            )),
+            post(create_backup::handler)
+                .route_layer(middleware::from_fn(validate_content_length))
+                .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Recovery
         .api_route(
@@ -76,6 +84,20 @@ pub fn handler(environment: Environment) -> ApiRouter {
             )
             .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
+        // Verify factor (authenticate a main factor without retrieving the backup)
+        .api_route(
+            "/verify-factor/challenge/passkey",
+            post(verify_factor_challenge_passkey::handler),
+        )
+        .api_route(
+            "/verify-factor/challenge/keypair",
+            post(keypair_challenge::handler::<VerifyFactorChallengeKeypairRequest>),
+        )
+        .api_route(
+            "/verify-factor",
+            post_with(verify_factor::handler, verify_factor::docs)
+                .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
         // Add new factor for future sync after recovery
         .api_route(
             "/add-sync-factor/challenge/keypair",
@@ -92,9 +114,9 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/sync",
-            post(sync_backup::handler).layer(DefaultBodyLimit::max(
-                environment.max_backup_file_size() + 1024 * 1024, // 1MB buffer for metadata
-            )),
+            post(sync_backup::handler)
+                .route_layer(middleware::from_fn(validate_content_length))
+                .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Metadata retrieval
         .api_route(
@@ -117,7 +139,13 @@ pub fn handler(environment: Environment) -> ApiRouter {
             "/delete-backup/challenge/keypair",
             post(keypair_challenge::handler::<DeleteBackupChallengeKeypairRequest>),
         )
-        .api_route("/delete-backup", post(delete_backup::handler));
+        .api_route("/delete-backup", post(delete_backup::handler))
+        // Reset backup (when all factors are lost)
+        .api_route(
+            "/reset/challenge/keypair",
+            post(keypair_challenge::handler::<ResetChallengeKeypairRequest>),
+        )
+        .api_route("/reset", post(reset::handler));
 
     // Compose the final router: keep docs & health at root, nest business logic under /v1
     ApiRouter::new()

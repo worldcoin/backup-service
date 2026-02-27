@@ -8,7 +8,6 @@ unknown-registry = "deny"
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed." },
-    { id = "RUSTSEC-2025-0134", reason = "Unmaintained `rustls-pemfile` (2025-12-05). Awaiting upstream dependency updates." }
 ]
 
 [licenses]
