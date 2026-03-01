@@ -8,7 +8,7 @@ license = "MIT"
 
 [workspace.dependencies]
 base64 = "0.22.1"
-chrono = { version = "0.4.40", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 hex = "0.4.3"
 openidconnect = "4.0.1"
 rand = "0.8.0"
