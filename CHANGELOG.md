@@ -2,6 +2,22 @@
 
 
 
+# [0.8.5] - 2026-03-06
+
+## What's Changed
+* chore(deps): bump tokio from 1.48.0 to 1.49.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/190
+* chore(deps): bump chrono from 0.4.40 to 0.4.44 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/189
+* fix: always lowercase manifest hash by @paolodamico in https://github.com/worldcoin/backup-service/pull/169
+* chore(tfh-backup): fix ECDSA DER signature length validation by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/185
+* feat: expose /metrics endpoint via axum-prometheus by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/191
+* chore(deps): bump serde from 1.0.219 to 1.0.228 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/172
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.4...0.8.5
+
+
+
+
 # [0.8.4] - 2026-02-17
 
 ## What's Changed
