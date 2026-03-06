@@ -524,7 +524,7 @@ async fn test_sync_backup_with_large_file() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -534,8 +534,8 @@ async fn test_sync_backup_with_large_file() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_file_too_large",
-                "message": "Backup file too large",
+                "code": "content_too_large",
+                "message": "Backup file exceeds maximum allowed size.",
             },
         })
     );
@@ -576,36 +576,41 @@ async fn test_sync_backup_with_extremely_large_file() {
     );
 
     // Sync the backup with a file that's too large (15 MB + 1 byte)
+    let payload = json!({
+        "authorization": {
+            "kind": "EC_KEYPAIR",
+            "publicKey": sync_public_key,
+            "signature": signature,
+        },
+        "challengeToken": challenge_response["token"],
+        "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+        "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
+    });
+    let backup_bytes = Bytes::from(vec![0; 30 * 1024 * 1024]); // 30 MB is way past the safety limit
     let response = common::send_post_request_with_multipart(
         "/v1/sync",
-        json!({
-            "authorization": {
-                "kind": "EC_KEYPAIR",
-                "publicKey": sync_public_key,
-                "signature": signature,
-            },
-            "challengeToken": challenge_response["token"],
-            "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
-            "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
-        }),
-        Bytes::from(vec![0; 30 * 1024 * 1024]), // 30 MB is way past the safety limit
+        payload.clone(),
+        backup_bytes.clone(),
         None,
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(
-        response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "backup_file_too_large",
-                "message": "Backup file too large",
-            },
-        })
-    );
+    assert_eq!(response["allowRetry"], json!(false));
+    let error = response["error"].as_object().unwrap();
+    assert_eq!(error["code"], json!("content_too_large"));
+
+    let message = error["message"].as_str().unwrap();
+    const PREFIX: &str = "Request body of ";
+    const SUFFIX: &str = " bytes is too large.";
+    assert!(message.starts_with(PREFIX) && message.ends_with(SUFFIX));
+
+    let bytes = &message[PREFIX.len()..message.len() - SUFFIX.len()];
+    let reported_bytes: usize = bytes.parse().unwrap();
+    // assert to a range to account for variance in the token length
+    assert!((31_458_000..31_458_999).contains(&reported_bytes));
 }

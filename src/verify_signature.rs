@@ -37,8 +37,11 @@ pub fn verify_signature(
 
     // Decode the signature from base64
     let signature = STANDARD.decode(signature)?;
-    // Check if the signature is between 70 and 72 bytes (DER format)
-    if signature.len() < 70 || signature.len() > 72 {
+    // Reject signatures that exceed the maximum possible DER-encoded P-256 ECDSA size.
+    // Max is 72 bytes: 6 bytes overhead + 2x33 bytes (r,s each with 0x00 sign prefix).
+    // No minimum is enforced: DER uses minimal-length integers, so r or s with leading
+    // zeros are encoded shorter, making valid signatures arbitrarily small (though rare).
+    if signature.len() > 72 {
         return Err(VerifySignatureError::DecodeSignatureError(format!(
             "Invalid signature length. Received {} bytes",
             signature.len()
@@ -116,6 +119,42 @@ mod tests {
             Err(VerifySignatureError::SignatureVerificationError) => {}
             _ => panic!("Expected SignatureVerificationError"),
         }
+    }
+
+    #[test]
+    fn test_valid_signature_all_der_lengths() {
+        // DER-encoded P-256 signatures vary in length because DER uses minimal-length integers.
+        // r and s are each typically 32 bytes but:
+        //   - 33 bytes when MSB is set (0x00 prefix to preserve sign), ~50% chance each
+        //   - 31 bytes when the high byte is 0x00 and stripped, ~0.2% chance each
+        // Generate many signatures to cover the common lengths and ensure none are rejected.
+        let payload = b"test payload for length coverage";
+        let mut seen_lengths = std::collections::HashSet::new();
+
+        for _ in 0..1000 {
+            let (signing_key, verifying_key) = generate_test_keypair();
+            let signature = sign_payload(&signing_key, payload);
+            let signature_der = signature.to_der();
+            seen_lengths.insert(signature_der.as_bytes().len());
+
+            let public_key_base64 = STANDARD.encode(verifying_key.to_sec1_bytes());
+            let der_len = signature_der.as_bytes().len();
+            let signature_base64 = STANDARD.encode(signature_der);
+
+            let result = verify_signature(&public_key_base64, &signature_base64, payload);
+            assert!(result.is_ok(), "Failed for DER length {}", der_len);
+
+            if seen_lengths.len() >= 3 {
+                break;
+            }
+        }
+
+        // We should reliably see lengths 70, 71, 72 (each ~25-50% probability)
+        assert!(
+            seen_lengths.contains(&70) && seen_lengths.contains(&71) && seen_lengths.contains(&72),
+            "Expected to see DER lengths 70, 71, 72 but only saw: {:?}",
+            seen_lengths
+        );
     }
 
     #[test]

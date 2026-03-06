@@ -2,18 +2,21 @@ mod common;
 
 use crate::common::{
     generate_keypair, generate_random_backup_id, get_keypair_challenge, get_passkey_challenge,
-    make_sync_factor, send_post_request_with_multipart, sign_keypair_challenge,
+    get_test_router, make_sync_factor, send_post_request_with_multipart, sign_keypair_challenge,
     verify_s3_backup_exists, verify_s3_metadata_exists,
 };
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::http::StatusCode;
 use backup_service::types::Environment;
 use backup_service_test_utils::{
     get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
     MockOidcServer,
 };
+use http::Request;
 use http_body_util::BodyExt;
 use serde_json::json;
+use tower::ServiceExt;
+use uuid::Uuid;
 
 // Happy path - passkey
 #[tokio::test]
@@ -440,7 +443,7 @@ async fn test_create_backup_with_large_file() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -450,8 +453,8 @@ async fn test_create_backup_with_large_file() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_file_too_large",
-                "message": "Backup file too large",
+                "code": "content_too_large",
+                "message": "Backup file exceeds maximum allowed size.",
             },
         })
     );
@@ -1045,4 +1048,34 @@ async fn test_no_race_conditions_on_concurrent_backup_account_id() {
         num_concurrent_requests - 1,
         error_count
     );
+}
+
+/// Ensures the multipart parsing error is propagated
+#[tokio::test]
+async fn test_create_backup_with_malformed_multipart_data() {
+    let environment = Environment::development(None);
+    let boundary = format!("Boundary-{}", Uuid::new_v4());
+
+    let body_bytes = b"This is not valid multipart data\r\n";
+    let req = Request::builder()
+        .uri("/v1/create")
+        .method("POST")
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
+        .header("Content-Length", body_bytes.len())
+        .body(Body::from(body_bytes.to_vec()))
+        .unwrap();
+
+    let app = get_test_router(Some(environment), None).await;
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response["error"]["code"], "multipart_error");
+    assert_eq!(response["error"]["message"], "incomplete multipart stream");
 }

@@ -2,6 +2,59 @@
 
 
 
+# [0.8.4] - 2026-02-17
+
+## What's Changed
+* feat: introduce verify factor endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/186
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.3...0.8.4
+
+
+
+
+# [0.8.3] - 2026-02-12
+
+## What's Changed
+* feat: introduce /reset endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/176
+* chore(tfh-backup): bump rust to 1.91, configure ConnectionManager timeouts by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/183
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.2...0.8.3
+
+
+
+
+# [0.8.2] - 2026-02-04
+
+## What's Changed
+* feat: improve multipart request handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/179
+* chore(deps): bump tracing from 0.1.41 to 0.1.44 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/173
+* chore(deps): bump serde_json from 1.0.143 to 1.0.148 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/171
+* chore(tfh-backup): enable TLS support for Redis connections by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/181
+* chore(deps): bump mockito from 1.7.0 to 1.7.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/158
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.1...0.8.2
+
+
+
+
+# [0.8.1] - 2026-01-29
+
+## What's Changed
+* Update GH workflows to use public runner groups by @ernish in https://github.com/worldcoin/backup-service/pull/168
+* chore(deps): bump openidconnect from 4.0.0 to 4.0.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/159
+* feat: improve max file size handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/177
+
+## New Contributors
+* @ernish made their first contribution in https://github.com/worldcoin/backup-service/pull/168
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.0...0.8.1
+
+
+
+
 # [0.8.0] - 2025-12-09
 
 ## What's Changed
