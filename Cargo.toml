@@ -3,12 +3,12 @@
 members = [".", "test-utils"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.4"
 license = "MIT"
 
 [workspace.dependencies]
 base64 = "0.22.1"
-chrono = { version = "0.4.40", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 hex = "0.4.3"
 openidconnect = "4.0.1"
 rand = "0.8.0"
@@ -18,7 +18,7 @@ uuid = { version = "1.16.0", features = ["v4", "serde"] }
 p256 = { version = "0.13.2", features = ["ecdsa"] }
 
 # dev workspace dependencies
-mockito = "1.7.0"
+mockito = "1.7.1"
 
 
 [package]
@@ -44,7 +44,8 @@ aws-config = "1.8.12"
 aws-sdk-dynamodb = "1.103.0"
 aws-sdk-kms = "1.98.0"
 aws-sdk-s3 = "1.120.0"
-axum = { version = "0.8.1", features = ["macros", "multipart"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-prometheus = "0.8"
 base64 = { workspace = true }
 chrono = { workspace = true }
 dotenvy = "0.15.7"
@@ -55,8 +56,9 @@ josekit = { version = "0.10.1", features = ["vendored"] }
 openidconnect = { workspace = true }
 p256 = { workspace = true }
 rand = { workspace = true }
-redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp"] }
+redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 schemars = "0.8.21"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { workspace = true }

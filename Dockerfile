@@ -1,4 +1,4 @@
-FROM rust:1.89.0-slim AS builder
+FROM rust:1.91.0-slim AS builder
 
 ARG GIT_REV
 ENV GIT_REV=${GIT_REV}
@@ -49,4 +49,5 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/backup-service
 # Set the entrypoint
 USER 100
 EXPOSE 8000
+EXPOSE 9090
 ENTRYPOINT ["/app/backup-service"]

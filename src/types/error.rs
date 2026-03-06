@@ -393,7 +393,7 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 "Failed to verify OIDC token.",
             ),
             OidcTokenVerifierError::InvalidNonce(e) => {
-                ErrorResponse::bad_request("oidc_token_invalid_nonce", &e.to_string())
+                ErrorResponse::bad_request("oidc_token_invalid_nonce", &e.clone())
             }
             OidcTokenVerifierError::MissingNonce => {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);
