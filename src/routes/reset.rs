@@ -106,6 +106,9 @@ pub async fn handler(
 }
 
 /// Extracts the public key from a `backup_account_id` and verifies a signature on a given message.
+///
+/// # Important
+/// The `backup_account_id` is a public key on the `secp256k1` curve.
 fn verify_backup_account_signature(
     backup_account_id: &str,
     signature_base64: &str,
