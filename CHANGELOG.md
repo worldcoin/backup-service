@@ -2,6 +2,18 @@
 
 
 
+# [0.8.6] - 2026-03-13
+
+## What's Changed
+* chore(deps): bump reqwest from 0.12.23 to 0.12.24 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/170
+* fix: backup keys are on the secp256k1 curve by @paolodamico in https://github.com/worldcoin/backup-service/pull/193
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.5...0.8.6
+
+
+
+
 # [0.8.5] - 2026-03-06
 
 ## What's Changed
