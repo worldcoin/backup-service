@@ -10,9 +10,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use p256::ecdsa::signature::Verifier;
-use p256::ecdsa::{Signature, VerifyingKey};
-use p256::EncodedPoint;
+use k256::ecdsa::signature::Verifier;
+use k256::ecdsa::{Signature, VerifyingKey};
+use k256::EncodedPoint;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -178,17 +178,18 @@ fn verify_backup_account_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p256::ecdsa::signature::Signer;
-    use p256::ecdsa::SigningKey;
-    use p256::elliptic_curve::rand_core::OsRng;
-    use p256::SecretKey;
+    use k256::ecdsa::signature::Signer;
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
+    use k256::SecretKey;
 
     #[test]
     fn test_verify_backup_account_signature_success() {
         // Generate a test keypair
         let secret_key = SecretKey::random(&mut OsRng);
         let signing_key = SigningKey::from(&secret_key);
-        let verifying_key = VerifyingKey::from(&signing_key);
+        // Explicit use of `secp256k1` in the tests
+        let verifying_key = k256::ecdsa::VerifyingKey::from(&signing_key);
 
         // Create backup_account_id from compressed public key
         let compressed_bytes = verifying_key.to_encoded_point(true).as_bytes().to_vec();
