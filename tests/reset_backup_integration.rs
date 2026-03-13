@@ -279,8 +279,8 @@ async fn test_reset_backup_with_incorrect_signature() {
     let challenge_response = get_reset_challenge(&backup_account_id).await;
 
     // Sign the challenge with a different keypair (incorrect signature)
-    let (_, wrong_secret_key) = generate_keypair();
-    let wrong_signature = sign_keypair_challenge(
+    let wrong_secret_key = k256::SecretKey::random(&mut OsRng);
+    let wrong_signature = sign_challenge_with_backup_key(
         &wrong_secret_key,
         challenge_response["challenge"].as_str().unwrap(),
     );
