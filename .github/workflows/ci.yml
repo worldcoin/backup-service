@@ -127,7 +127,9 @@ jobs:
           cache-to: "type=gha,mode=max"
           platforms: linux/amd64
 
-      - name: Docker Compose services
+      - name: Start LocalStack
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
         run: |
           docker compose up -d
 

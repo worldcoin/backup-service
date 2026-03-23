@@ -11,7 +11,7 @@ services:
     environment:
       - SERVICES=s3,kms,dynamodb
       - DISABLE_EVENTS=1
-      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN- }
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN-}
     volumes:
       - /var/lib/localstack
       - /var/run/docker.sock:/var/run/docker.sock
