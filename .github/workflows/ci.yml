@@ -76,6 +76,8 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_PULL_PUBLIC_IMAGES_TOKEN }}
 
       - name: Start LocalStack
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
         run: |
           docker compose up -d
           # Wait for services to be ready
