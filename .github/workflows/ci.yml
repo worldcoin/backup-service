@@ -82,6 +82,7 @@ jobs:
           docker compose up -d
           # Wait for services to be ready
           sleep 7
+          docker compose logs
 
       - name: Health check LocalStack
         run: curl -s http://localhost:4566/_localstack/health | jq -e '.services.s3 == "running"'
