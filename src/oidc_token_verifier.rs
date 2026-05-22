@@ -124,25 +124,25 @@ impl OidcTokenVerifier {
         // Load the public keys from the OIDC provider
         let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
 
-        // Step 3: Verify the token and extract claims
+        // Step 3: Create the token verifier.
+        let token_verifier =
+            CoreIdTokenVerifier::new_public_client(client_id, issuer_url.clone(), signature_keys)
+                .set_issue_time_verifier_fn(issue_time_verifier);
+
+        // Step 4: Parse the OIDC token
         let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
             tracing::warn!(message = "Failed to parse OIDC token", err = ?err);
             OidcTokenVerifierError::TokenParseError
         })?;
 
-        // Step 4: Verify the token against the client ID selected by client_name
+        // Step 5: Verify the nonce and extract the claims
         let claims = oidc_token
             .claims(
-                &CoreIdTokenVerifier::new_public_client(
-                    client_id,
-                    issuer_url.clone(),
-                    signature_keys.clone(),
-                )
-                .set_issue_time_verifier_fn(issue_time_verifier),
-                OidcNonceVerifier::new(expected_public_key_sec1_base64.clone()),
+                &token_verifier,
+                OidcNonceVerifier::new(expected_public_key_sec1_base64),
             )
             .map_err(|err| {
-                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url);
+                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url, client_name = ?client_name);
                 match err {
                     ClaimsVerificationError::InvalidNonce(e) =>
                         OidcTokenVerifierError::InvalidNonce(e.clone()),
