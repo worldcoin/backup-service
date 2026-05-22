@@ -208,7 +208,9 @@ pub async fn handler(
             (backup_id, new_factor_type)
         }
         Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
-            // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair
+            // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair.
+            // When implementing OIDC here, pass `client_name` to `validate_oidc_authentication` so the
+            // correct provider client_id (per `Environment::{google,apple}_client_id`) is used.
             return Err(ErrorResponse::bad_request("not_supported", "Not supported"));
         }
     };
