@@ -327,7 +327,10 @@ mod tests {
         let env = Environment::Production;
         assert_eq!(env.apple_client_id(None).as_str(), "org.worldcoin.insight");
         assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "org.world.id");
-        assert_eq!(env.apple_client_id(Some("android-id")).as_str(), "org.world.id");
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "org.world.id"
+        );
         assert_eq!(
             env.apple_client_id(Some("ios-money")).as_str(),
             "org.worldcoin.insight"
@@ -368,7 +371,10 @@ mod tests {
         let env = Environment::development(None);
         assert_eq!(env.apple_client_id(None).as_str(), "placeholder");
         assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "placeholder");
-        assert_eq!(env.apple_client_id(Some("android-id")).as_str(), "placeholder");
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "placeholder"
+        );
         assert_eq!(
             env.apple_client_id(Some("ios-money")).as_str(),
             "placeholder"
