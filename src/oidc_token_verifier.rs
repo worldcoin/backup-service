@@ -110,7 +110,7 @@ impl OidcTokenVerifier {
             OidcToken::Google { token } => (
                 token,
                 self.environment.google_jwk_set_url(),
-                self.environment.google_client_id(client_name),
+                self.environment.google_client_id(),
                 self.environment.google_issuer_url(),
             ),
             OidcToken::Apple { token } => (
