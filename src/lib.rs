@@ -5,6 +5,7 @@ pub mod auth;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod factor_lookup;
+pub mod headers;
 pub mod kms_jwe;
 pub mod middleware;
 pub mod oidc_nonce_verifier;

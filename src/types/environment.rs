@@ -216,19 +216,31 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Google OIDC provider
+    /// Returns the Google OIDC client ID to use for token verification.
+    ///
+    /// Uses the `client-name` header to select the correct `GIDClientID`:
+    /// - `"ios-id"` → World ID app client ID (varies by environment)
+    /// - anything else → World Money app client ID
+    ///
+    /// Note: Google ID tokens carry `aud = GIDClientID` (the iOS OAuth client ID),
+    /// not `GIDServerClientID`.
     #[must_use]
-    pub fn google_client_id(&self) -> ClientId {
-        match self {
-            Self::Production | Self::Staging => ClientId::new(
-                "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
-                    .to_string(),
-            ),
-            Self::Development { .. } => ClientId::new(
+    pub fn google_client_id(&self, client_name: Option<&str>) -> ClientId {
+        let client_id = match (self, client_name) {
+            (Self::Production, Some("ios-id")) => {
+                "730924878354-e3lj7tmie6g3650au7a65o473pa471nu.apps.googleusercontent.com"
+            }
+            (Self::Staging, Some("ios-id")) => {
+                "730924878354-t4l58lbu00r1voco48ivsijlo984obmn.apps.googleusercontent.com"
+            }
+            (Self::Production | Self::Staging, _) => {
+                "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+            }
+            (Self::Development { .. }, _) => {
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
-                    .to_string(),
-            ),
-        }
+            }
+        };
+        ClientId::new(client_id.to_string())
     }
 
     /// Issuer URL for the Google OIDC provider
@@ -262,17 +274,21 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Apple OIDC provider
+    /// Returns the Apple OIDC client ID to use for token verification.
     ///
-    /// # Panics
-    /// Will not panic. Values are hardcoded per environment.
+    /// Uses the `client-name` header to select the correct bundle ID:
+    /// - `"ios-id"` → World ID app (`org.world.id` / `org.world.staging.id`)
+    /// - anything else → World Money app (`org.worldcoin.insight` / `org.worldcoin.insight.staging`)
     #[must_use]
-    pub fn apple_client_id(&self) -> ClientId {
-        match self {
-            Self::Production => ClientId::new("org.worldcoin.insight".to_string()),
-            Self::Staging => ClientId::new("org.worldcoin.insight.staging".to_string()),
-            Self::Development { .. } => ClientId::new("placeholder".to_string()),
-        }
+    pub fn apple_client_id(&self, client_name: Option<&str>) -> ClientId {
+        let bundle_id = match (self, client_name) {
+            (Self::Production, Some("ios-id")) => "org.world.id",
+            (Self::Production, _) => "org.worldcoin.insight",
+            (Self::Staging, Some("ios-id")) => "org.world.staging.id",
+            (Self::Staging, _) => "org.worldcoin.insight.staging",
+            (Self::Development { .. }, _) => "placeholder",
+        };
+        ClientId::new(bundle_id.to_string())
     }
 
     /// Issuer URL for the Apple OIDC provider
@@ -311,5 +327,108 @@ impl Environment {
             Ok(val) => val.trim().eq_ignore_ascii_case("true"),
             Err(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_apple_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(env.apple_client_id(None).as_str(), "org.worldcoin.insight");
+        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "org.world.id");
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "org.worldcoin.insight"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("unknown")).as_str(),
+            "org.worldcoin.insight"
+        );
+    }
+
+    #[test]
+    fn test_apple_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            env.apple_client_id(None).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-id")).as_str(),
+            "org.world.staging.id"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("unknown")).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+    }
+
+    #[test]
+    fn test_apple_client_id_development() {
+        let env = Environment::development(None);
+        assert_eq!(env.apple_client_id(None).as_str(), "placeholder");
+        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "placeholder");
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "placeholder"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(
+            env.google_client_id(None).as_str(),
+            "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("ios-id")).as_str(),
+            "730924878354-e3lj7tmie6g3650au7a65o473pa471nu.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("ios-money")).as_str(),
+            "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("unknown")).as_str(),
+            "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            env.google_client_id(None).as_str(),
+            "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("ios-id")).as_str(),
+            "730924878354-t4l58lbu00r1voco48ivsijlo984obmn.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("ios-money")).as_str(),
+            "730924878354-m0sg73ei8l1iohgb1nfj65traocbml16.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_development() {
+        let env = Environment::development(None);
+        assert_eq!(
+            env.google_client_id(None).as_str(),
+            "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            env.google_client_id(Some("ios-id")).as_str(),
+            "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+        );
     }
 }
