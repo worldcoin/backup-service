@@ -8,6 +8,7 @@ use webauthn_rs::{Webauthn, WebauthnBuilder};
 pub enum Environment {
     Production,
     Staging,
+    Sandbox,
     Development {
         jwk_set_url_port_override: Option<usize>,
     },
@@ -27,6 +28,7 @@ impl Environment {
         match env.as_str() {
             "production" => Self::Production,
             "staging" => Self::Staging,
+            "sandbox" => Self::Sandbox,
             "development" => Self::Development {
                 jwk_set_url_port_override: None,
             },
@@ -48,7 +50,7 @@ impl Environment {
     #[must_use]
     pub fn s3_bucket(&self) -> String {
         match self {
-            Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
+            Self::Production | Self::Staging | Self::Sandbox => env::var("BACKUP_S3_BUCKET")
                 .expect("BACKUP_S3_BUCKET environment variable is not set"),
             Self::Development { .. } => {
                 env::var("BACKUP_S3_BUCKET").unwrap_or_else(|_| "backup-service-bucket".to_string())
@@ -60,8 +62,8 @@ impl Environment {
     #[must_use]
     pub const fn override_aws_endpoint_url(&self) -> Option<&str> {
         match self {
-            // Regular AWS endpoints to be used for production and staging
-            Self::Production | Self::Staging => None,
+            // Regular AWS endpoints to be used for production, staging, and sandbox
+            Self::Production | Self::Staging | Self::Sandbox => None,
             // Localstack to be used for development
             Self::Development { .. } => Some("http://localhost:4566"),
         }
@@ -74,7 +76,7 @@ impl Environment {
     #[must_use]
     pub fn redis_endpoint_url(&self) -> String {
         match self {
-            Self::Production | Self::Staging => {
+            Self::Production | Self::Staging | Self::Sandbox => {
                 env::var("REDIS_URL").expect("REDIS_URL environment variable is not set")
             }
             Self::Development { .. } => "redis://localhost:6379".to_string(),
@@ -122,7 +124,7 @@ impl Environment {
     pub fn show_api_docs(&self) -> bool {
         match self {
             Self::Production => false,
-            Self::Staging | Self::Development { .. } => true,
+            Self::Staging | Self::Sandbox | Self::Development { .. } => true,
         }
     }
 
@@ -202,7 +204,7 @@ impl Environment {
     #[must_use]
     pub fn google_jwk_set_url(&self) -> JsonWebKeySetUrl {
         match self {
-            Self::Production | Self::Staging => {
+            Self::Production | Self::Staging | Self::Sandbox => {
                 JsonWebKeySetUrl::new("https://www.googleapis.com/oauth2/v3/certs".to_string())
                     .expect("Invalid JWK set URL")
             }
@@ -219,7 +221,7 @@ impl Environment {
     #[must_use]
     pub fn google_client_id(&self) -> ClientId {
         match self {
-            Self::Production | Self::Staging => ClientId::new(
+            Self::Production | Self::Staging | Self::Sandbox => ClientId::new(
                 "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
                     .to_string(),
             ),
@@ -246,7 +248,7 @@ impl Environment {
     #[must_use]
     pub fn apple_jwk_set_url(&self) -> JsonWebKeySetUrl {
         match self {
-            Self::Production | Self::Staging => {
+            Self::Production | Self::Staging | Self::Sandbox => {
                 // https://developer.apple.com/documentation/signinwithapplerestapi/fetch_apple_s_public_key_for_verifying_token_signature
                 JsonWebKeySetUrl::new("https://appleid.apple.com/auth/keys".to_string())
                     .expect("Invalid JWK set URL")
@@ -273,7 +275,9 @@ impl Environment {
             (Self::Production, _) => "org.worldcoin.insight",
             (Self::Staging, Some("ios-id")) => "org.world.staging.id",
             (Self::Staging, Some("android-id")) => "org.world.id.staging",
-            (Self::Staging, _) => "org.worldcoin.insight.staging",
+            (Self::Sandbox, Some("ios-id")) => "org.world.sandbox.id",
+            (Self::Sandbox, Some("android-id")) => "org.world.id.sandbox",
+            (Self::Staging | Self::Sandbox, _) => "org.worldcoin.insight.staging",
             (Self::Development { .. }, _) => "placeholder",
         };
         ClientId::new(bundle_id.to_string())
@@ -304,7 +308,9 @@ impl Environment {
     pub const fn attestation_gateway_host(&self) -> &str {
         match self {
             Self::Production => "https://attestation.worldcoin.org",
-            Self::Staging | Self::Development { .. } => "https://attestation.worldcoin.dev",
+            Self::Staging | Self::Sandbox | Self::Development { .. } => {
+                "https://attestation.worldcoin.dev"
+            }
         }
     }
 
@@ -362,6 +368,23 @@ mod tests {
         );
         assert_eq!(
             env.apple_client_id(Some("unknown")).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+    }
+
+    #[test]
+    fn test_apple_client_id_sandbox() {
+        let env = Environment::Sandbox;
+        assert_eq!(
+            env.apple_client_id(Some("ios-id")).as_str(),
+            "org.world.sandbox.id"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "org.world.id.sandbox"
+        );
+        assert_eq!(
+            env.apple_client_id(None).as_str(),
             "org.worldcoin.insight.staging"
         );
     }
