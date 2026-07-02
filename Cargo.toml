@@ -2,7 +2,7 @@
 members = [".", "test-utils"]
 
 [workspace.package]
-version = "0.8.5"
+version = "0.9.0"
 license = "MIT"
 
 [workspace.dependencies]
@@ -13,12 +13,12 @@ openidconnect = "4.0.1"
 rand = "0.8.0"
 serde_json = "1.0.149"
 sha2 = "0.10.8"
-uuid = { version = "1.16.0", features = ["v4", "serde"] }
+uuid = { version = "1.23.0", features = ["v4", "serde"] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
 k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std"] }
 
 # dev workspace dependencies
-mockito = "1.7.1"
+mockito = "1.7.2"
 
 
 [package]
