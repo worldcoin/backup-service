@@ -2,6 +2,22 @@
 
 
 
+# [0.9.0] - 2026-05-26
+
+## What's Changed
+* chore(deps): bump reqwest from 0.12.23 to 0.12.24 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/170
+* fix: backup keys are on the secp256k1 curve by @paolodamico in https://github.com/worldcoin/backup-service/pull/193
+* chore: add localstack token by @paolodamico in https://github.com/worldcoin/backup-service/pull/195
+* Add support for multiple clients by @ketzusaka in https://github.com/worldcoin/backup-service/pull/201
+
+## New Contributors
+* @ketzusaka made their first contribution in https://github.com/worldcoin/backup-service/pull/201
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.5...0.9.0
+
+
+
+
 # [0.8.5] - 2026-03-06
 
 ## What's Changed
