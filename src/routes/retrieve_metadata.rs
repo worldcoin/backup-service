@@ -4,9 +4,11 @@ use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
+use crate::headers::CLIENT_NAME;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::{Authorization, ErrorResponse};
 use axum::{extract::Extension, Json};
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -28,8 +30,11 @@ pub struct RetrieveMetadataRequest {
 pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
+    headers: HeaderMap,
     Json(request): Json<RetrieveMetadataRequest>,
 ) -> Result<Json<ExportedBackupMetadata>, ErrorResponse> {
+    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
+
     // Step 1: Auth. Verify the solved challenge
     let backup_metadata = auth_handler
         .verify(
@@ -37,6 +42,7 @@ pub async fn handler(
             FactorScope::Sync,
             ChallengeContext::RetrieveMetadata {},
             request.challenge_token,
+            client_name,
         )
         .await;
 
