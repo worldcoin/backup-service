@@ -18,7 +18,7 @@ p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std
 k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std"] }
 
 # dev workspace dependencies
-mockito = "1.7.1"
+mockito = "1.7.2"
 
 
 [package]
