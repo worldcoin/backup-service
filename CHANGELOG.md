@@ -2,6 +2,23 @@
 
 
 
+# [0.9.1] - 2026-07-10
+
+## What's Changed
+* chore(deps): bump uuid from 1.16.0 to 1.23.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/199
+* chore(deps): bump mockito from 1.7.1 to 1.7.2 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/198
+* chore(deps): bump tower-http from 0.6.7 to 0.6.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/197
+* chore(deps): bump aws-sdk-s3 from 1.127.0 to 1.128.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/196
+* chore: default enable attestation gateway by @aurel-fr in https://github.com/worldcoin/backup-service/pull/204
+* chore(deps): bump axum from 0.8.1 to 0.8.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/200
+* chore: address rustsec advisories by @paolodamico in https://github.com/worldcoin/backup-service/pull/206
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.0...0.9.1
+
+
+
+
 # [0.9.0] - 2026-05-26
 
 ## What's Changed
