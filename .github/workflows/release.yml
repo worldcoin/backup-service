@@ -57,6 +57,7 @@ jobs:
       id-token: write
       packages: write
       attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Checkout code
