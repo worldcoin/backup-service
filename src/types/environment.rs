@@ -310,10 +310,9 @@ impl Environment {
 
     #[must_use]
     pub fn enable_attestation_gateway(&self) -> bool {
-        //  TODO: Swap to `DISABLE_ATTESTATION_GATEWAY`
-        match env::var("ENABLE_ATTESTATION_GATEWAY") {
-            Ok(val) => val.trim().eq_ignore_ascii_case("true"),
-            Err(_) => false,
+        match env::var("DISABLE_ATTESTATION_GATEWAY") {
+            Ok(val) => !val.trim().eq_ignore_ascii_case("true"),
+            Err(_) => true,
         }
     }
 }
