@@ -425,6 +425,15 @@ impl From<AttestationGatewayError> for ErrorResponse {
                 tracing::error!(message = "Attestation Gateway error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
+            AttestationGatewayError::JtiClaim
+            | AttestationGatewayError::ExpiresAt
+            | AttestationGatewayError::AudienceClaim => {
+                tracing::info!(message = "Invalid attestation token", error = ?err);
+                ErrorResponse::bad_request(
+                    "invalid_attestation_token_claim",
+                    &format!("Invalid attestation token claim: {err}."),
+                )
+            }
             _ => {
                 tracing::info!(message = "Invalid attestation token", error = ?err);
                 ErrorResponse::bad_request(
