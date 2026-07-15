@@ -2,6 +2,17 @@
 
 
 
+# [0.9.3] - 2026-07-15
+
+## What's Changed
+* fix: provide claim details on attest failures by @paolodamico in https://github.com/worldcoin/backup-service/pull/211
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.2...0.9.3
+
+
+
+
 # [0.9.2] - 2026-07-14
 
 ## What's Changed
