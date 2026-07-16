@@ -2,6 +2,17 @@
 
 
 
+# [0.9.4] - 2026-07-16
+
+## What's Changed
+* feat: validate attestation gateway even on disabled by @paolodamico in https://github.com/worldcoin/backup-service/pull/213
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.3...0.9.4
+
+
+
+
 # [0.9.3] - 2026-07-15
 
 ## What's Changed
