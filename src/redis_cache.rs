@@ -339,6 +339,7 @@ pub struct RedisLockGuard {
     redis: ConnectionManager,
     prefix: String,
     identifier: String,
+    owner_token: String,
     released: bool,
 }
 
@@ -355,8 +356,14 @@ impl RedisLockGuard {
             .conditional_set(ExistenceCheck::NX)
             .with_expiration(SetExpiry::EX(ttl_seconds));
 
+        let owner_token = uuid::Uuid::new_v4().to_string();
+
         let result = redis
-            .set_options::<String, bool>(format!("lock#{prefix}#{identifier}"), true, lock_options)
+            .set_options::<String, String>(
+                format!("lock#{prefix}#{identifier}"),
+                owner_token.clone(),
+                lock_options,
+            )
             .await?;
 
         let acquired = result.is_some() && result.unwrap_or_default() == "OK";
@@ -369,6 +376,7 @@ impl RedisLockGuard {
             redis,
             prefix,
             identifier,
+            owner_token,
             released: false,
         })
     }
@@ -380,7 +388,21 @@ impl RedisLockGuard {
     pub async fn release(&mut self) -> Result<(), RedisCacheError> {
         if !self.released {
             let mut redis = self.redis.clone();
-            redis.del(self.as_key()).await?;
+            let script = Script::new(
+                r"
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                else
+                    return 0
+                end
+                ",
+            );
+
+            let _: i32 = script
+                .key(self.as_key())
+                .arg(self.owner_token.clone())
+                .invoke_async(&mut redis)
+                .await?;
             self.released = true;
         }
         Ok(())
@@ -398,9 +420,26 @@ impl Drop for RedisLockGuard {
         }
         let mut redis = self.redis.clone();
         let key = self.as_key();
+        let owner_token = self.owner_token.clone();
         // Best-effort release as `Drop` cannot be async.
         tokio::spawn(async move {
-            if let Err(e) = redis.del(key).await {
+            let script = Script::new(
+                r"
+                if redis.call('GET', KEYS[1]) == ARGV[1] then
+                    return redis.call('DEL', KEYS[1])
+                else
+                    return 0
+                end
+                ",
+            );
+
+            let result: Result<i32, RedisError> = script
+                .key(key)
+                .arg(owner_token)
+                .invoke_async(&mut redis)
+                .await;
+
+            if let Err(e) = result {
                 tracing::error!(
                     message = "Failed to release Redis lock in Drop",
                     error = ?e
