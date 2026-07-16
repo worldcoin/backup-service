@@ -2,7 +2,7 @@
 members = [".", "test-utils"]
 
 [workspace.package]
-version = "0.9.3"
+version = "0.9.4"
 license = "MIT"
 
 [workspace.dependencies]
