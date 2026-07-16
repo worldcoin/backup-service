@@ -1,24 +1,24 @@
-
 [workspace]
 members = [".", "test-utils"]
 
 [workspace.package]
-version = "0.8.4"
+version = "0.9.4"
 license = "MIT"
 
 [workspace.dependencies]
 base64 = "0.22.1"
-chrono = { version = "0.4.40", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 hex = "0.4.3"
 openidconnect = "4.0.1"
-rand = "0.8.0"
+rand = "0.8.6"
 serde_json = "1.0.149"
 sha2 = "0.10.8"
-uuid = { version = "1.16.0", features = ["v4", "serde"] }
-p256 = { version = "0.13.2", features = ["ecdsa"] }
+uuid = { version = "1.23.0", features = ["v4", "serde"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
+k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std"] }
 
 # dev workspace dependencies
-mockito = "1.7.1"
+mockito = "1.7.2"
 
 
 [package]
@@ -39,12 +39,13 @@ aide = { version = "0.14.2", features = [
   "macros",
 ] }
 
-anyhow = "1.0.98"
-aws-config = "1.8.12"
-aws-sdk-dynamodb = "1.103.0"
-aws-sdk-kms = "1.98.0"
-aws-sdk-s3 = "1.120.0"
-axum = { version = "0.8.1", features = ["macros", "multipart"] }
+anyhow = "1.0.103"
+aws-config = "1.8.15"
+aws-sdk-dynamodb = "1.110.0"
+aws-sdk-kms = "1.104.0"
+aws-sdk-s3 = "1.127.0"
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-prometheus = "0.8"
 base64 = { workspace = true }
 chrono = { workspace = true }
 dotenvy = "0.15.7"
@@ -54,6 +55,7 @@ http = "1.3.1"
 josekit = { version = "0.10.1", features = ["vendored"] }
 openidconnect = { workspace = true }
 p256 = { workspace = true }
+k256 = { workspace = true }
 rand = { workspace = true }
 redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
@@ -93,7 +95,7 @@ chrono = "0.4.40"
 http-body-util = "0.1.3"
 mockito = { workspace = true }
 tower = "0.5.2"
-serial_test = "3.2.0"
+serial_test = "3.5.0"
 
 
 [profile.release]

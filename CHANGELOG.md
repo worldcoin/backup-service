@@ -2,6 +2,97 @@
 
 
 
+# [0.9.4] - 2026-07-16
+
+## What's Changed
+* feat: validate attestation gateway even on disabled by @paolodamico in https://github.com/worldcoin/backup-service/pull/213
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.3...0.9.4
+
+
+
+
+# [0.9.3] - 2026-07-15
+
+## What's Changed
+* fix: provide claim details on attest failures by @paolodamico in https://github.com/worldcoin/backup-service/pull/211
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.2...0.9.3
+
+
+
+
+# [0.9.2] - 2026-07-14
+
+## What's Changed
+* chore(deps): bump uuid from 1.16.0 to 1.23.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/199
+* chore(deps): bump mockito from 1.7.1 to 1.7.2 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/198
+* chore(deps): bump tower-http from 0.6.7 to 0.6.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/197
+* chore(deps): bump aws-sdk-s3 from 1.127.0 to 1.128.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/196
+* chore: default enable attestation gateway by @aurel-fr in https://github.com/worldcoin/backup-service/pull/204
+* chore(deps): bump axum from 0.8.1 to 0.8.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/200
+* chore: address rustsec advisories by @paolodamico in https://github.com/worldcoin/backup-service/pull/206
+* Release 0.9.1 by @github-actions[bot] in https://github.com/worldcoin/backup-service/pull/207
+* ci by @aurel-fr in https://github.com/worldcoin/backup-service/pull/208
+* chore: address RUSTSEC-2026-0048 by @paolodamico in https://github.com/worldcoin/backup-service/pull/209
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.0...0.9.2
+
+
+
+
+# [0.9.1] - 2026-07-10
+
+## What's Changed
+* chore(deps): bump uuid from 1.16.0 to 1.23.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/199
+* chore(deps): bump mockito from 1.7.1 to 1.7.2 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/198
+* chore(deps): bump tower-http from 0.6.7 to 0.6.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/197
+* chore(deps): bump aws-sdk-s3 from 1.127.0 to 1.128.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/196
+* chore: default enable attestation gateway by @aurel-fr in https://github.com/worldcoin/backup-service/pull/204
+* chore(deps): bump axum from 0.8.1 to 0.8.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/200
+* chore: address rustsec advisories by @paolodamico in https://github.com/worldcoin/backup-service/pull/206
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.0...0.9.1
+
+
+
+
+# [0.9.0] - 2026-05-26
+
+## What's Changed
+* chore(deps): bump reqwest from 0.12.23 to 0.12.24 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/170
+* fix: backup keys are on the secp256k1 curve by @paolodamico in https://github.com/worldcoin/backup-service/pull/193
+* chore: add localstack token by @paolodamico in https://github.com/worldcoin/backup-service/pull/195
+* Add support for multiple clients by @ketzusaka in https://github.com/worldcoin/backup-service/pull/201
+
+## New Contributors
+* @ketzusaka made their first contribution in https://github.com/worldcoin/backup-service/pull/201
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.5...0.9.0
+
+
+
+
+# [0.8.5] - 2026-03-06
+
+## What's Changed
+* chore(deps): bump tokio from 1.48.0 to 1.49.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/190
+* chore(deps): bump chrono from 0.4.40 to 0.4.44 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/189
+* fix: always lowercase manifest hash by @paolodamico in https://github.com/worldcoin/backup-service/pull/169
+* chore(tfh-backup): fix ECDSA DER signature length validation by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/185
+* feat: expose /metrics endpoint via axum-prometheus by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/191
+* chore(deps): bump serde from 1.0.219 to 1.0.228 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/172
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.4...0.8.5
+
+
+
+
 # [0.8.4] - 2026-02-17
 
 ## What's Changed

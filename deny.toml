@@ -8,6 +8,9 @@ unknown-registry = "deny"
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed." },
+    { id = "RUSTSEC-2026-0098", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
+    { id = "RUSTSEC-2026-0099", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
+    { id = "RUSTSEC-2026-0104", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
 ]
 
 [licenses]

@@ -9,6 +9,7 @@ use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
 use axum::Extension;
+use axum_prometheus::PrometheusMetricLayer;
 use http::StatusCode;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -115,6 +116,8 @@ pub async fn start(
             }),
         );
 
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
     let router = routes::handler(environment)
         .finish_api(&mut openapi)
         .layer(Extension(environment))
@@ -136,7 +139,8 @@ pub async fn start(
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
-        ));
+        ))
+        .layer(prometheus_layer);
 
     // By default Axum enforces a 2MB limit on the request body. Explicitly for the routes that upload or update backups,
     // a higher limit is set on a per-route basis.
@@ -146,11 +150,32 @@ pub async fn start(
         [0, 0, 0, 0],
         std::env::var("PORT").map_or(Ok(8000), |p| p.parse())?,
     ));
-
     let listener = TcpListener::bind(&addr).await?;
-    tracing::info!("✅ Backup service started on http://{addr}");
 
-    axum::serve(listener, router.into_make_service())
-        .await
-        .map_err(anyhow::Error::from)
+    let metrics_port: u16 = std::env::var("METRICS_PORT").map_or(Ok(9090u16), |p| p.parse())?;
+    let metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], metrics_port));
+    let metrics_listener = TcpListener::bind(&metrics_addr).await?;
+    let metrics_router = axum::Router::new().route(
+        "/metrics",
+        axum::routing::get(move || async move {
+            (
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4",
+                )],
+                metric_handle.render(),
+            )
+        }),
+    );
+
+    tracing::info!("✅ Backup service started on http://{addr}");
+    tracing::info!("📊 Metrics available on http://{metrics_addr}/metrics");
+
+    let (api_result, metrics_result) = tokio::join!(
+        axum::serve(listener, router.into_make_service()),
+        axum::serve(metrics_listener, metrics_router.into_make_service()),
+    );
+    api_result.map_err(anyhow::Error::from)?;
+    metrics_result.map_err(anyhow::Error::from)?;
+    Ok(())
 }

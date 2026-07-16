@@ -5,6 +5,7 @@ pub mod auth;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod factor_lookup;
+pub mod headers;
 pub mod kms_jwe;
 pub mod middleware;
 pub mod oidc_nonce_verifier;
@@ -63,7 +64,7 @@ where
     if bytes.len() != 32 {
         return Err(de::Error::custom("Expected 32 bytes"));
     }
-    Ok(s.to_string())
+    Ok(s.to_lowercase())
 }
 
 /// Deserializes a provided backup account ID and verifies it has the correct format.
