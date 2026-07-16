@@ -59,7 +59,7 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
-#[derive(Clone)] // Paolo REVIEW
+#[derive(Clone)]
 pub struct AttestationGateway {
     base_url: String,
     cached_keys: Arc<RwLock<CachedJwks>>,
@@ -385,7 +385,10 @@ impl AttestationGateway {
 
         if let Err(err) = result {
             if gateway.do_not_enforce {
-                tracing::warn!("Attestation gateway token failed validation: {err}, but allowing because do_not_enforce = true", err = err);
+                tracing::warn!(
+                    error = %err,
+                    "Attestation gateway token failed validation; allowing because do_not_enforce = true"
+                );
                 let req = Request::from_parts(parts, Body::from(body_bytes));
                 return Ok(next.run(req).await);
             }
@@ -835,5 +838,148 @@ mod tests {
                 .to_string(),
             "Token expired or expires at claim"
         );
+    }
+
+    use tower::ServiceExt;
+
+    /// A `tracing` writer that captures emitted log lines into an in-memory buffer
+    /// so tests can assert on what was logged.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl LogCapture {
+        fn dump(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for LogCapture {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn gateway_with_key(key_pair: &EcKeyPair, do_not_enforce: bool) -> AttestationGateway {
+        let jwk_set = JwkSet::from_map(
+            json!({ "keys": [key_pair.to_jwk_public_key()] })
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+
+        AttestationGateway {
+            base_url: String::new(),
+            cached_keys: Arc::new(RwLock::new(CachedJwks {
+                known_keys: jwk_set.into(),
+                updated_at: Some(Instant::now()),
+            })),
+            reqwest_client: reqwest::Client::new(),
+            bypass_token: None,
+            do_not_enforce,
+        }
+    }
+
+    /// Builds a router with the `validator` middleware in front of a handler that
+    /// returns `ok`, so a `200 ok` response proves the request reached the handler.
+    fn validator_app(gateway: AttestationGateway) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/retrieve/challenge/passkey",
+                axum::routing::post(|| async { "ok" }),
+            )
+            .layer(axum::middleware::from_fn(AttestationGateway::validator))
+            .layer(Extension(Arc::new(gateway)))
+    }
+
+    fn request_with_token(token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/retrieve/challenge/passkey")
+            .header(ATTESTATION_GATEWAY_HEADER, token)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_validator_logs_and_continues_when_not_enforcing() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, true);
+
+        // Valid signature, but the `jti` will not match the computed request hash,
+        // so token validation fails.
+        let token = generate_test_token(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+        );
+
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+
+        let response = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            validator_app(gateway)
+                .oneshot(request_with_token(&token))
+                .await
+                .unwrap()
+        };
+
+        // The request continued to the handler despite the validation failure.
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+
+        // The failure was logged.
+        let logged = logs.dump();
+        assert!(
+            logged.contains("do_not_enforce"),
+            "expected a warning about bypassing the failure, captured logs: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validator_rejects_when_enforcing() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, false);
+
+        let token = generate_test_token(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+        );
+
+        let response = validator_app(gateway)
+            .oneshot(request_with_token(&token))
+            .await
+            .unwrap();
+
+        // The request is rejected and never reaches the handler.
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_ne!(&body[..], b"ok");
     }
 }

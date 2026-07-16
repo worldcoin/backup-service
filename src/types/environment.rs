@@ -390,6 +390,29 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn test_disable_attestation_gateway_enforcement() {
+        let env = Environment::Production;
+
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+        // Safe default: enforcement is on (do not disable) when nothing is set.
+        assert!(!env.disable_attestation_gateway_enforcement());
+
+        // The primary flag disables enforcement.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "true");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "false");
+        assert!(!env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+
+        // The legacy flag is still honored.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY", "1");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+    }
+
+    #[test]
     fn test_apple_client_id_production() {
         let env = Environment::Production;
         assert_eq!(env.apple_client_id(None).as_str(), "org.worldcoin.insight");
