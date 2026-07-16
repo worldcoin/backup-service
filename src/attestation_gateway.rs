@@ -59,13 +59,15 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
-#[derive(Clone)]
+#[derive(Clone)] // Paolo REVIEW
 pub struct AttestationGateway {
     base_url: String,
     cached_keys: Arc<RwLock<CachedJwks>>,
     bypass_token: Option<String>,
     reqwest_client: reqwest::Client,
-    enabled: bool,
+    /// When set to `true`, the attestation gateway token will be verified if available, but any failures
+    /// or if the token is not present will be logged and allowed to continue.
+    do_not_enforce: bool,
 }
 
 #[derive(Debug)]
@@ -75,39 +77,37 @@ pub struct GenerateRequestHashInput {
     pub body: Option<String>,
 }
 
-pub struct AttestationGatewayConfig {
-    pub base_url: String,
-    pub env: Environment,
-    pub enabled: bool,
-}
-
 impl AttestationGateway {
     #[must_use]
     fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }
 
-    /// Initializes `AttestationGateway`
+    /// Initializes an `AttestationGateway` validator
+    ///
     /// # Panics
     /// Will panic if a bypass token is provided in production environment
-    pub fn new(config: AttestationGatewayConfig) -> Self {
+    pub fn new(base_url: String, env: &Environment, do_not_enforce: bool) -> Self {
         let bypass_token = env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN").ok();
         assert!(
-            bypass_token.is_none() || config.env != Environment::Production,
+            bypass_token.is_none() || env != &Environment::Production,
             "attestation gateway bypass token cannot be used in production environment"
         );
         if bypass_token.is_some() {
             tracing::warn!("🚨 Allowing attestation gateway bypass token");
         }
+        if do_not_enforce {
+            tracing::warn!("🚨 Currently not enforcing attestation failures");
+        }
         Self {
-            base_url: config.base_url,
+            base_url,
             cached_keys: Arc::new(RwLock::new(CachedJwks {
                 known_keys: JwkSet::new().into(),
                 updated_at: None,
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token,
-            enabled: config.enabled,
+            do_not_enforce,
         }
     }
 
@@ -345,10 +345,6 @@ impl AttestationGateway {
         req: Request<Body>,
         next: Next,
     ) -> Result<Response<Body>, ErrorResponse> {
-        if !gateway.enabled {
-            return Ok(next.run(req).await);
-        }
-
         let (parts, body) = req.into_parts();
 
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
@@ -361,7 +357,17 @@ impl AttestationGateway {
             ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
         })?;
 
-        let attestation_token = parts.headers.attestation_token()?;
+        let Some(attestation_token) = parts.headers.attestation_token() else {
+            if gateway.do_not_enforce {
+                let req = Request::from_parts(parts, Body::from(body_bytes));
+                return Ok(next.run(req).await);
+            }
+
+            return Err(ErrorResponse::bad_request(
+                "invalid_attestation_token_header",
+                "Attestation token header is invalid or not present.",
+            ));
+        };
 
         let hash_input = GenerateRequestHashInput {
             path_uri: parts.uri.path().to_string(),
@@ -372,9 +378,19 @@ impl AttestationGateway {
                 Some(body_str)
             },
         };
-        gateway
+
+        let result = gateway
             .validate_token(attestation_token.to_string(), &hash_input)
-            .await?;
+            .await;
+
+        if let Err(err) = result {
+            if gateway.do_not_enforce {
+                tracing::warn!("Attestation gateway token failed validation: {err}, but allowing because do_not_enforce = true", err = err);
+                let req = Request::from_parts(parts, Body::from(body_bytes));
+                return Ok(next.run(req).await);
+            }
+            return Err(err.into());
+        }
 
         let req = Request::from_parts(parts, Body::from(body_bytes));
         Ok(next.run(req).await)
@@ -413,40 +429,19 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 /// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
     /// Retrieves the attestation token from the request's `HeaderMap`.
-    ///
-    /// # Errors
-    /// - `ErrorResponse::bad_request("missing_attestation_token_header")` - if the attestation token is missing.
-    /// - `ErrorResponse::bad_request("invalid_attestation_token_header")` - if the attestation token is invalid.
-    fn attestation_token(&self) -> Result<&str, ErrorResponse>;
+    fn attestation_token(&self) -> Option<&str>;
 }
 
 impl AttestationHeaderExt for HeaderMap {
-    fn attestation_token(&self) -> Result<&str, ErrorResponse> {
-        let value = self
-            .get(ATTESTATION_GATEWAY_HEADER)
-            .ok_or_else(|| {
-                ErrorResponse::bad_request(
-                    "missing_attestation_token_header",
-                    "Attestation token header is missing",
-                )
-            })?
-            .to_str()
-            .map_err(|_| {
-                ErrorResponse::bad_request(
-                    "invalid_attestation_token_header",
-                    "Attestation token header is invalid",
-                )
-            })?;
+    fn attestation_token(&self) -> Option<&str> {
+        let value = self.get(ATTESTATION_GATEWAY_HEADER)?.to_str().ok()?;
 
         if value.is_empty() {
             tracing::info!("Attestation gateway token is empty");
-            return Err(ErrorResponse::bad_request(
-                "missing_attestation_token_header",
-                "Attestation token header is missing",
-            ));
+            return None;
         }
 
-        Ok(value)
+        Some(value)
     }
 }
 
@@ -523,11 +518,11 @@ mod tests {
     #[tokio::test]
     async fn test_bypass_token_is_not_valid_in_production() {
         dotenvy::from_filename(".env.example").unwrap();
-        let _ = AttestationGateway::new(AttestationGatewayConfig {
-            base_url: "http://localhost:8000".to_string(),
-            env: Environment::Production,
-            enabled: true,
-        });
+        let _ = AttestationGateway::new(
+            "http://localhost:8000".to_string(),
+            &Environment::Production,
+            false,
+        );
     }
 
     // testing the hash function by using the test payload and result hash from the `nfc-uniqueness-service` to ensure consistency
@@ -594,7 +589,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
         let test_token = generate_test_token(
             &key_pair,
@@ -640,7 +635,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
 
         // Generate token with key 2
@@ -722,13 +717,13 @@ mod tests {
             .create_async()
             .await;
 
-        let gateway = AttestationGateway::new(AttestationGatewayConfig {
-            base_url: mock_server.url(),
-            env: Environment::Development {
+        let gateway = AttestationGateway::new(
+            mock_server.url(),
+            &Environment::Development {
                 jwk_set_url_port_override: None,
             },
-            enabled: true,
-        });
+            false,
+        );
 
         // Try to validate token with key from mock server
         let test_token = generate_test_token(
@@ -819,7 +814,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
 
         let test_token = generate_test_token(
