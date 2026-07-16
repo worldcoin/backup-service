@@ -99,7 +99,6 @@ jobs:
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
-        continue-on-error: true # TODO: remove once image attestation is operational
         with:
           push-to-registry: true
           subject-name: ghcr.io/${{ github.repository }}
