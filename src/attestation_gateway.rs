@@ -414,11 +414,13 @@ impl AttestationGateway {
 /// which the request would've been requested with if attestation enforcement wasn't temporarily disabled.
 fn inform_attestation_failure(response: &mut Response<Body>, error: &ErrorResponse) {
     let headers = response.headers_mut();
-    let value = HeaderValue::from_str(error.message()).ok().unwrap_or(
-        HeaderValue::from_str(error.code())
-            .ok()
-            .unwrap_or(HeaderValue::from_static("generic-failure")),
-    );
+    let value = HeaderValue::from_str(error.message())
+        .ok()
+        .unwrap_or_else(|| {
+            HeaderValue::from_str(error.code())
+                .ok()
+                .unwrap_or(HeaderValue::from_static("generic-failure"))
+        });
     headers.insert(HeaderName::from_static("attestation-failure"), value);
 }
 
