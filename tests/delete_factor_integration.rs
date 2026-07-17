@@ -489,7 +489,7 @@ async fn test_remove_sync_factor_etag_concurrency() {
 
     // Create the backup
     backup_storage
-        .create(test_backup_data.clone(), &initial_metadata)
+        .create(test_backup_data.clone().into(), &initial_metadata)
         .await
         .unwrap();
 

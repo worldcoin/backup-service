@@ -38,12 +38,16 @@ pub fn mask_email(email: &str) -> Option<String> {
         return None;
     }
 
-    if local_part.len() <= 2 {
+    // Take the first two characters (not bytes) so multibyte UTF-8 local parts,
+    // don't cause a mid-character slice panic.
+    let mut chars = local_part.chars();
+    let prefix: String = chars.by_ref().take(2).collect();
+    if chars.next().is_none() {
+        // Local part is two characters or fewer; nothing to mask.
         return Some(email.to_string());
     }
 
-    let masked_local_part = format!("{}***", &local_part[..2]);
-    Some(format!("{masked_local_part}@{domain_part}"))
+    Some(format!("{prefix}***@{domain_part}"))
 }
 
 use serde::{de, Deserialize, Deserializer};
@@ -110,5 +114,21 @@ mod tests {
         assert_eq!(mask_email("@gmail.com"), None);
         assert_eq!(mask_email("ex@"), None);
         assert_eq!(mask_email("@"), None);
+    }
+
+    #[test]
+    fn test_mask_email_multibyte_does_not_panic() {
+        // multibyte characters do not get sliced
+        assert_eq!(
+            mask_email("😀🎉rest@gmail.com"),
+            Some("😀🎉***@gmail.com".to_string())
+        );
+        assert_eq!(
+            mask_email("ébcd@gmail.com"),
+            Some("éb***@gmail.com".to_string())
+        );
+        // two or less characters are returned as-is
+        assert_eq!(mask_email("é@gmail.com"), Some("é@gmail.com".to_string()));
+        assert_eq!(mask_email("😀@gmail.com"), Some("😀@gmail.com".to_string()));
     }
 }
