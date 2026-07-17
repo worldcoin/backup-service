@@ -45,6 +45,18 @@ impl ErrorResponse {
         }
     }
 
+    /// The machine-readable error code sent to the client (e.g. `invalid_attestation_token_claim`).
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// The human-readable error message sent to the client.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     #[must_use]
     pub fn unauthorized() -> Self {
         Self {

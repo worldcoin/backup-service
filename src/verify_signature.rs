@@ -142,7 +142,7 @@ mod tests {
             let signature_base64 = STANDARD.encode(signature_der);
 
             let result = verify_signature(&public_key_base64, &signature_base64, payload);
-            assert!(result.is_ok(), "Failed for DER length {}", der_len);
+            assert!(result.is_ok(), "Failed for DER length {der_len}");
 
             if seen_lengths.len() >= 3 {
                 break;
@@ -152,8 +152,7 @@ mod tests {
         // We should reliably see lengths 70, 71, 72 (each ~25-50% probability)
         assert!(
             seen_lengths.contains(&70) && seen_lengths.contains(&71) && seen_lengths.contains(&72),
-            "Expected to see DER lengths 70, 71, 72 but only saw: {:?}",
-            seen_lengths
+            "Expected to see DER lengths 70, 71, 72 but only saw: {seen_lengths:?}",
         );
     }
 

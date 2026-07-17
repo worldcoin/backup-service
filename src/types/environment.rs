@@ -308,18 +308,109 @@ impl Environment {
         }
     }
 
+    /// Determines whether attestation gateway failures or invalid inputs should be treated
+    /// as errors or only logged. Setting this to `true` disables important security features.
     #[must_use]
-    pub fn enable_attestation_gateway(&self) -> bool {
-        match env::var("DISABLE_ATTESTATION_GATEWAY") {
-            Ok(val) => !val.trim().eq_ignore_ascii_case("true"),
-            Err(_) => true,
-        }
+    pub fn disable_attestation_gateway_enforcement(&self) -> bool {
+        env_bool("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", false)
+            || env_bool("DISABLE_ATTESTATION_GATEWAY", false)
+        // `DISABLE_ATTESTATION_GATEWAY` is a legacy environment variable
+    }
+}
+
+/// Parses a boolean flag env value.
+///
+/// Truthy: `true`, `1`. Falsy: `false`, `0`.
+fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Reads a boolean flag from an environment variable.
+///
+/// Returns `default` when the variable is unset or empty. An unrecognized value is logged.
+fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) if !raw.trim().is_empty() => parse_bool_flag(&raw).unwrap_or_else(|| {
+            tracing::warn!(
+                env_var = name,
+                default,
+                "WARNING! Unrecognized boolean value for environment variable; using default"
+            );
+            default
+        }),
+        _ => default,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_flag_truthy() {
+        for value in ["true", "TRUE", "True", "1", "  true  ", "\t1\n"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(true),
+                "{value:?} should be truthy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_flag_falsy() {
+        for value in ["false", "FALSE", "False", "0", "  false  ", " 0 "] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(false),
+                "{value:?} should be falsy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_flag_unrecognized() {
+        for value in ["", "   ", "yes", "on", "ture", "2", "enabled", "-1"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                None,
+                "{value:?} should be unrecognized"
+            );
+        }
+    }
+
+    #[test]
+    fn test_env_flag_unset_returns_default() {
+        assert!(env_bool("BACKUP_SERVICE_UNSET_FLAG", true));
+        assert!(!env_bool("BACKUP_SERVICE_UNSET_FLAG", false));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_disable_attestation_gateway_enforcement() {
+        let env = Environment::Production;
+
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+        // Safe default: enforcement is on (do not disable) when nothing is set.
+        assert!(!env.disable_attestation_gateway_enforcement());
+
+        // The primary flag disables enforcement.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "true");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "false");
+        assert!(!env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+
+        // The legacy flag is still honored.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY", "1");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+    }
 
     #[test]
     fn test_apple_client_id_production() {

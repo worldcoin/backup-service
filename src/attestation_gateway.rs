@@ -5,7 +5,7 @@ use axum::{
     middleware::Next,
     Extension,
 };
-use http::Method;
+use http::{HeaderName, HeaderValue, Method};
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -65,7 +65,9 @@ pub struct AttestationGateway {
     cached_keys: Arc<RwLock<CachedJwks>>,
     bypass_token: Option<String>,
     reqwest_client: reqwest::Client,
-    enabled: bool,
+    /// When set to `true`, the attestation gateway token will be verified if available, but any failures
+    /// or if the token is not present will be logged and allowed to continue.
+    do_not_enforce: bool,
 }
 
 #[derive(Debug)]
@@ -75,39 +77,37 @@ pub struct GenerateRequestHashInput {
     pub body: Option<String>,
 }
 
-pub struct AttestationGatewayConfig {
-    pub base_url: String,
-    pub env: Environment,
-    pub enabled: bool,
-}
-
 impl AttestationGateway {
     #[must_use]
     fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }
 
-    /// Initializes `AttestationGateway`
+    /// Initializes an `AttestationGateway` validator
+    ///
     /// # Panics
     /// Will panic if a bypass token is provided in production environment
-    pub fn new(config: AttestationGatewayConfig) -> Self {
+    pub fn new(base_url: String, env: &Environment, do_not_enforce: bool) -> Self {
         let bypass_token = env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN").ok();
         assert!(
-            bypass_token.is_none() || config.env != Environment::Production,
+            bypass_token.is_none() || env != &Environment::Production,
             "attestation gateway bypass token cannot be used in production environment"
         );
         if bypass_token.is_some() {
             tracing::warn!("🚨 Allowing attestation gateway bypass token");
         }
+        if do_not_enforce {
+            tracing::warn!("🚨 Currently not enforcing attestation failures");
+        }
         Self {
-            base_url: config.base_url,
+            base_url,
             cached_keys: Arc::new(RwLock::new(CachedJwks {
                 known_keys: JwkSet::new().into(),
                 updated_at: None,
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token,
-            enabled: config.enabled,
+            do_not_enforce,
         }
     }
 
@@ -345,10 +345,6 @@ impl AttestationGateway {
         req: Request<Body>,
         next: Next,
     ) -> Result<Response<Body>, ErrorResponse> {
-        if !gateway.enabled {
-            return Ok(next.run(req).await);
-        }
-
         let (parts, body) = req.into_parts();
 
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
@@ -361,24 +357,71 @@ impl AttestationGateway {
             ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
         })?;
 
-        let attestation_token = parts.headers.attestation_token()?;
-
-        let hash_input = GenerateRequestHashInput {
-            path_uri: parts.uri.path().to_string(),
-            method: parts.method.clone(),
-            body: if body_bytes.is_empty() {
-                None
-            } else {
-                Some(body_str)
-            },
+        // Verify the attestation token header and all relevant claims
+        let attestation_result = match parts.headers.attestation_token() {
+            None => {
+                tracing::warn!("Attestation gateway token where expected is invalid or missing.");
+                Some(ErrorResponse::bad_request(
+                    "invalid_attestation_token_header",
+                    "Attestation token header is invalid or not present.",
+                ))
+            }
+            Some(attestation_token) => {
+                let hash_input = GenerateRequestHashInput {
+                    path_uri: parts.uri.path().to_string(),
+                    method: parts.method.clone(),
+                    body: if body_bytes.is_empty() {
+                        None
+                    } else {
+                        Some(body_str)
+                    },
+                };
+                match gateway
+                    .validate_token(attestation_token.to_string(), &hash_input)
+                    .await
+                {
+                    Ok(()) => None,
+                    Err(err) => {
+                        if gateway.do_not_enforce {
+                            tracing::warn!(
+                                error = %err,
+                                "Attestation gateway token failed validation; allowing because do_not_enforce = true"
+                            );
+                        }
+                        Some(err.into())
+                    }
+                }
+            }
         };
-        gateway
-            .validate_token(attestation_token.to_string(), &hash_input)
-            .await?;
 
         let req = Request::from_parts(parts, Body::from(body_bytes));
-        Ok(next.run(req).await)
+
+        match attestation_result {
+            None => Ok(next.run(req).await),
+            // Enforcement disabled: let the request through, but tell the client their
+            // attestation would have been rejected.
+            Some(error) if gateway.do_not_enforce => {
+                let mut response = next.run(req).await;
+                inform_attestation_failure(&mut response, &error);
+                Ok(response)
+            }
+            Some(error) => Err(error),
+        }
     }
+}
+
+/// Sends a response header with the attestation failure reason with the precise error
+/// which the request would've been requested with if attestation enforcement wasn't temporarily disabled.
+fn inform_attestation_failure(response: &mut Response<Body>, error: &ErrorResponse) {
+    let headers = response.headers_mut();
+    let value = HeaderValue::from_str(error.message())
+        .ok()
+        .unwrap_or_else(|| {
+            HeaderValue::from_str(error.code())
+                .ok()
+                .unwrap_or(HeaderValue::from_static("generic-failure"))
+        });
+    headers.insert(HeaderName::from_static("attestation-failure"), value);
 }
 
 /// Helper function to recursively sort JSON objects by their keys
@@ -413,40 +456,19 @@ fn sort_json(value: &serde_json::Value) -> serde_json::Value {
 /// from the request's `HeaderMap`.
 pub trait AttestationHeaderExt {
     /// Retrieves the attestation token from the request's `HeaderMap`.
-    ///
-    /// # Errors
-    /// - `ErrorResponse::bad_request("missing_attestation_token_header")` - if the attestation token is missing.
-    /// - `ErrorResponse::bad_request("invalid_attestation_token_header")` - if the attestation token is invalid.
-    fn attestation_token(&self) -> Result<&str, ErrorResponse>;
+    fn attestation_token(&self) -> Option<&str>;
 }
 
 impl AttestationHeaderExt for HeaderMap {
-    fn attestation_token(&self) -> Result<&str, ErrorResponse> {
-        let value = self
-            .get(ATTESTATION_GATEWAY_HEADER)
-            .ok_or_else(|| {
-                ErrorResponse::bad_request(
-                    "missing_attestation_token_header",
-                    "Attestation token header is missing",
-                )
-            })?
-            .to_str()
-            .map_err(|_| {
-                ErrorResponse::bad_request(
-                    "invalid_attestation_token_header",
-                    "Attestation token header is invalid",
-                )
-            })?;
+    fn attestation_token(&self) -> Option<&str> {
+        let value = self.get(ATTESTATION_GATEWAY_HEADER)?.to_str().ok()?;
 
         if value.is_empty() {
             tracing::info!("Attestation gateway token is empty");
-            return Err(ErrorResponse::bad_request(
-                "missing_attestation_token_header",
-                "Attestation token header is missing",
-            ));
+            return None;
         }
 
-        Ok(value)
+        Some(value)
     }
 }
 
@@ -523,11 +545,11 @@ mod tests {
     #[tokio::test]
     async fn test_bypass_token_is_not_valid_in_production() {
         dotenvy::from_filename(".env.example").unwrap();
-        let _ = AttestationGateway::new(AttestationGatewayConfig {
-            base_url: "http://localhost:8000".to_string(),
-            env: Environment::Production,
-            enabled: true,
-        });
+        let _ = AttestationGateway::new(
+            "http://localhost:8000".to_string(),
+            &Environment::Production,
+            false,
+        );
     }
 
     // testing the hash function by using the test payload and result hash from the `nfc-uniqueness-service` to ensure consistency
@@ -594,7 +616,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
         let test_token = generate_test_token(
             &key_pair,
@@ -640,7 +662,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
 
         // Generate token with key 2
@@ -722,13 +744,13 @@ mod tests {
             .create_async()
             .await;
 
-        let gateway = AttestationGateway::new(AttestationGatewayConfig {
-            base_url: mock_server.url(),
-            env: Environment::Development {
+        let gateway = AttestationGateway::new(
+            mock_server.url(),
+            &Environment::Development {
                 jwk_set_url_port_override: None,
             },
-            enabled: true,
-        });
+            false,
+        );
 
         // Try to validate token with key from mock server
         let test_token = generate_test_token(
@@ -819,7 +841,7 @@ mod tests {
             })),
             reqwest_client: reqwest::Client::new(),
             bypass_token: None,
-            enabled: true,
+            do_not_enforce: false,
         };
 
         let test_token = generate_test_token(
@@ -840,5 +862,205 @@ mod tests {
                 .to_string(),
             "Token expired or expires at claim"
         );
+    }
+
+    use tower::ServiceExt;
+
+    /// A `tracing` writer that captures emitted log lines into an in-memory buffer
+    /// so tests can assert on what was logged.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl LogCapture {
+        fn dump(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for LogCapture {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn gateway_with_key(key_pair: &EcKeyPair, do_not_enforce: bool) -> AttestationGateway {
+        let jwk_set = JwkSet::from_map(
+            json!({ "keys": [key_pair.to_jwk_public_key()] })
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+
+        AttestationGateway {
+            base_url: String::new(),
+            cached_keys: Arc::new(RwLock::new(CachedJwks {
+                known_keys: jwk_set.into(),
+                updated_at: Some(Instant::now()),
+            })),
+            reqwest_client: reqwest::Client::new(),
+            bypass_token: None,
+            do_not_enforce,
+        }
+    }
+
+    /// Builds a router with the `validator` middleware in front of a handler that
+    /// returns `ok`, so a `200 ok` response proves the request reached the handler.
+    fn validator_app(gateway: AttestationGateway) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/retrieve/challenge/passkey",
+                axum::routing::post(|| async { "ok" }),
+            )
+            .layer(axum::middleware::from_fn(AttestationGateway::validator))
+            .layer(Extension(Arc::new(gateway)))
+    }
+
+    fn request_with_token(token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/retrieve/challenge/passkey")
+            .header(ATTESTATION_GATEWAY_HEADER, token)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn header_str<'a>(response: &'a Response<Body>, name: &str) -> Option<&'a str> {
+        response.headers().get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn test_validator_logs_and_continues_when_not_enforcing() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, true);
+
+        // Valid signature, but the `jti` will not match the computed request hash,
+        // so token validation fails.
+        let token = generate_test_token(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+        );
+
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+
+        let response = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            validator_app(gateway)
+                .oneshot(request_with_token(&token))
+                .await
+                .unwrap()
+        };
+
+        // The request continued to the handler despite the validation failure.
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        // but the client was informed their attestation would have been rejected.
+        assert_eq!(
+            header_str(&response, "attestation-failure"),
+            Some("Invalid attestation token claim: JTI claim (request hash) is not valid.")
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+
+        // The failure was logged.
+        let logged = logs.dump();
+        assert!(
+            logged.contains("do_not_enforce"),
+            "expected a warning about bypassing the failure, captured logs: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validator_signals_missing_token_when_not_enforcing() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, true);
+
+        // No attestation-token header at all.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/retrieve/challenge/passkey")
+            .body(Body::empty())
+            .unwrap();
+        let response = validator_app(gateway).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            header_str(&response, "attestation-failure"),
+            Some("Attestation token header is invalid or not present.")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validator_sets_no_header_when_verified() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, true);
+
+        // A token whose `jti` matches the hash the middleware computes for this request.
+        let request_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
+            path_uri: "/retrieve/challenge/passkey".to_string(),
+            method: Method::POST,
+            body: None,
+        })
+        .unwrap();
+        let token = generate_test_token(&key_pair, request_hash, true, "pass".to_string(), None);
+
+        let response = validator_app(gateway)
+            .oneshot(request_with_token(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(header_str(&response, "attestation-failure"), None);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn test_validator_rejects_when_enforcing() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, false);
+
+        let token = generate_test_token(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+        );
+
+        let response = validator_app(gateway)
+            .oneshot(request_with_token(&token))
+            .await
+            .unwrap();
+
+        // The request is rejected and never reaches the handler.
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_ne!(&body[..], b"ok");
     }
 }
