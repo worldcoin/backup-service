@@ -309,6 +309,13 @@ impl From<BackupManagerError> for ErrorResponse {
                 tracing::info!(message = "Factor already exists", error = ?err);
                 ErrorResponse::bad_request("factor_already_exists", "This factor already exists.")
             }
+            BackupManagerError::TooManyFactors { .. } => {
+                tracing::warn!(message = "Maximum number of factors reached", error = ?err);
+                ErrorResponse::conflict(
+                    "too_many_factors",
+                    "The maximum number of factors for this backup has been reached.",
+                )
+            }
             BackupManagerError::FactorNotFound => {
                 tracing::info!(message = "Factor not found", error = ?err);
                 ErrorResponse::bad_request("factor_not_found", "Factor not found.")
