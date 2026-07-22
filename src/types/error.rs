@@ -253,7 +253,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             ChallengeManagerError::SetClaim(_)
             | ChallengeManagerError::EncryptToken(_)
             | ChallengeManagerError::TokioError(_) => {
-                tracing::warn!(message = "Challenge manager error", error = ?err);
+                tracing::error!(message = "Challenge manager error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
             ChallengeManagerError::FailedToDecryptToken(_)
@@ -310,7 +310,7 @@ impl From<BackupManagerError> for ErrorResponse {
                 ErrorResponse::bad_request("factor_already_exists", "This factor already exists.")
             }
             BackupManagerError::TooManyFactors { .. } => {
-                tracing::warn!(message = "Maximum number of factors reached", error = ?err);
+                tracing::info!(message = "Maximum number of factors reached", error = ?err);
                 ErrorResponse::conflict(
                     "too_many_factors",
                     "The maximum number of factors for this backup has been reached.",

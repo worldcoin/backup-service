@@ -131,7 +131,7 @@ impl OidcTokenVerifier {
 
         // Step 4: Parse the OIDC token
         let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
-            tracing::warn!(message = "Failed to parse OIDC token", err = ?err);
+            tracing::info!(message = "Failed to parse OIDC token", err = ?err);
             OidcTokenVerifierError::TokenParseError
         })?;
 
