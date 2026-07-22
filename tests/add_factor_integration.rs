@@ -10,7 +10,7 @@ use crate::common::{
 };
 use axum::http::StatusCode;
 use axum::response::Response;
-use backup_service::backup_storage::BackupStorage;
+use backup_service::backup_storage::{BackupStorage, MAX_MAIN_FACTORS_PER_BACKUP};
 use backup_service::types::backup_metadata::{Factor, OidcAccountKind};
 use backup_service::types::encryption_key::BackupEncryptionKey;
 use backup_service::types::Environment;
@@ -101,6 +101,112 @@ fn create_keypair_and_sign(challenge: &str) -> (String, SecretKey, String) {
 async fn parse_response_body(response: Response) -> Value {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&body).unwrap()
+}
+
+/// Drives a full `/add-factor` request that adds a new Google OIDC factor for `subject`, returning
+/// the raw response. Generates a fresh keypair, OIDC token, challenges, and passkey assertion on
+/// every call, so it can be invoked repeatedly for the same subject.
+async fn add_google_oidc_factor(
+    oidc_server: &MockOidcServer,
+    environment: Environment,
+    passkey_client: &mut MockPasskeyClient,
+    subject: &str,
+) -> Response {
+    let (new_public_key, new_secret_key) = common::generate_keypair();
+    let oidc_token = oidc_server.generate_token(
+        &MockOidcProvider::Google,
+        Some(SubjectIdentifier::new(subject.to_string())),
+        &new_public_key,
+    );
+    let challenges = get_add_factor_challenges(&oidc_token).await;
+    let new_factor_signature = common::sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion = get_passkey_assertion(passkey_client, &challenge_hash).await;
+
+    common::send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token
+                },
+                "publicKey": new_public_key,
+                "signature": new_factor_signature,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "encryptedBackupKey": null,
+            "turnkeyProviderId": "turnkey_provider_id",
+        }),
+        Some(environment),
+    )
+    .await
+}
+
+// A factor rejected because the backup is already at `MAX_MAIN_FACTORS_PER_BACKUP` must have its
+// `FactorLookup` entry rolled back. Otherwise the rejected credential stays mapped to the backup and
+// later attempts to use or re-register it fail until manual cleanup.
+#[tokio::test]
+#[serial]
+async fn test_add_factor_at_max_limit_rolls_back_lookup() {
+    let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
+
+    // The backup starts with one passkey factor; seed distinct OIDC factors up to the limit.
+    let s3_client = Arc::new(get_test_s3_client().await);
+    let backup_storage = BackupStorage::new(environment, s3_client);
+    for i in 0..MAX_MAIN_FACTORS_PER_BACKUP - 1 {
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: format!("seed-subject-{i}"),
+                masked_email: format!("s{i}****@example.com"),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        backup_storage
+            .add_factor(&backup_id, factor, None)
+            .await
+            .unwrap();
+    }
+
+    let subject = format!("over-limit-subject-{}", uuid::Uuid::new_v4());
+
+    // First attempt is rejected for exceeding the limit.
+    let response =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_client, &subject).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        parse_response_body(response).await["error"]["code"],
+        "too_many_factors"
+    );
+
+    // Retrying the same credential is rejected for the SAME reason, not with a stale-lookup
+    // `factor_already_exists`. `FactorLookup::insert` refuses duplicate keys, so this only succeeds
+    // in reaching the limit check again if the first attempt's lookup entry was rolled back.
+    let response =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_client, &subject).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        parse_response_body(response).await["error"]["code"],
+        "too_many_factors"
+    );
+
+    // Metadata still holds exactly the limit — no rejected factor leaked in.
+    let metadata = verify_s3_metadata_exists(&backup_id).await;
+    assert_eq!(
+        metadata["factors"].as_array().unwrap().len(),
+        MAX_MAIN_FACTORS_PER_BACKUP
+    );
 }
 
 // Happy path - add a new OIDC account factor to an existing backup using a passkey
