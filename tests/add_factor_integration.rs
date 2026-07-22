@@ -103,9 +103,6 @@ async fn parse_response_body(response: Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-/// Drives a full `/add-factor` request that adds a new Google OIDC factor for `subject`, returning
-/// the raw response. Generates a fresh keypair, OIDC token, challenges, and passkey assertion on
-/// every call, so it can be invoked repeatedly for the same subject.
 async fn add_google_oidc_factor(
     oidc_server: &MockOidcServer,
     environment: Environment,
@@ -154,12 +151,9 @@ async fn add_google_oidc_factor(
     .await
 }
 
-// A factor rejected because the backup is already at `MAX_MAIN_FACTORS_PER_BACKUP` must have its
-// `FactorLookup` entry rolled back. Otherwise the rejected credential stays mapped to the backup and
-// later attempts to use or re-register it fail until manual cleanup.
 #[tokio::test]
 #[serial]
-async fn test_add_factor_at_max_limit_rolls_back_lookup() {
+async fn test_add_factor_at_max_limit_rolls_back_factor_lookup() {
     let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
 
     // The backup starts with one passkey factor; seed distinct OIDC factors up to the limit.
