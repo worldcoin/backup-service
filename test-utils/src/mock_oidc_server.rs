@@ -297,6 +297,41 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
+    /// Generate a token whose audience lists the correct client ID plus an
+    /// additional, untrusted audience. A spec-compliant verifier must reject
+    /// such multi-audience tokens even though the correct client ID is present.
+    pub fn generate_token_with_extra_audience(
+        &self,
+        provider: &MockOidcProvider,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            provider.as_issuer_url(),
+            vec![
+                Audience::new(provider.as_client_id().to_string()),
+                Audience::new("extra-untrusted-audience".to_string()),
+            ],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now(),                                                 // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)));
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
     /// Converts the public key to expected turnkey nonce,
     /// see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
     fn pubkey_to_nonce(public_key_sec1_base64: &str) -> String {

@@ -412,6 +412,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_verify_token_with_extra_audience() {
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+
+        let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
+
+        // Test both Google and Apple OIDC tokens
+        for provider in [OidcProvider::Google, OidcProvider::Apple] {
+            // Generate a token whose audience is the correct client ID *plus* an
+            // additional untrusted audience.
+            let token =
+                oidc_server.generate_token_with_extra_audience(provider.into(), &public_key);
+
+            // Verify the token
+            let result = verify_token_for_provider(
+                &verifier,
+                provider,
+                token,
+                public_key.clone(),
+                Some("ios-id"),
+            )
+            .await;
+
+            // The correct client ID being present must not save a token that is
+            // also issued to another, untrusted audience.
+            assert!(result.is_err());
+            assert!(matches!(
+                result,
+                Err(OidcTokenVerifierError::TokenVerificationError)
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn test_verify_token_with_incorrect_issued_at() {
         let oidc_server = MockOidcServer::new().await;
         let environment =
