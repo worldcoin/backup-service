@@ -16,6 +16,15 @@ pub struct BackupStorage {
 
 type ETag = Option<String>;
 
+/// Maximum number of `Main` factors that can be registered for one backup account.
+pub const MAX_MAIN_FACTORS_PER_BACKUP: usize = 10;
+
+/// Maximum number of `Sync` factors that can be registered for one backup account.
+///
+/// This limit is also consistent with client-side enforcement for Sync Factors and is
+/// below Turnkey's hard limit of 100.
+pub const MAX_SYNC_FACTORS_PER_BACKUP: usize = 25;
+
 impl BackupStorage {
     #[must_use]
     pub fn new(environment: Environment, s3_client: Arc<S3Client>) -> Self {
@@ -224,6 +233,12 @@ impl BackupStorage {
             return Err(BackupManagerError::FactorAlreadyExists);
         }
 
+        if metadata.factors.len() >= MAX_MAIN_FACTORS_PER_BACKUP {
+            return Err(BackupManagerError::TooManyFactors {
+                limit: MAX_MAIN_FACTORS_PER_BACKUP,
+            });
+        }
+
         // Add the factor to the metadata
         metadata.factors.push(factor);
 
@@ -288,6 +303,12 @@ impl BackupStorage {
                 .any(|f| f.kind == sync_factor.kind)
         {
             return Err(BackupManagerError::FactorAlreadyExists);
+        }
+
+        if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
+            return Err(BackupManagerError::TooManyFactors {
+                limit: MAX_SYNC_FACTORS_PER_BACKUP,
+            });
         }
 
         // Add the sync factor to the metadata
@@ -573,6 +594,8 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
+    #[error("Maximum number of factors ({limit}) for this backup has been reached")]
+    TooManyFactors { limit: usize },
     #[error("Factor not found")]
     FactorNotFound,
     #[error("Encryption key not found in metadata")]
@@ -998,6 +1021,142 @@ mod tests {
             Err(BackupManagerError::BackupNotFound) => {}
             _ => panic!("Expected BackupNotFound"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_factor_enforces_max_limit() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Seed the backup one factor below the limit.
+        let test_backup_id = gen_backup_id();
+        let factors: Vec<Factor> = (0..MAX_MAIN_FACTORS_PER_BACKUP - 1)
+            .map(|i| {
+                Factor::new_oidc_account(
+                    OidcAccountKind::Google {
+                        sub: format!("sub_{i}"),
+                        masked_email: format!("t{i}****@example.com"),
+                    },
+                    "turnkey_provider_id".to_string(),
+                )
+            })
+            .collect();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5],
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors,
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Adding the factor that brings the backup up to the limit succeeds.
+        let at_limit_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_at_limit".to_string(),
+                masked_email: "at_limit****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let metadata = backup_storage
+            .add_factor(&test_backup_id, at_limit_factor, None)
+            .await
+            .unwrap();
+        assert_eq!(metadata.factors.len(), MAX_MAIN_FACTORS_PER_BACKUP);
+
+        // Adding one more distinct factor is rejected.
+        let over_limit_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_over_limit".to_string(),
+                masked_email: "over_limit****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let result = backup_storage
+            .add_factor(&test_backup_id, over_limit_factor, None)
+            .await;
+        match result {
+            Err(BackupManagerError::TooManyFactors { limit }) => {
+                assert_eq!(limit, MAX_MAIN_FACTORS_PER_BACKUP);
+            }
+            other => panic!("Expected TooManyFactors, got {other:?}"),
+        }
+
+        // The rejected factor was not persisted.
+        let stored = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(stored.metadata.factors.len(), MAX_MAIN_FACTORS_PER_BACKUP);
+    }
+
+    #[tokio::test]
+    async fn test_add_sync_factor_enforces_max_limit() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Seed the backup one sync factor below the limit.
+        let test_backup_id = gen_backup_id();
+        let sync_factors: Vec<Factor> = (0..MAX_SYNC_FACTORS_PER_BACKUP - 1)
+            .map(|i| Factor::new_ec_keypair(format!("public-key-{i}")))
+            .collect();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5],
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors,
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Adding the sync factor that brings the backup up to the limit succeeds.
+        backup_storage
+            .add_sync_factor(
+                &test_backup_id,
+                Factor::new_ec_keypair("public-key-at-limit".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // Adding one more distinct sync factor is rejected.
+        let result = backup_storage
+            .add_sync_factor(
+                &test_backup_id,
+                Factor::new_ec_keypair("public-key-over-limit".to_string()),
+            )
+            .await;
+        match result {
+            Err(BackupManagerError::TooManyFactors { limit }) => {
+                assert_eq!(limit, MAX_SYNC_FACTORS_PER_BACKUP);
+            }
+            other => panic!("Expected TooManyFactors, got {other:?}"),
+        }
+
+        // The rejected sync factor was not persisted.
+        let stored = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(
+            stored.metadata.sync_factors.len(),
+            MAX_SYNC_FACTORS_PER_BACKUP
+        );
     }
 
     #[tokio::test]
