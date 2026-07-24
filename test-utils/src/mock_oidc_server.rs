@@ -9,7 +9,7 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use p256::ecdsa::VerifyingKey;
@@ -283,6 +283,45 @@ impl MockOidcServer {
             EmptyAdditionalClaims {},
         )
         .set_nonce(Some(Nonce::new(nonce_value)));
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
+    /// Generate a token whose audience lists the correct client ID plus an
+    /// additional audience the client does not trust.
+    ///
+    /// OIDC allows `aud` to be an array, but requires the client to reject a
+    /// token carrying additional audiences it does not trust.
+    pub fn generate_token_with_extra_audience(
+        &self,
+        provider: &MockOidcProvider,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            provider.as_issuer_url(),
+            vec![
+                Audience::new(provider.as_client_id().to_string()),
+                Audience::new("extra-untrusted-audience".to_string()),
+            ],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now(),                                                 // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)))
+        // Set it to ensure the untrusted extra audience is the only rejection reason
+        .set_authorized_party(Some(ClientId::new(provider.as_client_id().to_string())));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(
