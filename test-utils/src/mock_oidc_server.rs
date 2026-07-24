@@ -9,7 +9,7 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use p256::ecdsa::VerifyingKey;
@@ -298,8 +298,10 @@ impl MockOidcServer {
     }
 
     /// Generate a token whose audience lists the correct client ID plus an
-    /// additional, untrusted audience. A spec-compliant verifier must reject
-    /// such multi-audience tokens even though the correct client ID is present.
+    /// additional audience the client does not trust.
+    ///
+    /// OIDC allows `aud` to be an array, but requires the client to reject a
+    /// token carrying additional audiences it does not trust.
     pub fn generate_token_with_extra_audience(
         &self,
         provider: &MockOidcProvider,
@@ -317,7 +319,9 @@ impl MockOidcServer {
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
         )
-        .set_nonce(Some(Nonce::new(nonce_value)));
+        .set_nonce(Some(Nonce::new(nonce_value)))
+        // Set it to ensure the untrusted extra audience is the only rejection reason
+        .set_authorized_party(Some(ClientId::new(provider.as_client_id().to_string())));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(

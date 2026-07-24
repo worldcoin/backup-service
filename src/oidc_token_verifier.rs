@@ -423,8 +423,8 @@ mod tests {
 
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
-            // Generate a token whose audience is the correct client ID *plus* an
-            // additional untrusted audience.
+            // Generate an otherwise spec-valid token (valid `azp`) whose audience
+            // is the correct client ID *plus* an additional untrusted audience.
             let token =
                 oidc_server.generate_token_with_extra_audience(provider.into(), &public_key);
 
