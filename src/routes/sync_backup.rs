@@ -61,7 +61,7 @@ pub async fn handler(
     let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
+    let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
         tracing::debug!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request(
@@ -73,7 +73,7 @@ pub async fn handler(
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
         ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.get("backup").ok_or_else(|| {
+    let backup = multipart_fields.remove("backup").ok_or_else(|| {
         tracing::debug!(message = "Missing backup field in multipart data");
         ErrorResponse::bad_request(
             "missing_backup_field",
@@ -127,7 +127,7 @@ pub async fn handler(
         let update_result = backup_storage
             .update_backup(
                 &backup_id,
-                backup.to_vec(),
+                backup,
                 request.current_manifest_hash,
                 request.new_manifest_hash,
             )
