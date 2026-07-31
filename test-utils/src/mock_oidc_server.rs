@@ -32,7 +32,7 @@ impl MockOidcProvider {
             Self::Google => {
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
             }
-            Self::Apple => "org.worldcoin.insight",
+            Self::Apple => "org.worldcoin.insight.staging",
         }
     }
 
