@@ -582,4 +582,76 @@ mod tests {
         assert_eq!(success_count, 1);
         assert_eq!(already_used_count, 9);
     }
+
+    /// Stale lock guards must not delete a newer holder's lock after TTL expiry.
+    #[tokio::test]
+    async fn test_stale_lock_guard_cannot_delete_newer_lock_on_release() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let prefix = "stale_lock_release_test";
+        let identifier = uuid::Uuid::new_v4().to_string();
+
+        // Acquire lock A with a short TTL, then let it expire.
+        let mut stale_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(1))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // A newer holder acquires the same lock key.
+        let mut current_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+            .await
+            .unwrap();
+
+        // Releasing the stale guard must leave the current holder's lock intact.
+        stale_guard.release().await.unwrap();
+        assert!(matches!(
+            cache
+                .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+                .await,
+            Err(RedisCacheError::Locked)
+        ));
+
+        current_guard.release().await.unwrap();
+    }
+
+    /// Same safety property via the `Drop` best-effort release path.
+    #[tokio::test]
+    async fn test_stale_lock_guard_cannot_delete_newer_lock_on_drop() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let prefix = "stale_lock_drop_test";
+        let identifier = uuid::Uuid::new_v4().to_string();
+
+        let stale_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(1))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let mut current_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+            .await
+            .unwrap();
+
+        drop(stale_guard);
+        // Allow the Drop spawn to finish its compare-and-delete attempt.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(matches!(
+            cache
+                .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+                .await,
+            Err(RedisCacheError::Locked)
+        ));
+
+        current_guard.release().await.unwrap();
+    }
 }
