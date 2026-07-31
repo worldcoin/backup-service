@@ -423,10 +423,7 @@ mod tests {
             *env.allowed_apple_client_ids().first().unwrap(),
             "org.worldcoin.insight"
         );
-        assert!(env
-            .allowed_apple_client_ids()
-            .iter()
-            .any(|a| *a == "org.world.id"));
+        assert!(env.allowed_apple_client_ids().contains(&"org.world.id"));
     }
 
     #[test]
@@ -438,8 +435,7 @@ mod tests {
         );
         assert!(env
             .allowed_apple_client_ids()
-            .iter()
-            .any(|a| *a == "org.world.id.staging"));
+            .contains(&"org.world.id.staging"));
     }
 
     #[test]

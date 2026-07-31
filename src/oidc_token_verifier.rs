@@ -115,7 +115,7 @@ impl OidcTokenVerifier {
             OidcToken::Apple { token, aud } => (
                 token,
                 self.environment.apple_jwk_set_url(),
-                get_and_validate_apple_client_id(&self.environment, aud)?,
+                get_and_validate_apple_client_id(&self.environment, aud.as_ref())?,
                 self.environment.apple_issuer_url(),
             ),
         };
@@ -141,7 +141,7 @@ impl OidcTokenVerifier {
                 OidcNonceVerifier::new(expected_public_key_sec1_base64),
             )
             .map_err(|err| {
-                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url, client_name = ?client_name);
+                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url);
                 match err {
                     ClaimsVerificationError::InvalidNonce(e) =>
                         OidcTokenVerifierError::InvalidNonce(e.clone()),
@@ -171,7 +171,7 @@ impl OidcTokenVerifier {
 /// for the current environment and verify the OIDC token with it.
 fn get_and_validate_apple_client_id(
     environment: &Environment,
-    candidate_aud: &Option<String>,
+    candidate_aud: Option<&String>,
 ) -> Result<ClientId, OidcTokenVerifierError> {
     if let Some(candidate_aud) = candidate_aud {
         if let Some(aud) = environment
