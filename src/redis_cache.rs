@@ -400,7 +400,7 @@ impl RedisLockGuard {
 
             let _: i32 = script
                 .key(self.as_key())
-                .arg(self.owner_token.clone())
+                .arg(&self.owner_token)
                 .invoke_async(&mut redis)
                 .await?;
             self.released = true;
