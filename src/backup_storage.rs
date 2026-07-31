@@ -25,15 +25,19 @@ pub struct BackupStorage {
 pub enum FactorMetadataWrite<T> {
     /// Metadata was successfully updated to include the new factor.
     Inserted(T),
-    /// Failure before any metadata write (or a rejected write). Safe to roll back FactorLookup.
+    /// Failure before any metadata write (or a rejected write). Safe to roll back `FactorLookup`.
     NotInserted(BackupManagerError),
-    /// Do **not** roll back FactorLookup: the metadata write may have committed, or the factor is
+    /// Do **not** roll back `FactorLookup`: the metadata write may have committed, or the factor is
     /// already present in metadata (`FactorAlreadyExists`) so the lookup row should be kept.
     Unknown(BackupManagerError),
 }
 
 impl<T> FactorMetadataWrite<T> {
     /// Converts to a plain `Result`, discarding whether a failed write was ambiguous.
+    ///
+    /// # Errors
+    /// Returns the underlying [`BackupManagerError`] for `NotInserted` and `Unknown`.
+    #[allow(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
     pub fn into_result(self) -> Result<T, BackupManagerError> {
         match self {
             Self::Inserted(value) => Ok(value),
@@ -41,7 +45,7 @@ impl<T> FactorMetadataWrite<T> {
         }
     }
 
-    /// Whether a preceding FactorLookup insert should be rolled back for this outcome.
+    /// Whether a preceding `FactorLookup` insert should be rolled back for this outcome.
     pub const fn should_rollback_lookup(&self) -> bool {
         matches!(self, Self::NotInserted(_))
     }
@@ -240,14 +244,14 @@ impl BackupStorage {
     /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
     ///
-    /// Returns a [`FactorMetadataWrite`] so callers that write FactorLookup first can roll back only
+    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
     /// when the metadata write definitely did not land.
     ///
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
     ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
-    ///   FactorLookup row is not deleted.
+    ///   `FactorLookup` row is not deleted.
     pub async fn add_factor(
         &self,
         backup_id: &str,
@@ -320,7 +324,7 @@ impl BackupStorage {
 
     /// Adds a sync factor to the backup metadata in S3.
     ///
-    /// Returns a [`FactorMetadataWrite`] so callers that write FactorLookup first can roll back only
+    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
     /// when the metadata write definitely did not land.
     ///
     /// # Errors (via `NotInserted` / `Unknown`)
@@ -328,7 +332,7 @@ impl BackupStorage {
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
     ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
-    ///   FactorLookup row is not deleted.
+    ///   `FactorLookup` row is not deleted.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -397,7 +401,7 @@ impl BackupStorage {
         }
     }
 
-    /// Classifies an S3 `PutObject` failure for FactorLookup rollback decisions.
+    /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
     ///
     /// Service/construction errors mean S3 rejected or never sent the write (`NotInserted`).
     /// Timeout / dispatch / response errors are treated as ambiguous (`Unknown`).
