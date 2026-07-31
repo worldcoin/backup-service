@@ -185,49 +185,60 @@ impl FactorLookup {
         &self,
         backup_id: String,
     ) -> Result<(), FactorLookupError> {
-        // Query the GSI to find all factors associated with this backup_id
-        let query_result = self
-            .dynamodb_client
-            .query()
-            .table_name(self.environment.factor_lookup_dynamodb_table_name())
-            .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
-            .key_condition_expression("#backup_id = :backup_id")
-            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
-            .expression_attribute_values(
-                ":backup_id",
-                aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
-            )
-            .send()
-            .await?;
-
-        let items = query_result.items();
-        let total_count = items.len();
+        let mut total_count = 0;
         let mut deleted_count = 0;
         let mut error_count = 0;
+        let mut exclusive_start_key = None;
 
-        // Delete each item individually, continuing even if some deletions fail
-        for item in items {
-            if let Some(pk) = item.get(&DocumentAttribute::Pk.to_string()) {
-                match self
-                    .dynamodb_client
-                    .delete_item()
-                    .table_name(self.environment.factor_lookup_dynamodb_table_name())
-                    .key(DocumentAttribute::Pk.to_string(), pk.clone())
-                    .send()
-                    .await
-                {
-                    Ok(_) => {
-                        deleted_count += 1;
-                    }
-                    Err(err) => {
-                        error_count += 1;
-                        tracing::error!(
-                            message = "Failed to delete factor during batch deletion from backup",
-                            pk = ?pk,
-                            error = ?err,
-                        );
+        // Paginate over results for the unexpected edge case of factors exceeding the first page
+        loop {
+            let query_result = self
+                .dynamodb_client
+                .query()
+                .table_name(self.environment.factor_lookup_dynamodb_table_name())
+                .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
+                .key_condition_expression("#backup_id = :backup_id")
+                .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+                .expression_attribute_values(
+                    ":backup_id",
+                    aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
+                )
+                .set_exclusive_start_key(exclusive_start_key)
+                .send()
+                .await?;
+
+            let items = query_result.items();
+            total_count += items.len();
+
+            // Delete each item individually, continuing even if some deletions fail
+            for item in items {
+                if let Some(pk) = item.get(&DocumentAttribute::Pk.to_string()) {
+                    match self
+                        .dynamodb_client
+                        .delete_item()
+                        .table_name(self.environment.factor_lookup_dynamodb_table_name())
+                        .key(DocumentAttribute::Pk.to_string(), pk.clone())
+                        .send()
+                        .await
+                    {
+                        Ok(_) => {
+                            deleted_count += 1;
+                        }
+                        Err(err) => {
+                            error_count += 1;
+                            tracing::error!(
+                                message = "Failed to delete factor during batch deletion from backup",
+                                pk = ?pk,
+                                error = ?err,
+                            );
+                        }
                     }
                 }
+            }
+
+            match query_result.last_evaluated_key() {
+                Some(key) if !key.is_empty() => exclusive_start_key = Some(key.clone()),
+                _ => break,
             }
         }
 

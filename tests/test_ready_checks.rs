@@ -92,7 +92,7 @@ async fn test_end_to_end_readiness() {
     };
 
     backup_storage
-        .create(b"TEST_BACKUP_CONTENT".to_vec(), &backup_metadata)
+        .create(b"TEST_BACKUP_CONTENT".to_vec().into(), &backup_metadata)
         .await
         .expect("Failed to create backup");
 

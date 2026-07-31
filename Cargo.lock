@@ -788,6 +788,7 @@ dependencies = [
  "axum-prometheus",
  "backup-service-test-utils",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "dotenvy",
  "futures",
