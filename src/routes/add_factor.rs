@@ -275,7 +275,7 @@ pub async fn handler(
     // metadata (and is therefore usable) without a lookup entry.
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
-    let result = backup_storage
+    let write = backup_storage
         .add_factor(
             &backup_id,
             new_factor.clone(),
@@ -283,19 +283,18 @@ pub async fn handler(
         )
         .await;
 
-    // Step 3.3: If adding the factor to the S3 metadata fails, remove it from the lookup
-    let updated_metadata = match result {
-        Ok(updated_metadata) => updated_metadata,
-        Err(e) => {
-            if let Err(delete_err) = factor_lookup
-                .delete(FactorScope::Main, &factor_to_lookup)
-                .await
-            {
-                tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
-            }
-            return Err(e.into());
+    // Step 3.3: Roll back FactorLookup only when the metadata write definitely did not land
+    // (`NotInserted`). Skip rollback for `Unknown` (ambiguous S3 write or factor already present).
+    if write.should_rollback_lookup() {
+        if let Err(delete_err) = factor_lookup
+            .delete(FactorScope::Main, &factor_to_lookup)
+            .await
+        {
+            tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
         }
-    };
+    }
+
+    let updated_metadata = write.into_result()?;
 
     // Step 4: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {

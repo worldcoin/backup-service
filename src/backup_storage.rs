@@ -7,12 +7,44 @@ use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
-/// limits.
+/// Stores and retrieves backups and metadata from S3. Does not handle access checks.
+///
+/// Factor-count limits (`MAX_MAIN_FACTORS_PER_BACKUP`, `MAX_SYNC_FACTORS_PER_BACKUP`) are enforced
+/// in [`BackupStorage::add_factor`] and [`BackupStorage::add_sync_factor`].
 #[derive(Clone, Debug)]
 pub struct BackupStorage {
     environment: Environment,
     s3_client: Arc<S3Client>,
+}
+
+/// Outcome of writing a new factor into S3 backup metadata.
+///
+/// Used by callers that insert a `FactorLookup` row *before* updating metadata, so they can decide
+/// whether rolling that lookup entry back is safe without matching on specific error variants.
+#[derive(Debug)]
+pub enum FactorMetadataWrite<T> {
+    /// Metadata was successfully updated to include the new factor.
+    Inserted(T),
+    /// Failure before any metadata write (or a rejected write). Safe to roll back FactorLookup.
+    NotInserted(BackupManagerError),
+    /// Do **not** roll back FactorLookup: the metadata write may have committed, or the factor is
+    /// already present in metadata (`FactorAlreadyExists`) so the lookup row should be kept.
+    Unknown(BackupManagerError),
+}
+
+impl<T> FactorMetadataWrite<T> {
+    /// Converts to a plain `Result`, discarding whether a failed write was ambiguous.
+    pub fn into_result(self) -> Result<T, BackupManagerError> {
+        match self {
+            Self::Inserted(value) => Ok(value),
+            Self::NotInserted(err) | Self::Unknown(err) => Err(err),
+        }
+    }
+
+    /// Whether a preceding FactorLookup insert should be rolled back for this outcome.
+    pub const fn should_rollback_lookup(&self) -> bool {
+        matches!(self, Self::NotInserted(_))
+    }
 }
 
 type ETag = Option<String>;
@@ -208,34 +240,43 @@ impl BackupStorage {
     /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
     ///
-    /// # Errors
+    /// Returns a [`FactorMetadataWrite`] so callers that write FactorLookup first can roll back only
+    /// when the metadata write definitely did not land.
+    ///
+    /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor).
+    ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
+    ///   FactorLookup row is not deleted.
     pub async fn add_factor(
         &self,
         backup_id: &str,
         factor: Factor,
         new_encryption_key: Option<BackupEncryptionKey>,
-    ) -> Result<BackupMetadata, BackupManagerError> {
+    ) -> FactorMetadataWrite<BackupMetadata> {
         // Get the current metadata
-        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
+        let (mut metadata, e_tag) = match self.get_metadata_by_backup_id(backup_id).await {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound);
+            }
+            Err(err) => return FactorMetadataWrite::NotInserted(err),
         };
 
         let Some(e_tag) = e_tag else {
-            return Err(BackupManagerError::ETagNotFound);
+            return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
         // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
         if metadata.factors.iter().any(|f| f.kind == factor.kind)
             || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
         {
-            return Err(BackupManagerError::FactorAlreadyExists);
+            // Factor is already in metadata — keep any FactorLookup row that was just inserted.
+            return FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists);
         }
 
         if metadata.factors.len() >= MAX_MAIN_FACTORS_PER_BACKUP {
-            return Err(BackupManagerError::TooManyFactors {
+            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
                 limit: MAX_MAIN_FACTORS_PER_BACKUP,
             });
         }
@@ -250,50 +291,70 @@ impl BackupStorage {
                 .iter()
                 .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
             {
-                return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
+                return FactorMetadataWrite::NotInserted(
+                    BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed,
+                );
             }
             metadata.keys.push(encryption_key);
         }
 
+        let body = match serde_json::to_vec(&metadata) {
+            Ok(body) => body,
+            Err(err) => return FactorMetadataWrite::NotInserted(err.into()),
+        };
+
         // Save the updated metadata
-        self.put_object()
+        match self
+            .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .body(ByteStream::from(body))
             .send()
-            .await?;
-
-        Ok(metadata)
+            .await
+        {
+            Ok(_) => FactorMetadataWrite::Inserted(metadata),
+            Err(err) => Self::classify_put_object_error(err),
+        }
     }
 
     /// Adds a sync factor to the backup metadata in S3.
     ///
-    /// # Errors
+    /// Returns a [`FactorMetadataWrite`] so callers that write FactorLookup first can roll back only
+    /// when the metadata write definitely did not land.
+    ///
+    /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor)
+    ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
+    ///   FactorLookup row is not deleted.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
-    ) -> Result<(), BackupManagerError> {
+    ) -> FactorMetadataWrite<()> {
         // Sync factor must be a keypair
         match sync_factor.kind {
             FactorKind::EcKeypair { .. } => {}
             FactorKind::Passkey { .. } | FactorKind::OidcAccount { .. } => {
-                return Err(BackupManagerError::SyncFactorMustBeKeypair);
+                return FactorMetadataWrite::NotInserted(
+                    BackupManagerError::SyncFactorMustBeKeypair,
+                );
             }
         }
 
         // Get the current metadata
-        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
+        let (mut metadata, e_tag) = match self.get_metadata_by_backup_id(backup_id).await {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound);
+            }
+            Err(err) => return FactorMetadataWrite::NotInserted(err),
         };
 
         let Some(e_tag) = e_tag else {
-            return Err(BackupManagerError::ETagNotFound);
+            return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
         // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
@@ -303,11 +364,12 @@ impl BackupStorage {
                 .iter()
                 .any(|f| f.kind == sync_factor.kind)
         {
-            return Err(BackupManagerError::FactorAlreadyExists);
+            // Factor is already in metadata — keep any FactorLookup row that was just inserted.
+            return FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists);
         }
 
         if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
-            return Err(BackupManagerError::TooManyFactors {
+            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
                 limit: MAX_SYNC_FACTORS_PER_BACKUP,
             });
         }
@@ -315,16 +377,44 @@ impl BackupStorage {
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
 
+        let body = match serde_json::to_vec(&metadata) {
+            Ok(body) => body,
+            Err(err) => return FactorMetadataWrite::NotInserted(err.into()),
+        };
+
         // Save the updated metadata
-        self.put_object()
+        match self
+            .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .body(ByteStream::from(body))
             .send()
-            .await?;
+            .await
+        {
+            Ok(_) => FactorMetadataWrite::Inserted(()),
+            Err(err) => Self::classify_put_object_error(err),
+        }
+    }
 
-        Ok(())
+    /// Classifies an S3 `PutObject` failure for FactorLookup rollback decisions.
+    ///
+    /// Service/construction errors mean S3 rejected or never sent the write (`NotInserted`).
+    /// Timeout / dispatch / response errors are treated as ambiguous (`Unknown`).
+    fn classify_put_object_error<T>(
+        err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
+    ) -> FactorMetadataWrite<T> {
+        match &err {
+            SdkError::ConstructionFailure(_) | SdkError::ServiceError(_) => {
+                FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(err))
+            }
+            SdkError::TimeoutError(_)
+            | SdkError::DispatchFailure(_)
+            | SdkError::ResponseError(_) => {
+                FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err))
+            }
+            _ => FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err)),
+        }
     }
 
     /// Removes a `Main` factor from the backup metadata in S3 by factor ID.
@@ -836,6 +926,7 @@ mod tests {
         backup_storage
             .add_factor(&test_backup_id, google_account.clone(), None)
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify the factor was added
@@ -852,24 +943,25 @@ mod tests {
             hex::encode([1u8; 32])
         );
 
-        // Try to add the same factor again - should fail with FactorAlreadyExists
+        // Try to add the same factor again - should fail with FactorAlreadyExists as Unknown
+        // (do not roll back FactorLookup; the factor is already in metadata).
         let result = backup_storage
             .add_factor(&test_backup_id, google_account.clone(), None)
             .await;
-        assert!(result.is_err());
+        assert!(!result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::FactorAlreadyExists) => {}
-            _ => panic!("Expected FactorAlreadyExists"),
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
         }
 
         // Try to add a factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
             .add_factor("non_existent_backup", google_account.clone(), None)
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::BackupNotFound) => {}
-            _ => panic!("Expected BackupNotFound"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound) => {}
+            other => panic!("Expected NotInserted(BackupNotFound), got {other:?}"),
         }
     }
 
@@ -920,6 +1012,7 @@ mod tests {
         backup_storage
             .add_factor(&test_backup_id, new_factor.clone(), Some(new_key.clone()))
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify both the factor and key were added
@@ -971,6 +1064,7 @@ mod tests {
         backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify the sync factor was added
@@ -986,14 +1080,14 @@ mod tests {
             keypair_factor.kind
         );
 
-        // Try to add the same sync factor again - should fail with FactorAlreadyExists
+        // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
         let result = backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await;
-        assert!(result.is_err());
+        assert!(!result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::FactorAlreadyExists) => {}
-            _ => panic!("Expected FactorAlreadyExists"),
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
         }
 
         // Try to add an invalid factor type (OIDC account) as a sync factor - should fail
@@ -1007,20 +1101,20 @@ mod tests {
         let result = backup_storage
             .add_sync_factor(&test_backup_id, oidc_factor)
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::SyncFactorMustBeKeypair) => {}
-            _ => panic!("Expected SyncFactorMustBeKeypair"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::SyncFactorMustBeKeypair) => {}
+            other => panic!("Expected NotInserted(SyncFactorMustBeKeypair), got {other:?}"),
         }
 
         // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
             .add_sync_factor("non_existent_backup", keypair_factor.clone())
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::BackupNotFound) => {}
-            _ => panic!("Expected BackupNotFound"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound) => {}
+            other => panic!("Expected NotInserted(BackupNotFound), got {other:?}"),
         }
     }
 
@@ -1046,7 +1140,7 @@ mod tests {
             .collect();
         backup_storage
             .create(
-                vec![1, 2, 3, 4, 5],
+                vec![1, 2, 3, 4, 5].into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
                     factors,
@@ -1069,6 +1163,7 @@ mod tests {
         let metadata = backup_storage
             .add_factor(&test_backup_id, at_limit_factor, None)
             .await
+            .into_result()
             .unwrap();
         assert_eq!(metadata.factors.len(), MAX_MAIN_FACTORS_PER_BACKUP);
 
@@ -1083,11 +1178,12 @@ mod tests {
         let result = backup_storage
             .add_factor(&test_backup_id, over_limit_factor, None)
             .await;
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::TooManyFactors { limit }) => {
+            FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors { limit }) => {
                 assert_eq!(limit, MAX_MAIN_FACTORS_PER_BACKUP);
             }
-            other => panic!("Expected TooManyFactors, got {other:?}"),
+            other => panic!("Expected NotInserted(TooManyFactors), got {other:?}"),
         }
 
         // The rejected factor was not persisted.
@@ -1113,7 +1209,7 @@ mod tests {
             .collect();
         backup_storage
             .create(
-                vec![1, 2, 3, 4, 5],
+                vec![1, 2, 3, 4, 5].into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
                     factors: vec![],
@@ -1132,6 +1228,7 @@ mod tests {
                 Factor::new_ec_keypair("public-key-at-limit".to_string()),
             )
             .await
+            .into_result()
             .unwrap();
 
         // Adding one more distinct sync factor is rejected.
@@ -1141,11 +1238,12 @@ mod tests {
                 Factor::new_ec_keypair("public-key-over-limit".to_string()),
             )
             .await;
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::TooManyFactors { limit }) => {
+            FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors { limit }) => {
                 assert_eq!(limit, MAX_SYNC_FACTORS_PER_BACKUP);
             }
-            other => panic!("Expected TooManyFactors, got {other:?}"),
+            other => panic!("Expected NotInserted(TooManyFactors), got {other:?}"),
         }
 
         // The rejected sync factor was not persisted.
@@ -1352,7 +1450,8 @@ mod tests {
 
         let result = backup_storage
             .add_factor(&test_backup_id, new_factor.clone(), Some(duplicate_prf_key))
-            .await;
+            .await
+            .into_result();
 
         assert!(result.is_err());
         match result {
@@ -1372,7 +1471,8 @@ mod tests {
 
         let result = backup_storage
             .add_factor(&test_backup_id, new_factor.clone(), Some(turnkey_key))
-            .await;
+            .await
+            .into_result();
 
         assert!(result.is_ok());
 
@@ -1611,6 +1711,7 @@ mod tests {
         backup_storage
             .add_factor(&test_backup_id, new_factor.clone(), None)
             .await
+            .into_result()
             .unwrap();
 
         let (metadata, _) = backup_storage
@@ -1625,6 +1726,7 @@ mod tests {
         backup_storage
             .add_sync_factor(&test_backup_id, sync_factor.clone())
             .await
+            .into_result()
             .unwrap();
 
         let (metadata, _) = backup_storage

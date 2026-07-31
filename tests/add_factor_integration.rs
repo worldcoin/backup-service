@@ -170,6 +170,7 @@ async fn test_add_factor_at_max_limit_rolls_back_factor_lookup() {
         backup_storage
             .add_factor(&backup_id, factor, None)
             .await
+            .into_result()
             .unwrap();
     }
 
@@ -772,6 +773,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
     backup_storage
         .add_factor(&backup_id, factor, Some(encryption_key))
         .await
+        .into_result()
         .unwrap();
 
     // Create keypair for new factor
