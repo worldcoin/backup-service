@@ -4,6 +4,7 @@ use crate::types::Environment;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+use bytes::Bytes;
 use std::sync::Arc;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
@@ -43,7 +44,7 @@ impl BackupStorage {
     ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
         &self,
-        backup: Vec<u8>,
+        backup: Bytes,
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
         // Save encrypted backup to S3
@@ -165,7 +166,7 @@ impl BackupStorage {
     pub async fn update_backup(
         &self,
         backup_id: &str,
-        backup: Vec<u8>,
+        backup: Bytes,
         current_manifest_hash: String,
         new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
@@ -697,7 +698,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await
             .unwrap();
 
@@ -720,7 +721,7 @@ mod tests {
 
         // Try to create a backup with the same ID - should return an error
         let result = backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await;
         assert!(result.is_err());
         match result {
@@ -740,7 +741,7 @@ mod tests {
             .await
             .unwrap();
         let result = backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await;
         assert!(result.is_err());
         match result {
@@ -765,7 +766,7 @@ mod tests {
         // Create a backup
         backup_storage
             .create(
-                test_backup_data.clone(),
+                test_backup_data.clone().into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
                     factors: vec![],
@@ -781,7 +782,7 @@ mod tests {
         backup_storage
             .update_backup(
                 &test_backup_id,
-                updated_backup_data.clone(),
+                updated_backup_data.clone().into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
             )
@@ -818,7 +819,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -895,7 +896,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -961,7 +962,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1191,7 +1192,7 @@ mod tests {
             manifest_hash: hex::encode([1u8; 32]),
         };
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1281,7 +1282,7 @@ mod tests {
         };
 
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1332,7 +1333,7 @@ mod tests {
         };
 
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1477,7 +1478,7 @@ mod tests {
         };
 
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1544,7 +1545,7 @@ mod tests {
 
         // Test 1: Create backup with SSE-KMS
         backup_storage
-            .create(test_backup_data.clone(), &test_metadata)
+            .create(test_backup_data.clone().into(), &test_metadata)
             .await
             .unwrap();
 
@@ -1584,7 +1585,7 @@ mod tests {
         backup_storage
             .update_backup(
                 &test_backup_id,
-                updated_backup_data.clone(),
+                updated_backup_data.clone().into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
             )
