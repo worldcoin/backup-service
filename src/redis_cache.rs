@@ -334,6 +334,16 @@ pub enum RedisCacheError {
     Locked,
 }
 
+/// Atomically deletes a lock key only when its value matches the owner token.
+/// Prevents a stale guard (after TTL expiry) from deleting a newer holder's lock.
+const RELEASE_LOCK_IF_OWNER_SCRIPT: &str = r"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+";
+
 /// A guard that releases a Redis lock when dropped.
 pub struct RedisLockGuard {
     redis: ConnectionManager,
@@ -388,17 +398,7 @@ impl RedisLockGuard {
     pub async fn release(&mut self) -> Result<(), RedisCacheError> {
         if !self.released {
             let mut redis = self.redis.clone();
-            let script = Script::new(
-                r"
-                if redis.call('GET', KEYS[1]) == ARGV[1] then
-                    return redis.call('DEL', KEYS[1])
-                else
-                    return 0
-                end
-                ",
-            );
-
-            let _: i32 = script
+            let _: i32 = Script::new(RELEASE_LOCK_IF_OWNER_SCRIPT)
                 .key(self.as_key())
                 .arg(&self.owner_token)
                 .invoke_async(&mut redis)
@@ -423,17 +423,7 @@ impl Drop for RedisLockGuard {
         let owner_token = self.owner_token.clone();
         // Best-effort release as `Drop` cannot be async.
         tokio::spawn(async move {
-            let script = Script::new(
-                r"
-                if redis.call('GET', KEYS[1]) == ARGV[1] then
-                    return redis.call('DEL', KEYS[1])
-                else
-                    return 0
-                end
-                ",
-            );
-
-            let result: Result<i32, RedisError> = script
+            let result: Result<i32, RedisError> = Script::new(RELEASE_LOCK_IF_OWNER_SCRIPT)
                 .key(key)
                 .arg(owner_token)
                 .invoke_async(&mut redis)
