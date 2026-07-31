@@ -4,12 +4,14 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
+use crate::headers::CLIENT_NAME;
 use crate::normalize_hex_32;
 use crate::redis_cache::RedisCacheManager;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -53,11 +55,13 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
+    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
+    let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
         tracing::debug!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request(
@@ -69,7 +73,7 @@ pub async fn handler(
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
         ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.get("backup").ok_or_else(|| {
+    let backup = multipart_fields.remove("backup").ok_or_else(|| {
         tracing::debug!(message = "Missing backup field in multipart data");
         ErrorResponse::bad_request(
             "missing_backup_field",
@@ -99,6 +103,7 @@ pub async fn handler(
             FactorScope::Sync,
             ChallengeContext::Sync {},
             request.challenge_token,
+            client_name,
         )
         .await?;
 
@@ -122,7 +127,7 @@ pub async fn handler(
         let update_result = backup_storage
             .update_backup(
                 &backup_id,
-                backup.to_vec(),
+                backup,
                 request.current_manifest_hash,
                 request.new_manifest_hash,
             )

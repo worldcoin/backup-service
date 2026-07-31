@@ -4,9 +4,11 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::headers::CLIENT_NAME;
 use crate::redis_cache::RedisCacheManager;
 use crate::types::{Authorization, ErrorResponse};
 use axum::{Extension, Json};
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -35,8 +37,11 @@ pub async fn handler(
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    headers: HeaderMap,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
+    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
+
     // Step 1: Validate the new sync factor using AuthHandler
     let validation_result = auth_handler
         .validate_factor_registration(
@@ -45,6 +50,7 @@ pub async fn handler(
             ChallengeContext::AddSyncFactor {},
             None,
             true, // is_sync_factor
+            client_name,
         )
         .await?;
 

@@ -221,7 +221,11 @@ async fn test_verify_factor_without_attestation_token() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         response["error"]["code"],
-        "missing_attestation_token_header"
+        "invalid_attestation_token_header"
+    );
+    assert_eq!(
+        response["error"]["message"],
+        "Attestation token header is invalid or not present."
     );
 }
 

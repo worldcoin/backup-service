@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::headers::CLIENT_NAME;
 use crate::redis_cache::RedisCacheManager;
 use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -12,6 +13,7 @@ use crate::utils::extract_fields_from_multipart;
 use crate::{normalize_hex_32, validate_backup_account_id};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -57,11 +59,13 @@ pub async fn handler(
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
+    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
+    let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
         tracing::debug!(message = "Missing payload field in multipart data");
         ErrorResponse::bad_request(
@@ -73,7 +77,7 @@ pub async fn handler(
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
         ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.get("backup").ok_or_else(|| {
+    let backup = multipart_fields.remove("backup").ok_or_else(|| {
         tracing::debug!(message = "Missing backup field in multipart data");
         ErrorResponse::bad_request(
             "missing_backup_field",
@@ -106,6 +110,7 @@ pub async fn handler(
             ChallengeContext::Create {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
+            client_name,
         )
         .await?;
 
@@ -121,6 +126,7 @@ pub async fn handler(
             ChallengeContext::Create {},
             None,
             true, // is a sync factor
+            client_name,
         )
         .await?;
 
@@ -177,9 +183,7 @@ pub async fn handler(
         .await?;
 
     // Step 7: Save the backup to S3
-    let result = backup_storage
-        .create(backup.to_vec(), &backup_metadata)
-        .await;
+    let result = backup_storage.create(backup, &backup_metadata).await;
 
     let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 

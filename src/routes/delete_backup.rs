@@ -4,9 +4,11 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::headers::CLIENT_NAME;
 use crate::types::{Authorization, ErrorResponse};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -23,8 +25,11 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    headers: HeaderMap,
     request: Json<DeleteBackupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
+    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
+
     // Step 1: Auth. Verify the solved challenge
     let (backup_id, _backup_metadata) = auth_handler
         .verify(
@@ -32,6 +37,7 @@ pub async fn handler(
             FactorScope::Sync,
             ChallengeContext::DeleteBackup {},
             request.challenge_token.clone(),
+            client_name,
         )
         .await?;
 

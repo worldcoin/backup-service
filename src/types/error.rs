@@ -45,6 +45,18 @@ impl ErrorResponse {
         }
     }
 
+    /// The machine-readable error code sent to the client (e.g. `invalid_attestation_token_claim`).
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// The human-readable error message sent to the client.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     #[must_use]
     pub fn unauthorized() -> Self {
         Self {
@@ -424,6 +436,15 @@ impl From<AttestationGatewayError> for ErrorResponse {
             | AttestationGatewayError::SerializeRequestPayload(_) => {
                 tracing::error!(message = "Attestation Gateway error", error = ?err);
                 ErrorResponse::internal_server_error()
+            }
+            AttestationGatewayError::JtiClaim
+            | AttestationGatewayError::ExpiresAt
+            | AttestationGatewayError::AudienceClaim => {
+                tracing::info!(message = "Invalid attestation token", error = ?err);
+                ErrorResponse::bad_request(
+                    "invalid_attestation_token_claim",
+                    &format!("Invalid attestation token claim: {err}."),
+                )
             }
             _ => {
                 tracing::info!(message = "Invalid attestation token", error = ?err);

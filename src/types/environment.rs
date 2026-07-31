@@ -216,7 +216,6 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Google OIDC provider
     #[must_use]
     pub fn google_client_id(&self) -> ClientId {
         match self {
@@ -262,17 +261,22 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Apple OIDC provider
+    /// Returns the Apple OIDC client ID to use for token verification.
     ///
-    /// # Panics
-    /// Will not panic. Values are hardcoded per environment.
+    /// Uses the `client-name` header to select the correct bundle ID:
+    /// - `"ios-id"` → World ID app (`org.world.id` / `org.world.staging.id`)
+    /// - anything else → World Money app (`org.worldcoin.insight` / `org.worldcoin.insight.staging`)
     #[must_use]
-    pub fn apple_client_id(&self) -> ClientId {
-        match self {
-            Self::Production => ClientId::new("org.worldcoin.insight".to_string()),
-            Self::Staging => ClientId::new("org.worldcoin.insight.staging".to_string()),
-            Self::Development { .. } => ClientId::new("placeholder".to_string()),
-        }
+    pub fn apple_client_id(&self, client_name: Option<&str>) -> ClientId {
+        let bundle_id = match (self, client_name) {
+            (Self::Production, Some("ios-id" | "android-id")) => "org.world.id",
+            (Self::Production, _) => "org.worldcoin.insight",
+            (Self::Staging, Some("ios-id")) => "org.world.staging.id",
+            (Self::Staging, Some("android-id")) => "org.world.id.staging",
+            (Self::Staging, _) => "org.worldcoin.insight.staging",
+            (Self::Development { .. }, _) => "placeholder",
+        };
+        ClientId::new(bundle_id.to_string())
     }
 
     /// Issuer URL for the Apple OIDC provider
@@ -304,12 +308,193 @@ impl Environment {
         }
     }
 
+    /// Determines whether attestation gateway failures or invalid inputs should be treated
+    /// as errors or only logged. Setting this to `true` disables important security features.
     #[must_use]
-    pub fn enable_attestation_gateway(&self) -> bool {
-        //  TODO: Swap to `DISABLE_ATTESTATION_GATEWAY`
-        match env::var("ENABLE_ATTESTATION_GATEWAY") {
-            Ok(val) => val.trim().eq_ignore_ascii_case("true"),
-            Err(_) => false,
+    pub fn disable_attestation_gateway_enforcement(&self) -> bool {
+        env_bool("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", false)
+            || env_bool("DISABLE_ATTESTATION_GATEWAY", false)
+        // `DISABLE_ATTESTATION_GATEWAY` is a legacy environment variable
+    }
+}
+
+/// Parses a boolean flag env value.
+///
+/// Truthy: `true`, `1`. Falsy: `false`, `0`.
+fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Reads a boolean flag from an environment variable.
+///
+/// Returns `default` when the variable is unset or empty. An unrecognized value is logged.
+fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) if !raw.trim().is_empty() => parse_bool_flag(&raw).unwrap_or_else(|| {
+            tracing::warn!(
+                env_var = name,
+                default,
+                "WARNING! Unrecognized boolean value for environment variable; using default"
+            );
+            default
+        }),
+        _ => default,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_flag_truthy() {
+        for value in ["true", "TRUE", "True", "1", "  true  ", "\t1\n"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(true),
+                "{value:?} should be truthy"
+            );
         }
+    }
+
+    #[test]
+    fn test_parse_flag_falsy() {
+        for value in ["false", "FALSE", "False", "0", "  false  ", " 0 "] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(false),
+                "{value:?} should be falsy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_flag_unrecognized() {
+        for value in ["", "   ", "yes", "on", "ture", "2", "enabled", "-1"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                None,
+                "{value:?} should be unrecognized"
+            );
+        }
+    }
+
+    #[test]
+    fn test_env_flag_unset_returns_default() {
+        assert!(env_bool("BACKUP_SERVICE_UNSET_FLAG", true));
+        assert!(!env_bool("BACKUP_SERVICE_UNSET_FLAG", false));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_disable_attestation_gateway_enforcement() {
+        let env = Environment::Production;
+
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+        // Safe default: enforcement is on (do not disable) when nothing is set.
+        assert!(!env.disable_attestation_gateway_enforcement());
+
+        // The primary flag disables enforcement.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "true");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "false");
+        assert!(!env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+
+        // The legacy flag is still honored.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY", "1");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+    }
+
+    #[test]
+    fn test_apple_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(env.apple_client_id(None).as_str(), "org.worldcoin.insight");
+        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "org.world.id");
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "org.world.id"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "org.worldcoin.insight"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("unknown")).as_str(),
+            "org.worldcoin.insight"
+        );
+    }
+
+    #[test]
+    fn test_apple_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            env.apple_client_id(None).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-id")).as_str(),
+            "org.world.staging.id"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "org.world.id.staging"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("unknown")).as_str(),
+            "org.worldcoin.insight.staging"
+        );
+    }
+
+    #[test]
+    fn test_apple_client_id_development() {
+        let env = Environment::development(None);
+        assert_eq!(env.apple_client_id(None).as_str(), "placeholder");
+        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "placeholder");
+        assert_eq!(
+            env.apple_client_id(Some("android-id")).as_str(),
+            "placeholder"
+        );
+        assert_eq!(
+            env.apple_client_id(Some("ios-money")).as_str(),
+            "placeholder"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_development() {
+        let env = Environment::development(None);
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+        );
     }
 }

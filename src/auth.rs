@@ -140,6 +140,7 @@ impl AuthHandler {
         expected_factor_scope: FactorScope,
         expected_challenge_context: ChallengeContext,
         challenge_token: String,
+        client_name: Option<&str>,
     ) -> Result<(String, BackupMetadata), AuthError> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
@@ -184,6 +185,7 @@ impl AuthHandler {
                     signature,
                     &challenge_token_payload,
                     expected_factor_scope,
+                    client_name,
                 )
                 .await?
             }
@@ -222,6 +224,7 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
+        client_name: Option<&str>,
     ) -> Result<ValidationResult, AuthError> {
         // Step 1: Verify that the authorization type is valid for the factor scope
         // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
@@ -267,6 +270,7 @@ impl AuthHandler {
                     signature,
                     &challenge_token_payload,
                     turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
+                    client_name,
                 )
                 .await?
             }
@@ -439,10 +443,11 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
+        client_name: Option<&str>,
     ) -> Result<(Factor, FactorToLookup), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
+            .verify_token(oidc_token, public_key.to_string(), client_name)
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
@@ -486,10 +491,11 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
+        client_name: Option<&str>,
     ) -> Result<(String, BackupMetadata), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
+            .verify_token(oidc_token, public_key.to_string(), client_name)
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
