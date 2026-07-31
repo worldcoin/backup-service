@@ -403,19 +403,18 @@ impl BackupStorage {
 
     /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
     ///
-    /// Service/construction errors mean S3 rejected or never sent the write (`NotInserted`).
-    /// Timeout / dispatch / response errors are treated as ambiguous (`Unknown`).
+    /// Only construction failures are treated as definite non-writes (`NotInserted`): the request
+    /// never left the client. Every other `SdkError` variant — including `ServiceError` — is
+    /// `Unknown`. With `if_match` and SDK retries, a successful put whose response is lost can be
+    /// retried and surface as `412 PreconditionFailed`; classifying that as `NotInserted` would
+    /// roll back `FactorLookup` while the factor remains in metadata. `5xx` responses are similarly
+    /// ambiguous.
     fn classify_put_object_error<T>(
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
     ) -> FactorMetadataWrite<T> {
         match &err {
-            SdkError::ConstructionFailure(_) | SdkError::ServiceError(_) => {
+            SdkError::ConstructionFailure(_) => {
                 FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(err))
-            }
-            SdkError::TimeoutError(_)
-            | SdkError::DispatchFailure(_)
-            | SdkError::ResponseError(_) => {
-                FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err))
             }
             _ => FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err)),
         }
