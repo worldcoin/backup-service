@@ -62,6 +62,13 @@ pub const MAX_MAIN_FACTORS_PER_BACKUP: usize = 10;
 /// below Turnkey's hard limit of 100.
 pub const MAX_SYNC_FACTORS_PER_BACKUP: usize = 25;
 
+/// Which factor list in [`BackupMetadata`] an add/reconcile operation targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactorListScope {
+    Main,
+    Sync,
+}
+
 impl BackupStorage {
     #[must_use]
     pub fn new(environment: Environment, s3_client: Arc<S3Client>) -> Self {
@@ -249,9 +256,9 @@ impl BackupStorage {
     ///
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
-    ///   `FactorLookup` row is not deleted.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Same-scope
+    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
+    ///   so a just-inserted lookup for this scope is rolled back.
     pub async fn add_factor(
         &self,
         backup_id: &str,
@@ -271,12 +278,11 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
-        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
-        if metadata.factors.iter().any(|f| f.kind == factor.kind)
-            || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
+        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. `cred_id`).
+        if let Some(duplicate) =
+            Self::duplicate_factor_outcome(&metadata, &factor.kind, FactorListScope::Main)
         {
-            // Factor is already in metadata — keep any FactorLookup row that was just inserted.
-            return FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists);
+            return duplicate;
         }
 
         if metadata.factors.len() >= MAX_MAIN_FACTORS_PER_BACKUP {
@@ -321,8 +327,14 @@ impl BackupStorage {
         {
             Ok(_) => FactorMetadataWrite::Inserted(metadata),
             Err(err) => {
-                self.resolve_put_object_outcome(backup_id, &factor_kind, err, |m| m)
-                    .await
+                self.resolve_put_object_outcome(
+                    backup_id,
+                    &factor_kind,
+                    FactorListScope::Main,
+                    err,
+                    |m| m,
+                )
+                .await
             }
         }
     }
@@ -335,9 +347,9 @@ impl BackupStorage {
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor). Returned as `Unknown` so an existing
-    ///   `FactorLookup` row is not deleted.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
+    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
+    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -366,15 +378,11 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
-        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
-        if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
-            || metadata
-                .sync_factors
-                .iter()
-                .any(|f| f.kind == sync_factor.kind)
+        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
+        if let Some(duplicate) =
+            Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
         {
-            // Factor is already in metadata — keep any FactorLookup row that was just inserted.
-            return FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists);
+            return duplicate;
         }
 
         if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
@@ -405,8 +413,14 @@ impl BackupStorage {
         {
             Ok(_) => FactorMetadataWrite::Inserted(()),
             Err(err) => {
-                self.resolve_put_object_outcome(backup_id, &factor_kind, err, |_| ())
-                    .await
+                self.resolve_put_object_outcome(
+                    backup_id,
+                    &factor_kind,
+                    FactorListScope::Sync,
+                    err,
+                    |_| (),
+                )
+                .await
             }
         }
     }
@@ -435,15 +449,17 @@ impl BackupStorage {
         }
     }
 
-    /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in metadata.
+    /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in the
+    /// target scope's metadata list.
     ///
-    /// - Factor present → `Inserted` (e.g. lost ACK after a successful put).
-    /// - Factor absent + `412 PreconditionFailed` → `NotInserted` (lost `if_match` race).
+    /// - Factor present in target scope → `Inserted` (e.g. lost ACK after a successful put).
+    /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
     /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
     async fn resolve_put_object_outcome<T>(
         &self,
         backup_id: &str,
         factor_kind: &FactorKind,
+        target_scope: FactorListScope,
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
         on_present: impl FnOnce(BackupMetadata) -> T,
     ) -> FactorMetadataWrite<T> {
@@ -453,7 +469,11 @@ impl BackupStorage {
             FactorMetadataWrite::Unknown(e) => {
                 match self.get_metadata_by_backup_id(backup_id).await {
                     Ok(Some((metadata, _)))
-                        if Self::metadata_contains_factor_kind(&metadata, factor_kind) =>
+                        if Self::metadata_contains_factor_kind(
+                            &metadata,
+                            factor_kind,
+                            target_scope,
+                        ) =>
                     {
                         FactorMetadataWrite::Inserted(on_present(metadata))
                     }
@@ -466,9 +486,45 @@ impl BackupStorage {
         }
     }
 
-    fn metadata_contains_factor_kind(metadata: &BackupMetadata, kind: &FactorKind) -> bool {
-        metadata.factors.iter().any(|f| &f.kind == kind)
-            || metadata.sync_factors.iter().any(|f| &f.kind == kind)
+    /// Classifies a pre-write duplicate: same-scope keeps lookup (`Unknown`); opposite-scope rolls
+    /// it back (`NotInserted`).
+    fn duplicate_factor_outcome<T>(
+        metadata: &BackupMetadata,
+        kind: &FactorKind,
+        target_scope: FactorListScope,
+    ) -> Option<FactorMetadataWrite<T>> {
+        let in_target = Self::metadata_contains_factor_kind(metadata, kind, target_scope);
+        let in_other = Self::metadata_contains_factor_kind(
+            metadata,
+            kind,
+            match target_scope {
+                FactorListScope::Main => FactorListScope::Sync,
+                FactorListScope::Sync => FactorListScope::Main,
+            },
+        );
+
+        if in_target {
+            Some(FactorMetadataWrite::Unknown(
+                BackupManagerError::FactorAlreadyExists,
+            ))
+        } else if in_other {
+            Some(FactorMetadataWrite::NotInserted(
+                BackupManagerError::FactorAlreadyExists,
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn metadata_contains_factor_kind(
+        metadata: &BackupMetadata,
+        kind: &FactorKind,
+        scope: FactorListScope,
+    ) -> bool {
+        match scope {
+            FactorListScope::Main => metadata.factors.iter().any(|f| &f.kind == kind),
+            FactorListScope::Sync => metadata.sync_factors.iter().any(|f| &f.kind == kind),
+        }
     }
 
     fn is_precondition_failed_put(err: &BackupManagerError) -> bool {
@@ -884,6 +940,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &factor_kind,
+                FactorListScope::Main,
                 put_object_service_error(412),
                 |m| m,
             )
@@ -893,7 +950,8 @@ mod tests {
             FactorMetadataWrite::Inserted(metadata) => {
                 assert!(BackupStorage::metadata_contains_factor_kind(
                     &metadata,
-                    &factor_kind
+                    &factor_kind,
+                    FactorListScope::Main,
                 ));
             }
             other => panic!("Expected Inserted after reconcile, got {other:?}"),
@@ -935,6 +993,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &missing_kind,
+                FactorListScope::Main,
                 put_object_service_error(412),
                 |m| m,
             )
@@ -943,6 +1002,47 @@ mod tests {
         match result {
             FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
             other => panic!("Expected NotInserted(PutObjectError), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_ignores_factor_in_other_scope() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let factor = Factor::new_ec_keypair("cross-scope-key".to_string());
+        let factor_kind = factor.kind.clone();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![factor],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Kind exists as main, but sync put reconcile must not treat that as Inserted.
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                FactorListScope::Sync,
+                put_object_service_error(412),
+                |_| (),
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected NotInserted for wrong-scope presence, got {other:?}"),
         }
     }
 
@@ -975,6 +1075,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &missing_kind,
+                FactorListScope::Sync,
                 SdkError::timeout_error("timed out"),
                 |_| (),
             )
@@ -1060,11 +1161,19 @@ mod tests {
             usize::from(a_inserted) + usize::from(b_inserted)
         );
         assert_eq!(
-            BackupStorage::metadata_contains_factor_kind(&stored.metadata, &kind_a),
+            BackupStorage::metadata_contains_factor_kind(
+                &stored.metadata,
+                &kind_a,
+                FactorListScope::Main
+            ),
             a_inserted
         );
         assert_eq!(
-            BackupStorage::metadata_contains_factor_kind(&stored.metadata, &kind_b),
+            BackupStorage::metadata_contains_factor_kind(
+                &stored.metadata,
+                &kind_b,
+                FactorListScope::Main
+            ),
             b_inserted
         );
     }
@@ -1297,6 +1406,33 @@ mod tests {
             other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
         }
 
+        // Same keypair already registered as sync must reject main add with rollback.
+        let sync_keypair = Factor::new_ec_keypair("sync-then-main".to_string());
+        let sync_then_main_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: sync_then_main_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![sync_keypair.clone()],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+        let result = backup_storage
+            .add_factor(&sync_then_main_id, sync_keypair, None)
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!(
+                "Expected NotInserted(FactorAlreadyExists) for opposite scope, got {other:?}"
+            ),
+        }
+
         // Try to add a factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
             .add_factor("non_existent_backup", google_account.clone(), None)
@@ -1431,6 +1567,33 @@ mod tests {
         match result {
             FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
             other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
+        }
+
+        // Same key as a main factor must reject sync add with rollback (opposite scope).
+        let main_only_backup_id = gen_backup_id();
+        let main_keypair = Factor::new_ec_keypair("main-only-key".to_string());
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: main_only_backup_id.clone(),
+                    factors: vec![main_keypair.clone()],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+        let result = backup_storage
+            .add_sync_factor(&main_only_backup_id, main_keypair)
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!(
+                "Expected NotInserted(FactorAlreadyExists) for opposite scope, got {other:?}"
+            ),
         }
 
         // Try to add an invalid factor type (OIDC account) as a sync factor - should fail

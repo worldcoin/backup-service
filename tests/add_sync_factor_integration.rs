@@ -1,15 +1,21 @@
 mod common;
 
+use std::sync::Arc;
+
 use crate::common::{
-    create_test_backup, generate_keypair, get_passkey_retrieval_challenge, send_post_request,
+    create_test_backup, create_test_backup_with_keypair, generate_keypair,
+    get_keypair_retrieval_challenge, get_passkey_retrieval_challenge, send_post_request,
     send_post_request_with_bypass_attestation_token, send_post_request_with_multipart,
     sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
+use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use backup_service::types::Environment;
 use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
 use http_body_util::BodyExt;
 use serde_json::json;
+use serial_test::serial;
 
 #[tokio::test]
 async fn test_add_sync_factor_happy_path() {
@@ -259,4 +265,184 @@ async fn test_add_sync_factor_with_invalid_token() {
         error_response["error"]["code"].as_str().unwrap(),
         "token_not_found"
     );
+}
+
+/// If a keypair is already a main factor, adding it as a sync factor must fail and roll back the
+/// Sync `FactorLookup` insert + sync-factor token so the credential is not permanently blocked.
+#[tokio::test]
+#[serial]
+async fn test_add_sync_factor_same_as_main_rolls_back_lookup_and_token() {
+    dotenvy::from_filename(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup = FactorLookup::new(environment, dynamodb_client);
+
+    let ((main_public_key, main_secret_key), create_response) =
+        create_test_backup_with_keypair(b"TEST BACKUP DATA").await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let create_body = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let create_json: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
+
+    let main_factor = FactorToLookup::from_ec_keypair(main_public_key.clone());
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+
+    // Retrieve with the main keypair to obtain a sync-factor token.
+    let retrieve_challenge = get_keypair_retrieval_challenge().await;
+    let retrieve_signature = sign_keypair_challenge(
+        &main_secret_key,
+        retrieve_challenge["challenge"].as_str().unwrap(),
+    );
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
+        "/v1/retrieve/from-challenge",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": main_public_key,
+                "signature": retrieve_signature,
+            },
+            "challengeToken": retrieve_challenge["token"],
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(retrieve_response.status(), StatusCode::OK);
+    let retrieve_body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retrieve_json: serde_json::Value = serde_json::from_slice(&retrieve_body).unwrap();
+    let sync_factor_token = retrieve_json["syncFactorToken"].as_str().unwrap();
+
+    let metadata_before = verify_s3_metadata_exists(backup_id).await;
+    let sync_count_before = metadata_before["syncFactors"].as_array().unwrap().len();
+
+    // Attempt to register the main keypair as a sync factor (opposite scope).
+    let sync_challenge_response =
+        send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
+    assert_eq!(sync_challenge_response.status(), StatusCode::OK);
+    let sync_challenge_body = sync_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let sync_challenge: serde_json::Value = serde_json::from_slice(&sync_challenge_body).unwrap();
+    let sync_signature = sign_keypair_challenge(
+        &main_secret_key,
+        sync_challenge["challenge"].as_str().unwrap(),
+    );
+
+    let add_sync_response = send_post_request(
+        "/v1/add-sync-factor",
+        json!({
+            "challengeToken": sync_challenge["token"],
+            "syncFactor": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": main_public_key,
+                "signature": sync_signature,
+            },
+            "syncFactorToken": sync_factor_token,
+        }),
+    )
+    .await;
+
+    assert_eq!(add_sync_response.status(), StatusCode::BAD_REQUEST);
+    let error_body = add_sync_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let error_json: serde_json::Value = serde_json::from_slice(&error_body).unwrap();
+    assert_eq!(
+        error_json["error"]["code"].as_str().unwrap(),
+        "factor_already_exists"
+    );
+
+    // Sync lookup must have been rolled back; main lookup stays.
+    assert!(factor_lookup
+        .lookup(FactorScope::Main, &main_factor)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &main_factor)
+        .await
+        .unwrap()
+        .is_none());
+
+    let metadata_after = verify_s3_metadata_exists(backup_id).await;
+    assert_eq!(
+        metadata_after["syncFactors"].as_array().unwrap().len(),
+        sync_count_before
+    );
+    assert!(!metadata_after["syncFactors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|factor| {
+            factor["kind"]["kind"] == "EC_KEYPAIR" && factor["kind"]["publicKey"] == main_public_key
+        }));
+
+    // Token must have been unused — a distinct sync factor can still be added with it.
+    let retry_challenge_response =
+        send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
+    assert_eq!(retry_challenge_response.status(), StatusCode::OK);
+    let retry_challenge_body = retry_challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retry_challenge: serde_json::Value = serde_json::from_slice(&retry_challenge_body).unwrap();
+    let (other_public_key, other_secret_key) = generate_keypair();
+    let other_signature = sign_keypair_challenge(
+        &other_secret_key,
+        retry_challenge["challenge"].as_str().unwrap(),
+    );
+
+    let retry_response = send_post_request(
+        "/v1/add-sync-factor",
+        json!({
+            "challengeToken": retry_challenge["token"],
+            "syncFactor": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": other_public_key,
+                "signature": other_signature,
+            },
+            "syncFactorToken": sync_factor_token,
+        }),
+    )
+    .await;
+    assert_eq!(
+        retry_response.status(),
+        StatusCode::OK,
+        "sync token should be reusable after opposite-scope rejection"
+    );
+
+    let other_factor = FactorToLookup::from_ec_keypair(other_public_key.clone());
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &other_factor)
+        .await
+        .unwrap()
+        .is_some());
 }
