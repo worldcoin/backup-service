@@ -4,13 +4,11 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::{BackupStorage, DeletionResult};
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::headers::CLIENT_NAME;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use aide::transform::TransformOperation;
 use axum::{Extension, Json};
-use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -55,10 +53,8 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    headers: HeaderMap,
     request: Json<DeleteFactorRequest>,
 ) -> Result<Json<DeleteFactorResponse>, ErrorResponse> {
-    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Extract the factor IDs from the request
     let factor_id = request.factor_id.clone();
     let encryption_key = request.encryption_key.clone();
@@ -83,7 +79,6 @@ pub async fn handler(
                 factor_id: request.factor_id.clone(),
             },
             request.challenge_token.clone(),
-            client_name,
         )
         .await?;
 
@@ -132,7 +127,7 @@ pub async fn handler(
         } else {
             "Factor deleted from backup storage"
         };
-        tracing::info!(message = msg, backup_id = %backup_id, scope = %request.scope, 
+        tracing::info!(message = msg, backup_id = %backup_id, scope = %request.scope,
             backup_deleted = %backup_deleted, factor_id = %factor_id, factor_kind = %factor_to_delete.as_flattened_kind());
 
         // Note on atomicity: The factor is deleted from the backup storage first as this is the source of

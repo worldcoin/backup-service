@@ -32,7 +32,7 @@ impl MockOidcProvider {
             Self::Google => {
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
             }
-            Self::Apple => "placeholder",
+            Self::Apple => "org.worldcoin.insight.staging",
         }
     }
 
@@ -235,16 +235,17 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    /// Generate a token with incorrect audience for the specified provider
-    pub fn generate_token_with_incorrect_audience(
+    /// Generate a token with the provided audience
+    pub fn generate_token_with_aud(
         &self,
         provider: &MockOidcProvider,
+        aud: String,
         public_key_sec1_base64: &str,
     ) -> String {
         let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             provider.as_issuer_url(),
-            vec![Audience::new("incorrect-audience".to_string())],
+            vec![Audience::new(aud)],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
@@ -312,7 +313,7 @@ impl MockOidcServer {
             provider.as_issuer_url(),
             vec![
                 Audience::new(provider.as_client_id().to_string()),
-                Audience::new("extra-untrusted-audience".to_string()),
+                Audience::new("com.example.evil".to_string()),
             ],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at

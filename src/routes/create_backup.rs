@@ -4,7 +4,6 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::headers::CLIENT_NAME;
 use crate::redis_cache::RedisCacheManager;
 use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -13,7 +12,6 @@ use crate::utils::extract_fields_from_multipart;
 use crate::{normalize_hex_32, validate_backup_account_id};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -59,10 +57,8 @@ pub async fn handler(
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
-    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
-    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
     let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
@@ -110,7 +106,6 @@ pub async fn handler(
             ChallengeContext::Create {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
-            client_name,
         )
         .await?;
 
@@ -126,7 +121,6 @@ pub async fn handler(
             ChallengeContext::Create {},
             None,
             true, // is a sync factor
-            client_name,
         )
         .await?;
 

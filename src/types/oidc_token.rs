@@ -15,7 +15,16 @@ pub enum OidcToken {
     #[serde(rename_all = "camelCase")]
     Google { token: String },
     #[serde(rename_all = "camelCase")]
-    Apple { token: String },
+    Apple {
+        token: String,
+        /// For Sign in with Apple, each mobile client has its own audience set to the app's
+        /// bundle identifier. This service supports multiple clients (e.g. World App iOS and World App Android).
+        ///
+        /// The `aud` must be in an explicitly configured allowlist. When not present, the default
+        /// audience will be used.
+        #[serde(default)]
+        aud: Option<String>,
+    },
 }
 
 impl From<&OidcToken> for OidcProvider {

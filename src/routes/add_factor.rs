@@ -4,7 +4,6 @@ use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use crate::headers::CLIENT_NAME;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
@@ -16,7 +15,6 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Duration;
-use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::PublicKeyCredential;
@@ -66,10 +64,8 @@ pub async fn handler(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    headers: HeaderMap,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
     // Step 1: Check authorization for the existing factor and get the backup ID
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
         Authorization::Passkey { credential, .. } => {
@@ -227,7 +223,7 @@ pub async fn handler(
             {
                 let raw_oidc_token = match &oidc_token {
                     crate::types::OidcToken::Google { token }
-                    | crate::types::OidcToken::Apple { token } => token,
+                    | crate::types::OidcToken::Apple { token, aud: _ } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
                     return Err(ErrorResponse::bad_request(
@@ -258,7 +254,6 @@ pub async fn handler(
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
-            client_name,
         )
         .await?;
 

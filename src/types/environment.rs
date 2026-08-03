@@ -261,22 +261,26 @@ impl Environment {
         }
     }
 
-    /// Returns the Apple OIDC client ID to use for token verification.
+    /// Returns the list of allowed Apple OIDC Client IDs for token verification.
     ///
-    /// Uses the `client-name` header to select the correct bundle ID:
-    /// - `"ios-id"` → World ID app (`org.world.id` / `org.world.staging.id`)
-    /// - anything else → World Money app (`org.worldcoin.insight` / `org.worldcoin.insight.staging`)
+    /// Please see [`crate::oidc_token_verifier`] for details.
     #[must_use]
-    pub fn apple_client_id(&self, client_name: Option<&str>) -> ClientId {
-        let bundle_id = match (self, client_name) {
-            (Self::Production, Some("ios-id" | "android-id")) => "org.world.id",
-            (Self::Production, _) => "org.worldcoin.insight",
-            (Self::Staging, Some("ios-id")) => "org.world.staging.id",
-            (Self::Staging, Some("android-id")) => "org.world.id.staging",
-            (Self::Staging, _) => "org.worldcoin.insight.staging",
-            (Self::Development { .. }, _) => "placeholder",
-        };
-        ClientId::new(bundle_id.to_string())
+    pub fn allowed_apple_client_ids(&self) -> Vec<&str> {
+        match self {
+            Self::Staging | Self::Development { .. } => vec![
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                "org.worldcoin.insight.staging", // World App iOS
+                "org.world.staging.id",          // World ID App iOS
+                "org.world.sandbox.id",          // World App iOS [Sandbox Environment]
+                "app.world.apple.staging",       // Web (used for all Android clients)
+            ],
+            Self::Production => vec![
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                "org.worldcoin.insight", // World App iOS
+                "org.world.id",          // World ID App iOS
+                "app.world.apple",       // Web (used for all Android clients)
+            ],
+        }
     }
 
     /// Issuer URL for the Apple OIDC provider
@@ -415,60 +419,23 @@ mod tests {
     #[test]
     fn test_apple_client_id_production() {
         let env = Environment::Production;
-        assert_eq!(env.apple_client_id(None).as_str(), "org.worldcoin.insight");
-        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "org.world.id");
         assert_eq!(
-            env.apple_client_id(Some("android-id")).as_str(),
-            "org.world.id"
-        );
-        assert_eq!(
-            env.apple_client_id(Some("ios-money")).as_str(),
+            *env.allowed_apple_client_ids().first().unwrap(),
             "org.worldcoin.insight"
         );
-        assert_eq!(
-            env.apple_client_id(Some("unknown")).as_str(),
-            "org.worldcoin.insight"
-        );
+        assert!(env.allowed_apple_client_ids().contains(&"org.world.id"));
     }
 
     #[test]
     fn test_apple_client_id_staging() {
         let env = Environment::Staging;
         assert_eq!(
-            env.apple_client_id(None).as_str(),
+            *env.allowed_apple_client_ids().first().unwrap(),
             "org.worldcoin.insight.staging"
         );
-        assert_eq!(
-            env.apple_client_id(Some("ios-id")).as_str(),
-            "org.world.staging.id"
-        );
-        assert_eq!(
-            env.apple_client_id(Some("android-id")).as_str(),
-            "org.world.id.staging"
-        );
-        assert_eq!(
-            env.apple_client_id(Some("ios-money")).as_str(),
-            "org.worldcoin.insight.staging"
-        );
-        assert_eq!(
-            env.apple_client_id(Some("unknown")).as_str(),
-            "org.worldcoin.insight.staging"
-        );
-    }
-
-    #[test]
-    fn test_apple_client_id_development() {
-        let env = Environment::development(None);
-        assert_eq!(env.apple_client_id(None).as_str(), "placeholder");
-        assert_eq!(env.apple_client_id(Some("ios-id")).as_str(), "placeholder");
-        assert_eq!(
-            env.apple_client_id(Some("android-id")).as_str(),
-            "placeholder"
-        );
-        assert_eq!(
-            env.apple_client_id(Some("ios-money")).as_str(),
-            "placeholder"
-        );
+        assert!(env
+            .allowed_apple_client_ids()
+            .contains(&"org.world.staging.id"));
     }
 
     #[test]

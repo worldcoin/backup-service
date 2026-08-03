@@ -1,7 +1,7 @@
 use crate::auth::AuthHandler;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
-use crate::headers::{CLIENT_NAME, CLIENT_VERSION};
+use crate::headers::CLIENT_VERSION;
 use crate::types::{Authorization, ErrorResponse};
 use aide::transform::TransformOperation;
 use axum::{Extension, Json};
@@ -36,15 +36,12 @@ pub async fn handler(
     headers: HeaderMap,
     request: Json<VerifyFactorRequest>,
 ) -> Result<Json<VerifyFactorResponse>, ErrorResponse> {
-    let client_name = headers.get(&CLIENT_NAME).and_then(|v| v.to_str().ok());
-
     let (backup_id, _backup_metadata) = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Main,
             ChallengeContext::VerifyFactor {},
             request.challenge_token.clone(),
-            client_name,
         )
         .await?;
 
@@ -53,7 +50,7 @@ pub async fn handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
 
-    let span = tracing::info_span!("verify_factor", backup_id = %backup_id, client_version = %client_version, client_name = %client_name.unwrap_or_default());
+    let span = tracing::info_span!("verify_factor", backup_id = %backup_id, client_version = %client_version);
 
     async move { Ok(Json(VerifyFactorResponse { backup_id })) }
         .instrument(span)
