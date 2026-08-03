@@ -1,6 +1,7 @@
 use crate::types::{Environment, ErrorResponse};
 use axum::{
     body::{to_bytes, Body},
+    extract::OriginalUri,
     http::{HeaderMap, Request, Response},
     middleware::Next,
     Extension,
@@ -367,8 +368,20 @@ impl AttestationGateway {
                 ))
             }
             Some(attestation_token) => {
+                // Business routes are mounted under `.nest("/v1", …)` (see
+                // `crate::routes::handler`), which strips the `/v1` prefix from
+                // `parts.uri` before this middleware runs. The clients (World App iOS &
+                // Android) compute the attestation request hash over the FULL request
+                // path, including the `/v1` prefix, so we must hash the original
+                // (pre-nest) path or the `jti` claim will never match. `OriginalUri` is
+                // populated by axum before nest-stripping; fall back to the request URI
+                // if it is somehow absent.
+                let path_uri = parts.extensions.get::<OriginalUri>().map_or_else(
+                    || parts.uri.path().to_string(),
+                    |original| original.0.path().to_string(),
+                );
                 let hash_input = GenerateRequestHashInput {
-                    path_uri: parts.uri.path().to_string(),
+                    path_uri,
                     method: parts.method.clone(),
                     body: if body_bytes.is_empty() {
                         None
@@ -1068,26 +1081,25 @@ mod tests {
             .unwrap()
     }
 
-    /// Reproduces the production `JTI claim (request hash) is not valid` failure that
-    /// World App (iOS & Android) hits on every attestation-gated request.
+    /// Regression test for the `JTI claim (request hash) is not valid` failure that
+    /// World App (iOS & Android) hit on every attestation-gated request.
     ///
     /// The clients compute the attestation request hash over the FULL request path,
     /// including the `/v1` API-version prefix (e.g. `/v1/retrieve/from-challenge` —
-    /// confirmed from the client's own `request.pathUri` telemetry). The server computes
-    /// the hash from `parts.uri.path()`, but because the route is nested under
-    /// `.nest("/v1", …)`, axum has already stripped that to `/retrieve/from-challenge`.
-    /// The two hashes never match, so the `jti` claim check fails for every real client.
+    /// confirmed from both clients' `pathUri` telemetry and source). Because business
+    /// routes are nested under `.nest("/v1", …)`, `parts.uri.path()` inside the
+    /// middleware has been stripped to `/retrieve/from-challenge`. The validator now
+    /// hashes the full path via `OriginalUri`, so it matches the clients again.
     ///
-    /// This test asserts today's (buggy) behavior so it is green; the inline comments mark
-    /// what each assertion demonstrates. See the PR description for the proposed fix
-    /// (compute the hash from `OriginalUri` so the server hashes the full `/v1/...` path).
+    /// Before the fix these two assertions were inverted (the full-path token was
+    /// rejected and the stripped-path token accepted).
     #[tokio::test]
-    async fn test_nested_v1_prefix_breaks_request_hash_for_real_clients() {
+    async fn test_nested_v1_prefix_hashes_full_path_for_real_clients() {
         let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
         key_pair.set_key_id(Some("test-key-id"));
 
         // (1) A token whose `jti` is computed the way real clients compute it: over the
-        //     FULL path, including `/v1`.
+        //     FULL path, including `/v1`. This must now be accepted.
         let client_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
             path_uri: "/v1/retrieve/from-challenge".to_string(),
             method: Method::POST,
@@ -1097,8 +1109,6 @@ mod tests {
         let client_token =
             generate_test_token(&key_pair, client_hash, true, "pass".to_string(), None);
 
-        // do_not_enforce = true mirrors current prod: request is allowed through, but the
-        // failure reason is surfaced in the `attestation-failure` response header.
         let response = nested_v1_validator_app(gateway_with_key(&key_pair, true))
             .oneshot(post_request_with_token(
                 "/v1/retrieve/from-challenge",
@@ -1107,18 +1117,17 @@ mod tests {
             .await
             .unwrap();
 
-        // BUG: the client-correct token is flagged invalid, because the server hashed the
-        // nest-stripped path `/retrieve/from-challenge` instead of the full `/v1/...` path.
+        // The client-correct token now validates: no `attestation-failure` header.
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(
             header_str(&response, "attestation-failure"),
-            Some("Invalid attestation token claim: JTI claim (request hash) is not valid."),
-            "the full-path token that real clients send is rejected under the current \
-             nest-stripped path handling — this is the production bug",
+            None,
+            "the full-path token that real clients send must validate now that the server \
+             hashes the original (pre-nest) `/v1/...` path via OriginalUri",
         );
 
-        // (2) Control: a token whose `jti` is computed over the nest-STRIPPED path (what
-        //     the server actually hashes today) is accepted with no failure header.
+        // (2) A token whose `jti` is computed over the nest-STRIPPED path (the old,
+        //     buggy behavior) must now be rejected — it no longer matches.
         let stripped_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
             path_uri: "/retrieve/from-challenge".to_string(),
             method: Method::POST,
@@ -1136,12 +1145,12 @@ mod tests {
             .await
             .unwrap();
 
+        // do_not_enforce = true, so the request passes through but the failure is surfaced.
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(
             header_str(&response, "attestation-failure"),
-            None,
-            "a token hashed over the nest-stripped path passes, confirming the server only \
-             ever accepts `/retrieve/from-challenge` and never the client's `/v1/...` path",
+            Some("Invalid attestation token claim: JTI claim (request hash) is not valid."),
+            "a token hashed over the nest-stripped path must no longer be accepted",
         );
     }
 
