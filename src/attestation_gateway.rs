@@ -368,7 +368,7 @@ impl AttestationGateway {
                 ))
             }
             Some(attestation_token) => {
-                // Business routes are mounted under `.nest("/v1", …)` (see
+                // Routes are mounted under `.nest("/v1", …)` (see
                 // `crate::routes::handler`), which strips the `/v1` prefix from
                 // `parts.uri` before this middleware runs. The clients (World App iOS &
                 // Android) compute the attestation request hash over the FULL request
