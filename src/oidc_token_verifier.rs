@@ -203,7 +203,7 @@ pub enum OidcTokenVerifierError {
     MissingNonce,
     #[error(transparent)]
     RedisCacheError(#[from] RedisCacheError),
-    #[error("The aud provied is not valid")]
+    #[error("The aud provided is not valid")]
     InvalidAud,
 }
 

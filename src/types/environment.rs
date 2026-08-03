@@ -268,14 +268,14 @@ impl Environment {
     pub fn allowed_apple_client_ids(&self) -> Vec<&str> {
         match self {
             Self::Staging | Self::Development { .. } => vec![
-                // Imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
                 "org.worldcoin.insight.staging", // World App iOS
                 "org.world.staging.id",          // World ID App iOS
                 "org.world.sandbox.id",          // World App iOS [Sandbox Environment]
                 "app.world.apple.staging",       // Web (used for all Android clients)
             ],
             Self::Production => vec![
-                // Imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
                 "org.worldcoin.insight", // World App iOS
                 "org.world.id",          // World ID App iOS
                 "app.world.apple",       // Web (used for all Android clients)

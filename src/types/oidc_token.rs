@@ -22,7 +22,7 @@ pub enum OidcToken {
         ///
         /// The `aud` must be in an explicitly configured allowlist. When not present, the default
         /// audience will be used.
-        // FIXME: double check optional, not present = None
+        #[serde(default)]
         aud: Option<String>,
     },
 }
