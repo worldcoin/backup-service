@@ -337,6 +337,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_verify_apple_token_with_no_explicit_aud_uses_default() {
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
+
+        let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
+
+        // The default audience is the client's first allowed Apple client ID.
+        let token = oidc_server.generate_token(OidcProvider::Apple.into(), None, &public_key);
+
+        // Simulate a client that omits `aud` entirely from the request JSON
+        let json = format!(r#"{{"kind":"APPLE","token":{token:?}}}"#);
+        let oidc_token: OidcToken = serde_json::from_str(&json).unwrap();
+        assert!(matches!(oidc_token, OidcToken::Apple { aud: None, .. }));
+
+        let result = verifier.verify_token(&oidc_token, public_key).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_verify_expired_token() {
         let oidc_server = MockOidcServer::new().await;
         let environment =
