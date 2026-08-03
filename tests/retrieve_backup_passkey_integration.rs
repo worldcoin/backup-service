@@ -42,7 +42,9 @@ async fn test_retrieve_backup() {
     });
 
     // Section: Attestation Gateway Token + Validation
-    let (jwk, jwt) = generate_test_attestation_token(&body, "/retrieve/from-challenge");
+    // The request hash must be computed over the full request path, including the `/v1`
+    // prefix — the same path the real clients hash and the server recomputes via OriginalUri.
+    let (jwk, jwt) = generate_test_attestation_token(&body, "/v1/retrieve/from-challenge");
     let mut server = mockito::Server::new_async().await;
     let mut key_response =
         json!({ "keys": [serde_json::to_value(jwk.to_public_key().unwrap()).unwrap()] });
