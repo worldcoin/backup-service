@@ -37,7 +37,7 @@ impl<T> FactorMetadataWrite<T> {
     ///
     /// # Errors
     /// Returns the underlying [`BackupManagerError`] for `NotInserted` and `Unknown`.
-    #[allow(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
+    #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
     pub fn into_result(self) -> Result<T, BackupManagerError> {
         match self {
             Self::Inserted(value) => Ok(value),
@@ -403,20 +403,25 @@ impl BackupStorage {
 
     /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
     ///
-    /// Only construction failures are treated as definite non-writes (`NotInserted`): the request
-    /// never left the client. Every other `SdkError` variant — including `ServiceError` — is
-    /// `Unknown`. With `if_match` and SDK retries, a successful put whose response is lost can be
-    /// retried and surface as `412 PreconditionFailed`; classifying that as `NotInserted` would
-    /// roll back `FactorLookup` while the factor remains in metadata. `5xx` responses are similarly
-    /// ambiguous.
+    /// `NotInserted` for definite non-writes: construction failures, and 4xx rejections other than
+    /// `412` (ambiguous under `if_match` retries). Timeouts, dispatch/response errors, `412`, and
+    /// 5xx are `Unknown`.
     fn classify_put_object_error<T>(
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
     ) -> FactorMetadataWrite<T> {
-        match &err {
-            SdkError::ConstructionFailure(_) => {
-                FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(err))
+        let definite_non_write = match &err {
+            SdkError::ConstructionFailure(_) => true,
+            SdkError::ServiceError(service_err) => {
+                let status = service_err.raw().status();
+                status.is_client_error() && status.as_u16() != 412
             }
-            _ => FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err)),
+            _ => false,
+        };
+
+        if definite_non_write {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(err))
+        } else {
+            FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err))
         }
     }
 
@@ -698,7 +703,9 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
-    #[error("Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first.")]
+    #[error(
+        "Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first."
+    )]
     ManifestHashMismatch,
     #[error("A factor would be orphaned by removing the specific encryption key.")]
     FactorOrphanedFromEncryptionKey,
@@ -727,6 +734,54 @@ mod tests {
         let mut test_backup_id: [u8; 32] = [0; 32];
         OsRng.fill_bytes(&mut test_backup_id);
         format!("backup_account_{}", hex::encode(test_backup_id))
+    }
+
+    fn put_object_service_error(
+        status: u16,
+    ) -> SdkError<aws_sdk_s3::operation::put_object::PutObjectError> {
+        use aws_sdk_s3::config::http::HttpResponse;
+        use aws_sdk_s3::operation::put_object::PutObjectError;
+        use aws_sdk_s3::primitives::SdkBody;
+
+        let http_resp = http::Response::builder()
+            .status(status)
+            .body(SdkBody::empty())
+            .unwrap();
+        SdkError::service_error(
+            PutObjectError::unhandled("test"),
+            HttpResponse::try_from(http_resp).unwrap(),
+        )
+    }
+
+    #[test]
+    fn classify_put_object_error_rolls_back_on_construction_and_client_rejection() {
+        let construction = BackupStorage::classify_put_object_error::<()>(
+            SdkError::construction_failure("build failed"),
+        );
+        assert!(construction.should_rollback_lookup());
+
+        let rejected =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(400));
+        assert!(rejected.should_rollback_lookup());
+
+        let access_denied =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(403));
+        assert!(access_denied.should_rollback_lookup());
+    }
+
+    #[test]
+    fn classify_put_object_error_keeps_lookup_on_ambiguous_failures() {
+        let precondition =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(412));
+        assert!(!precondition.should_rollback_lookup());
+
+        let server_error =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(500));
+        assert!(!server_error.should_rollback_lookup());
+
+        let timeout =
+            BackupStorage::classify_put_object_error::<()>(SdkError::timeout_error("timed out"));
+        assert!(!timeout.should_rollback_lookup());
     }
 
     #[tokio::test]
