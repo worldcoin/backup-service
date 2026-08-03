@@ -1,6 +1,7 @@
 use crate::types::{Environment, ErrorResponse};
 use axum::{
     body::{to_bytes, Body},
+    extract::OriginalUri,
     http::{HeaderMap, Request, Response},
     middleware::Next,
     Extension,
@@ -367,8 +368,20 @@ impl AttestationGateway {
                 ))
             }
             Some(attestation_token) => {
+                // Routes are mounted under `.nest("/v1", …)` (see
+                // `crate::routes::handler`), which strips the `/v1` prefix from
+                // `parts.uri` before this middleware runs. The clients (World App iOS &
+                // Android) compute the attestation request hash over the FULL request
+                // path, including the `/v1` prefix, so we must hash the original
+                // (pre-nest) path or the `jti` claim will never match. `OriginalUri` is
+                // populated by axum before nest-stripping; fall back to the request URI
+                // if it is somehow absent.
+                let path_uri = parts.extensions.get::<OriginalUri>().map_or_else(
+                    || parts.uri.path().to_string(),
+                    |original| original.0.path().to_string(),
+                );
                 let hash_input = GenerateRequestHashInput {
-                    path_uri: parts.uri.path().to_string(),
+                    path_uri,
                     method: parts.method.clone(),
                     body: if body_bytes.is_empty() {
                         None
@@ -1037,6 +1050,114 @@ mod tests {
         assert_eq!(header_str(&response, "attestation-failure"), None);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"ok");
+    }
+
+    /// The routes guarded by `.route_layer(AttestationGateway::validator)` in
+    /// `crate::routes::handler`, each mounted under `.nest("/v1", …)`. Keep in sync with
+    /// that router so this regression test covers every attestation-gated endpoint.
+    const ATTESTATION_GATED_ROUTES: [&str; 3] = [
+        "/retrieve/from-challenge",
+        "/verify-factor",
+        "/delete-factor",
+    ];
+
+    /// Mirrors production routing: the attestation-gated business routes live in an inner
+    /// router mounted with `.nest("/v1", …)` (see `crate::routes::handler`). axum strips
+    /// the `/v1` nest prefix *before* the inner router runs, so `parts.uri.path()` seen by
+    /// the `validator` middleware is e.g. `/retrieve/from-challenge`, NOT
+    /// `/v1/retrieve/from-challenge`. The existing `validator_app` helper mounts routes
+    /// flat, so it never exercises this stripping — which is why the mismatch was invisible
+    /// to the current tests.
+    fn nested_v1_validator_app(gateway: AttestationGateway) -> axum::Router {
+        let mut v1 = axum::Router::new();
+        for route in ATTESTATION_GATED_ROUTES {
+            v1 = v1.route(route, axum::routing::post(|| async { "ok" }));
+        }
+        let v1 = v1.route_layer(axum::middleware::from_fn(AttestationGateway::validator));
+
+        axum::Router::new()
+            .nest("/v1", v1)
+            .layer(Extension(Arc::new(gateway)))
+    }
+
+    fn post_request_with_token(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(ATTESTATION_GATEWAY_HEADER, token)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Regression test for the `JTI claim (request hash) is not valid` failure that
+    /// World App (iOS & Android) hit on every attestation-gated request.
+    ///
+    /// The clients compute the attestation request hash over the FULL request path,
+    /// including the `/v1` API-version prefix (confirmed from both clients' `pathUri`
+    /// telemetry and source). Because business routes are nested under `.nest("/v1", …)`,
+    /// `parts.uri.path()` inside the middleware has been stripped of the `/v1` prefix. The
+    /// validator now hashes the full path via `OriginalUri`, so it matches the clients.
+    ///
+    /// Exercised for every attestation-gated route. Before the fix these assertions were
+    /// inverted (the full-path token was rejected and the stripped-path token accepted).
+    #[tokio::test]
+    async fn test_nested_v1_prefix_hashes_full_path_for_real_clients() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+
+        for route in ATTESTATION_GATED_ROUTES {
+            let full_path = format!("/v1{route}");
+
+            // (1) A token whose `jti` is computed the way real clients compute it: over the
+            //     FULL path, including `/v1`. This must be accepted.
+            let client_hash = AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
+                path_uri: full_path.clone(),
+                method: Method::POST,
+                body: None,
+            })
+            .unwrap();
+            let client_token =
+                generate_test_token(&key_pair, client_hash, true, "pass".to_string(), None);
+
+            let response = nested_v1_validator_app(gateway_with_key(&key_pair, true))
+                .oneshot(post_request_with_token(&full_path, &client_token))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(
+                header_str(&response, "attestation-failure"),
+                None,
+                "the full-path token real clients send must validate for {full_path} now \
+                 that the server hashes the original (pre-nest) path via OriginalUri",
+            );
+
+            // (2) A token whose `jti` is computed over the nest-STRIPPED path (the old,
+            //     buggy expectation) must now be rejected.
+            let stripped_hash =
+                AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
+                    path_uri: route.to_string(),
+                    method: Method::POST,
+                    body: None,
+                })
+                .unwrap();
+            let stripped_token =
+                generate_test_token(&key_pair, stripped_hash, true, "pass".to_string(), None);
+
+            let response = nested_v1_validator_app(gateway_with_key(&key_pair, true))
+                .oneshot(post_request_with_token(&full_path, &stripped_token))
+                .await
+                .unwrap();
+
+            // do_not_enforce = true, so the request passes through but the failure surfaces.
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(
+                header_str(&response, "attestation-failure"),
+                Some("Invalid attestation token claim: JTI claim (request hash) is not valid."),
+                "a token hashed over the nest-stripped path must no longer be accepted for \
+                 {full_path}",
+            );
+        }
     }
 
     #[tokio::test]
