@@ -266,19 +266,30 @@ pub async fn handler(
         .await?;
 
     // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
-    // provides the best security guarantees. If the second step (adding the factor to the backup metadata)
-    // fails, the factor still cannot be used for authentication and will only cause some not found errors. If
-    // this was flipped however, it would be possible to have a technically valid orphan factor, which couldn't be revoked
-    // potentially leading to a security issue.
+    // provides the best security guarantees: it avoids a window where a factor exists in the backup
+    // metadata (and is therefore usable) without a lookup entry.
 
     // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
-    let updated_metadata = backup_storage
+    let write = backup_storage
         .add_factor(
             &backup_id,
             new_factor.clone(),
             request.encrypted_backup_key.clone(),
         )
-        .await?;
+        .await;
+
+    // Step 3.3: Roll back FactorLookup only when the metadata write definitely did not land
+    // (`NotInserted`). Skip rollback for `Unknown` (ambiguous S3 write or factor already present).
+    if write.should_rollback_lookup() {
+        if let Err(delete_err) = factor_lookup
+            .delete(FactorScope::Main, &factor_to_lookup)
+            .await
+        {
+            tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+        }
+    }
+
+    let updated_metadata = write.into_result()?;
 
     // Step 4: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {
