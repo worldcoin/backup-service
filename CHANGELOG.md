@@ -2,6 +2,22 @@
 
 
 
+# [0.9.5] - 2026-08-03
+
+## What's Changed
+* feat: test to ensure rejection of dual audiences by @paolodamico in https://github.com/worldcoin/backup-service/pull/220
+* fix: performant byte handling & minor sec improvements by @paolodamico in https://github.com/worldcoin/backup-service/pull/217
+* fix: hash full /v1 request path for attestation JTI validation by @SeanROlszewski in https://github.com/worldcoin/backup-service/pull/227
+* feat: specify aud for apple oidc & support all clients by @paolodamico in https://github.com/worldcoin/backup-service/pull/221
+
+## New Contributors
+* @SeanROlszewski made their first contribution in https://github.com/worldcoin/backup-service/pull/227
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.4...0.9.5
+
+
+
+
 # [0.9.4] - 2026-07-16
 
 ## What's Changed
