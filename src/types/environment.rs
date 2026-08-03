@@ -270,7 +270,7 @@ impl Environment {
             Self::Staging | Self::Development { .. } => vec![
                 // Imperative this is the first one for backwards compat (World App iOS was the first client supported)
                 "org.worldcoin.insight.staging", // World App iOS
-                "org.world.id.staging",          // World ID App iOS
+                "org.world.staging.id",          // World ID App iOS
                 "org.world.sandbox.id",          // World App iOS [Sandbox Environment]
                 "app.world.apple.staging",       // Web (used for all Android clients)
             ],
@@ -435,7 +435,7 @@ mod tests {
         );
         assert!(env
             .allowed_apple_client_ids()
-            .contains(&"org.world.id.staging"));
+            .contains(&"org.world.staging.id"));
     }
 
     #[test]

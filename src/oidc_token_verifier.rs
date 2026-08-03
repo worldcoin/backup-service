@@ -307,7 +307,7 @@ mod tests {
         let provider = OidcProvider::Apple;
 
         let audiences = [
-            "org.world.id.staging",
+            "org.world.staging.id",
             "app.world.apple.staging",
             "org.world.sandbox.id",
         ];
@@ -453,9 +453,16 @@ mod tests {
             )
             .await;
 
-            // The test should fail with an incorrect audience
-            assert!(result.is_err());
-            assert!(matches!(result, Err(OidcTokenVerifierError::InvalidAud)));
+            // Google has no allowlist; the audience is checked by the OIDC verifier against the fixed client ID
+            match provider {
+                OidcProvider::Google => assert!(matches!(
+                    result,
+                    Err(OidcTokenVerifierError::TokenVerificationError)
+                )),
+                OidcProvider::Apple => {
+                    assert!(matches!(result, Err(OidcTokenVerifierError::InvalidAud)));
+                }
+            }
         }
     }
 
