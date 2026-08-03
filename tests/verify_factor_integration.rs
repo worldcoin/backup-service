@@ -45,8 +45,6 @@ async fn test_verify_factor_with_passkey() {
         "challengeToken": challenge["token"],
     });
 
-    // The request hash must be computed over the full request path, including the `/v1`
-    // prefix — the same path the real clients hash and the server recomputes via OriginalUri.
     let (jwk, jwt) = generate_test_attestation_token(&body, "/v1/verify-factor");
     let mut server = mockito::Server::new_async().await;
     let mut key_response =
