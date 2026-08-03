@@ -453,6 +453,7 @@ impl BackupStorage {
     /// target scope's metadata list.
     ///
     /// - Factor present in target scope → `Inserted` (e.g. lost ACK after a successful put).
+    /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
     /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
     /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
     async fn resolve_put_object_outcome<T>(
@@ -477,6 +478,9 @@ impl BackupStorage {
                     {
                         FactorMetadataWrite::Inserted(on_present(metadata))
                     }
+                    // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
+                    // factor is not in the target list, so rolling back the lookup is safe.
+                    Ok(None) => FactorMetadataWrite::NotInserted(e),
                     Ok(Some(_)) if Self::is_precondition_failed_put(&e) => {
                         FactorMetadataWrite::NotInserted(e)
                     }
@@ -1043,6 +1047,33 @@ mod tests {
         match result {
             FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
             other => panic!("Expected NotInserted for wrong-scope presence, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_rolls_back_when_metadata_missing() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        // No backup created — simulates concurrent delete between GET and if_match PUT.
+        let missing_kind = FactorKind::EcKeypair {
+            public_key: "deleted-backup-key".to_string(),
+        };
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &gen_backup_id(),
+                &missing_kind,
+                FactorListScope::Main,
+                put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected NotInserted when metadata is missing, got {other:?}"),
         }
     }
 
