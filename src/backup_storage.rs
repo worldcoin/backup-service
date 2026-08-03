@@ -1078,6 +1078,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_put_object_outcome_rolls_back_timeout_when_metadata_missing() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        // Ambiguous put error + missing metadata must still roll back (not stay Unknown).
+        let missing_kind = FactorKind::EcKeypair {
+            public_key: "deleted-backup-timeout-key".to_string(),
+        };
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &gen_backup_id(),
+                &missing_kind,
+                FactorListScope::Sync,
+                SdkError::timeout_error("timed out"),
+                |_| (),
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => {
+                panic!("Expected NotInserted for timeout when metadata is missing, got {other:?}")
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn resolve_put_object_outcome_keeps_unknown_on_timeout_when_factor_absent() {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);

@@ -3,16 +3,19 @@ mod common;
 use std::sync::Arc;
 
 use crate::common::{
-    create_test_backup, create_test_backup_with_keypair, generate_keypair,
-    get_keypair_retrieval_challenge, get_passkey_retrieval_challenge, send_post_request,
-    send_post_request_with_bypass_attestation_token, send_post_request_with_multipart,
-    sign_keypair_challenge, verify_s3_backup_exists, verify_s3_metadata_exists,
+    create_test_backup, create_test_backup_with_keypair, create_test_backup_with_sync_keypair,
+    generate_keypair, get_keypair_retrieval_challenge, get_passkey_retrieval_challenge,
+    send_post_request, send_post_request_with_bypass_attestation_token,
+    send_post_request_with_multipart, sign_keypair_challenge, verify_s3_backup_exists,
+    verify_s3_metadata_exists,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
 use backup_service::types::Environment;
 use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
 use serial_test::serial;
@@ -445,4 +448,174 @@ async fn test_add_sync_factor_same_as_main_rolls_back_lookup_and_token() {
         .await
         .unwrap()
         .is_some());
+}
+
+/// If the backup is deleted after a sync-factor token is issued, add-sync-factor must roll back the
+/// Sync lookup and unuse the token so the credential is not pinned to a deleted backup.
+#[tokio::test]
+#[serial]
+async fn test_add_sync_factor_after_backup_deleted_rolls_back_lookup_and_token() {
+    dotenvy::from_filename(".env.example").ok();
+    let environment = Environment::development(None);
+    let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
+        &environment.aws_config().await,
+    ));
+    let factor_lookup = FactorLookup::new(environment, dynamodb_client);
+
+    let ((main_public_key, main_secret_key), create_response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"TEST BACKUP DATA").await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let create_body = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let create_json: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
+
+    // Issue a sync-factor token while the backup still exists.
+    let retrieve_challenge = get_keypair_retrieval_challenge().await;
+    let retrieve_signature = sign_keypair_challenge(
+        &main_secret_key,
+        retrieve_challenge["challenge"].as_str().unwrap(),
+    );
+    let retrieve_response = send_post_request_with_bypass_attestation_token(
+        "/v1/retrieve/from-challenge",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": main_public_key,
+                "signature": retrieve_signature,
+            },
+            "challengeToken": retrieve_challenge["token"],
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(retrieve_response.status(), StatusCode::OK);
+    let retrieve_body = retrieve_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retrieve_json: serde_json::Value = serde_json::from_slice(&retrieve_body).unwrap();
+    let sync_factor_token = retrieve_json["syncFactorToken"].as_str().unwrap();
+
+    // Concurrent delete: remove the backup before add-sync-factor writes metadata.
+    let existing_sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let delete_challenge =
+        send_post_request("/v1/delete-backup/challenge/keypair", json!({})).await;
+    assert_eq!(delete_challenge.status(), StatusCode::OK);
+    let delete_challenge_body = delete_challenge
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let delete_challenge_json: serde_json::Value =
+        serde_json::from_slice(&delete_challenge_body).unwrap();
+    let delete_signature = sign_keypair_challenge(
+        &sync_secret_key,
+        delete_challenge_json["challenge"].as_str().unwrap(),
+    );
+    let delete_response = send_post_request(
+        "/v1/delete-backup",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": existing_sync_public_key,
+                "signature": delete_signature,
+            },
+            "challengeToken": delete_challenge_json["token"],
+        }),
+    )
+    .await;
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let (new_public_key, new_secret_key) = generate_keypair();
+    let new_factor = FactorToLookup::from_ec_keypair(new_public_key.clone());
+
+    let attempt_add = |challenge_token: serde_json::Value,
+                       signature: String,
+                       public_key: String,
+                       token: String| async move {
+        send_post_request(
+            "/v1/add-sync-factor",
+            json!({
+                "challengeToken": challenge_token["token"],
+                "syncFactor": {
+                    "kind": "EC_KEYPAIR",
+                    "publicKey": public_key,
+                    "signature": signature,
+                },
+                "syncFactorToken": token,
+            }),
+        )
+        .await
+    };
+
+    let challenge_1 = send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
+    assert_eq!(challenge_1.status(), StatusCode::OK);
+    let challenge_1_body = challenge_1.into_body().collect().await.unwrap().to_bytes();
+    let challenge_1_json: serde_json::Value = serde_json::from_slice(&challenge_1_body).unwrap();
+    let signature_1 = sign_keypair_challenge(
+        &new_secret_key,
+        challenge_1_json["challenge"].as_str().unwrap(),
+    );
+
+    let response_1 = attempt_add(
+        challenge_1_json,
+        signature_1,
+        new_public_key.clone(),
+        sync_factor_token.to_string(),
+    )
+    .await;
+    assert_eq!(response_1.status(), StatusCode::BAD_REQUEST);
+    let error_1: serde_json::Value =
+        serde_json::from_slice(&response_1.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(
+        error_1["error"]["code"].as_str().unwrap(),
+        "backup_not_found"
+    );
+
+    // Lookup must have been rolled back — otherwise the retry hits factor_already_exists.
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &new_factor)
+        .await
+        .unwrap()
+        .is_none());
+
+    let challenge_2 = send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await;
+    assert_eq!(challenge_2.status(), StatusCode::OK);
+    let challenge_2_body = challenge_2.into_body().collect().await.unwrap().to_bytes();
+    let challenge_2_json: serde_json::Value = serde_json::from_slice(&challenge_2_body).unwrap();
+    let signature_2 = sign_keypair_challenge(
+        &new_secret_key,
+        challenge_2_json["challenge"].as_str().unwrap(),
+    );
+
+    let response_2 = attempt_add(
+        challenge_2_json,
+        signature_2,
+        new_public_key.clone(),
+        sync_factor_token.to_string(),
+    )
+    .await;
+    assert_eq!(response_2.status(), StatusCode::BAD_REQUEST);
+    let error_2: serde_json::Value =
+        serde_json::from_slice(&response_2.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(
+        error_2["error"]["code"].as_str().unwrap(),
+        "backup_not_found",
+        "retry must see backup_not_found again (lookup+token rolled back), not factor_already_exists / already_used; backup_id={backup_id}"
+    );
+    assert!(factor_lookup
+        .lookup(FactorScope::Sync, &new_factor)
+        .await
+        .unwrap()
+        .is_none());
 }
