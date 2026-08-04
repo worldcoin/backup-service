@@ -307,6 +307,19 @@ impl AttestationGateway {
             return Err(AttestationGatewayError::AudienceClaim);
         }
 
+        // Laissez-Passer (LP) tokens from Attestation Gateway use `check_type: "dev"`.
+        // Matching app-backend-risk: accept a signed, unexpired `pass: true` LP token
+        // without binding to the request hash (`jti`). Clients using LP often cannot
+        // produce a body-bound hash the same way Play Integrity / App Attest flows do.
+        let check_type = payload.claim("check_type").and_then(Value::as_str);
+        if check_type == Some("dev") {
+            tracing::info!(
+                message = "Accepting Laissez-Passer attestation token; skipping JTI hash check",
+                check_type,
+            );
+            return Ok(());
+        }
+
         let request_hash_claim = payload
             .claim("jti")
             .ok_or(AttestationGatewayError::JtiClaim)?
@@ -512,6 +525,17 @@ mod tests {
         out: String, // should "pass" or "fail",
         expires_at: Option<SystemTime>,
     ) -> String {
+        generate_test_token_with_check_type(key_pair, request_hash, pass, out, expires_at, None)
+    }
+
+    fn generate_test_token_with_check_type(
+        key_pair: &EcKeyPair,
+        request_hash: String,
+        pass: bool,
+        out: String, // should "pass" or "fail",
+        expires_at: Option<SystemTime>,
+        check_type: Option<&str>,
+    ) -> String {
         let mut payload = JwtPayload::new();
         payload.set_issued_at(&SystemTime::now());
         payload.set_issuer("attestation.worldcoin.org");
@@ -534,6 +558,14 @@ mod tests {
         payload
             .set_claim("out", Some(josekit::Value::String(out)))
             .unwrap();
+        if let Some(check_type) = check_type {
+            payload
+                .set_claim(
+                    "check_type",
+                    Some(josekit::Value::String(check_type.to_string())),
+                )
+                .unwrap();
+        }
 
         let mut header = JwsHeader::new();
         header.set_token_type("JWT");
@@ -636,6 +668,119 @@ mod tests {
             .validate_token(test_token, &test_generate_request_hash_input())
             .await
             .expect("failed to validate token");
+    }
+
+    /// Laissez-Passer AG tokens (`check_type: "dev"`) must be accepted even when
+    /// `jti` does not match the computed request hash — same behavior as app-backend-risk.
+    #[tokio::test]
+    async fn test_validate_token_laissez_passer_skips_jti() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+
+        let jwk_set = JwkSet::from_map(
+            json!({
+                "keys": [key_pair.to_jwk_public_key()]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+
+        let gateway = AttestationGateway {
+            base_url: String::new(),
+            cached_keys: Arc::new(RwLock::new(CachedJwks {
+                known_keys: jwk_set.into(),
+                updated_at: Some(Instant::now()),
+            })),
+            reqwest_client: reqwest::Client::new(),
+            bypass_token: None,
+            do_not_enforce: false,
+        };
+
+        let lp_token = generate_test_token_with_check_type(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+            Some("dev"),
+        );
+
+        gateway
+            .validate_token(lp_token, &test_generate_request_hash_input())
+            .await
+            .expect("Laissez-Passer token should validate without matching jti");
+    }
+
+    /// Non-LP tokens (e.g. `check_type: "osv"`) must still fail when `jti` mismatches.
+    #[tokio::test]
+    async fn test_validate_token_osv_still_requires_jti() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+
+        let jwk_set = JwkSet::from_map(
+            json!({
+                "keys": [key_pair.to_jwk_public_key()]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+
+        let gateway = AttestationGateway {
+            base_url: String::new(),
+            cached_keys: Arc::new(RwLock::new(CachedJwks {
+                known_keys: jwk_set.into(),
+                updated_at: Some(Instant::now()),
+            })),
+            reqwest_client: reqwest::Client::new(),
+            bypass_token: None,
+            do_not_enforce: false,
+        };
+
+        let osv_token = generate_test_token_with_check_type(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+            Some("osv"),
+        );
+
+        assert_eq!(
+            gateway
+                .validate_token(osv_token, &test_generate_request_hash_input())
+                .await
+                .unwrap_err()
+                .to_string(),
+            "JTI claim (request hash) is not valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validator_laissez_passer_sets_no_failure_header() {
+        let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key_pair.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key_pair, true);
+
+        let lp_token = generate_test_token_with_check_type(
+            &key_pair,
+            "does-not-match-request-hash".to_string(),
+            true,
+            "pass".to_string(),
+            None,
+            Some("dev"),
+        );
+
+        let response = validator_app(gateway)
+            .oneshot(request_with_token(&lp_token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(header_str(&response, "attestation-failure"), None);
     }
 
     #[tokio::test]
