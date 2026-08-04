@@ -5,7 +5,7 @@ services:
     ports:
       - "6379:6379"
   localstack-backup-service:
-    image: localstack/localstack
+    image: localstack/localstack:4.14
     ports:
       - "4566:4566"
     environment:

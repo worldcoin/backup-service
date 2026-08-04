@@ -334,11 +334,22 @@ pub enum RedisCacheError {
     Locked,
 }
 
+/// Atomically deletes a lock key only when its value matches the owner token.
+/// Prevents a stale guard (after TTL expiry) from deleting a newer holder's lock.
+const RELEASE_LOCK_IF_OWNER_SCRIPT: &str = r"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+";
+
 /// A guard that releases a Redis lock when dropped.
 pub struct RedisLockGuard {
     redis: ConnectionManager,
     prefix: String,
     identifier: String,
+    owner_token: String,
     released: bool,
 }
 
@@ -355,8 +366,14 @@ impl RedisLockGuard {
             .conditional_set(ExistenceCheck::NX)
             .with_expiration(SetExpiry::EX(ttl_seconds));
 
+        let owner_token = uuid::Uuid::new_v4().to_string();
+
         let result = redis
-            .set_options::<String, bool>(format!("lock#{prefix}#{identifier}"), true, lock_options)
+            .set_options::<String, String>(
+                format!("lock#{prefix}#{identifier}"),
+                owner_token.clone(),
+                lock_options,
+            )
             .await?;
 
         let acquired = result.is_some() && result.unwrap_or_default() == "OK";
@@ -369,6 +386,7 @@ impl RedisLockGuard {
             redis,
             prefix,
             identifier,
+            owner_token,
             released: false,
         })
     }
@@ -380,7 +398,11 @@ impl RedisLockGuard {
     pub async fn release(&mut self) -> Result<(), RedisCacheError> {
         if !self.released {
             let mut redis = self.redis.clone();
-            redis.del(self.as_key()).await?;
+            let _: i32 = Script::new(RELEASE_LOCK_IF_OWNER_SCRIPT)
+                .key(self.as_key())
+                .arg(&self.owner_token)
+                .invoke_async(&mut redis)
+                .await?;
             self.released = true;
         }
         Ok(())
@@ -398,9 +420,16 @@ impl Drop for RedisLockGuard {
         }
         let mut redis = self.redis.clone();
         let key = self.as_key();
+        let owner_token = self.owner_token.clone();
         // Best-effort release as `Drop` cannot be async.
         tokio::spawn(async move {
-            if let Err(e) = redis.del(key).await {
+            let result: Result<i32, RedisError> = Script::new(RELEASE_LOCK_IF_OWNER_SCRIPT)
+                .key(key)
+                .arg(owner_token)
+                .invoke_async(&mut redis)
+                .await;
+
+            if let Err(e) = result {
                 tracing::error!(
                     message = "Failed to release Redis lock in Drop",
                     error = ?e
@@ -552,5 +581,77 @@ mod tests {
 
         assert_eq!(success_count, 1);
         assert_eq!(already_used_count, 9);
+    }
+
+    /// Stale lock guards must not delete a newer holder's lock after TTL expiry.
+    #[tokio::test]
+    async fn test_stale_lock_guard_cannot_delete_newer_lock_on_release() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let prefix = "stale_lock_release_test";
+        let identifier = uuid::Uuid::new_v4().to_string();
+
+        // Acquire lock A with a short TTL, then let it expire.
+        let mut stale_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(1))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // A newer holder acquires the same lock key.
+        let mut current_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+            .await
+            .unwrap();
+
+        // Releasing the stale guard must leave the current holder's lock intact.
+        stale_guard.release().await.unwrap();
+        assert!(matches!(
+            cache
+                .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+                .await,
+            Err(RedisCacheError::Locked)
+        ));
+
+        current_guard.release().await.unwrap();
+    }
+
+    /// Same safety property via the `Drop` best-effort release path.
+    #[tokio::test]
+    async fn test_stale_lock_guard_cannot_delete_newer_lock_on_drop() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let prefix = "stale_lock_drop_test";
+        let identifier = uuid::Uuid::new_v4().to_string();
+
+        let stale_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(1))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let mut current_guard = cache
+            .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+            .await
+            .unwrap();
+
+        drop(stale_guard);
+        // Allow the Drop spawn to finish its compare-and-delete attempt.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(matches!(
+            cache
+                .try_acquire_lock_guard(prefix, identifier.clone(), Some(60))
+                .await,
+            Err(RedisCacheError::Locked)
+        ));
+
+        current_guard.release().await.unwrap();
     }
 }
