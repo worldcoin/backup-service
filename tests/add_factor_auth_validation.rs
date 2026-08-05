@@ -69,7 +69,7 @@ async fn test_add_factor_missing_turnkey_provider_id() {
             "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": null
         }),
-        Some(test.environment.clone()),
+        Some(test.environment),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -133,7 +133,7 @@ async fn test_add_factor_new_oidc_signature_mismatch() {
             "turnkeyProviderId": "turnkey_provider_id",
             "encryptedBackupKey": null
         }),
-        Some(test.environment.clone()),
+        Some(test.environment),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

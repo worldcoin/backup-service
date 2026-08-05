@@ -68,7 +68,7 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
             "newFactorChallengeToken": challenges["newFactorToken"],
             "encryptedBackupKey": null
         }),
-        Some(test.environment.clone()),
+        Some(test.environment),
     )
     .await;
 

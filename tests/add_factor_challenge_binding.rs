@@ -71,14 +71,14 @@ async fn test_add_factor_challenge_binding_matrix() {
     let resp1 = send_post_request_with_environment(
         "/v1/add-factor",
         base_payload.clone(),
-        Some(environment.clone()),
+        Some(environment),
     )
     .await;
     assert_eq!(resp1.status(), StatusCode::OK);
     let resp2 = send_post_request_with_environment(
         "/v1/add-factor",
         base_payload.clone(),
-        Some(environment.clone()),
+        Some(environment),
     )
     .await;
     assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
@@ -96,7 +96,7 @@ async fn test_add_factor_challenge_binding_matrix() {
     let resp3 = send_post_request_with_environment(
         "/v1/add-factor",
         mismatched_payload,
-        Some(environment.clone()),
+        Some(environment),
     )
     .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);

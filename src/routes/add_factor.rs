@@ -215,7 +215,7 @@ pub async fn handler(
             let (_trusted_challenge, challenge_context) = challenge_manager
                 .extract_token_payload(
                     (&request.existing_factor_authorization).into(),
-                    request.existing_factor_challenge_token.to_string(),
+                    request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
 
@@ -335,8 +335,7 @@ pub async fn handler(
             .factors
             .iter()
             .find(|f| f.kind == new_factor_kind)
-            .map(|f| f.id.clone())
-            .unwrap_or(new_factor_id);
+            .map_or(new_factor_id, |f| f.id.clone());
         // Do not roll back lookup: factor is present in metadata; keeping lookup can heal inconsistency.
         return Ok(Json(AddFactorResponse {
             factor_id,

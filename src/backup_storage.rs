@@ -339,12 +339,6 @@ impl BackupStorage {
         }
     }
 
-    /// Appends only a new encryption key without adding a factor.
-    /// Succeeds even if the key already exists
-    ///
-    /// # Errors
-    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
     /// Appends an encryption key to backup metadata without adding a factor.
     ///
     /// Used for metadata-only upgrades when the factor already exists. No-ops if a key of the same
