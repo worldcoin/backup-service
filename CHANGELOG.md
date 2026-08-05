@@ -2,6 +2,255 @@
 
 
 
+# [0.9.5] - 2026-08-03
+
+## What's Changed
+* feat: test to ensure rejection of dual audiences by @paolodamico in https://github.com/worldcoin/backup-service/pull/220
+* fix: performant byte handling & minor sec improvements by @paolodamico in https://github.com/worldcoin/backup-service/pull/217
+* fix: hash full /v1 request path for attestation JTI validation by @SeanROlszewski in https://github.com/worldcoin/backup-service/pull/227
+* feat: specify aud for apple oidc & support all clients by @paolodamico in https://github.com/worldcoin/backup-service/pull/221
+
+## New Contributors
+* @SeanROlszewski made their first contribution in https://github.com/worldcoin/backup-service/pull/227
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.4...0.9.5
+
+
+
+
+# [0.9.4] - 2026-07-16
+
+## What's Changed
+* feat: validate attestation gateway even on disabled by @paolodamico in https://github.com/worldcoin/backup-service/pull/213
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.3...0.9.4
+
+
+
+
+# [0.9.3] - 2026-07-15
+
+## What's Changed
+* fix: provide claim details on attest failures by @paolodamico in https://github.com/worldcoin/backup-service/pull/211
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.2...0.9.3
+
+
+
+
+# [0.9.2] - 2026-07-14
+
+## What's Changed
+* chore(deps): bump uuid from 1.16.0 to 1.23.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/199
+* chore(deps): bump mockito from 1.7.1 to 1.7.2 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/198
+* chore(deps): bump tower-http from 0.6.7 to 0.6.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/197
+* chore(deps): bump aws-sdk-s3 from 1.127.0 to 1.128.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/196
+* chore: default enable attestation gateway by @aurel-fr in https://github.com/worldcoin/backup-service/pull/204
+* chore(deps): bump axum from 0.8.1 to 0.8.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/200
+* chore: address rustsec advisories by @paolodamico in https://github.com/worldcoin/backup-service/pull/206
+* Release 0.9.1 by @github-actions[bot] in https://github.com/worldcoin/backup-service/pull/207
+* ci by @aurel-fr in https://github.com/worldcoin/backup-service/pull/208
+* chore: address RUSTSEC-2026-0048 by @paolodamico in https://github.com/worldcoin/backup-service/pull/209
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.0...0.9.2
+
+
+
+
+# [0.9.1] - 2026-07-10
+
+## What's Changed
+* chore(deps): bump uuid from 1.16.0 to 1.23.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/199
+* chore(deps): bump mockito from 1.7.1 to 1.7.2 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/198
+* chore(deps): bump tower-http from 0.6.7 to 0.6.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/197
+* chore(deps): bump aws-sdk-s3 from 1.127.0 to 1.128.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/196
+* chore: default enable attestation gateway by @aurel-fr in https://github.com/worldcoin/backup-service/pull/204
+* chore(deps): bump axum from 0.8.1 to 0.8.8 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/200
+* chore: address rustsec advisories by @paolodamico in https://github.com/worldcoin/backup-service/pull/206
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.9.0...0.9.1
+
+
+
+
+# [0.9.0] - 2026-05-26
+
+## What's Changed
+* chore(deps): bump reqwest from 0.12.23 to 0.12.24 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/170
+* fix: backup keys are on the secp256k1 curve by @paolodamico in https://github.com/worldcoin/backup-service/pull/193
+* chore: add localstack token by @paolodamico in https://github.com/worldcoin/backup-service/pull/195
+* Add support for multiple clients by @ketzusaka in https://github.com/worldcoin/backup-service/pull/201
+
+## New Contributors
+* @ketzusaka made their first contribution in https://github.com/worldcoin/backup-service/pull/201
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.5...0.9.0
+
+
+
+
+# [0.8.5] - 2026-03-06
+
+## What's Changed
+* chore(deps): bump tokio from 1.48.0 to 1.49.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/190
+* chore(deps): bump chrono from 0.4.40 to 0.4.44 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/189
+* fix: always lowercase manifest hash by @paolodamico in https://github.com/worldcoin/backup-service/pull/169
+* chore(tfh-backup): fix ECDSA DER signature length validation by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/185
+* feat: expose /metrics endpoint via axum-prometheus by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/191
+* chore(deps): bump serde from 1.0.219 to 1.0.228 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/172
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.4...0.8.5
+
+
+
+
+# [0.8.4] - 2026-02-17
+
+## What's Changed
+* feat: introduce verify factor endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/186
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.3...0.8.4
+
+
+
+
+# [0.8.3] - 2026-02-12
+
+## What's Changed
+* feat: introduce /reset endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/176
+* chore(tfh-backup): bump rust to 1.91, configure ConnectionManager timeouts by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/183
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.2...0.8.3
+
+
+
+
+# [0.8.2] - 2026-02-04
+
+## What's Changed
+* feat: improve multipart request handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/179
+* chore(deps): bump tracing from 0.1.41 to 0.1.44 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/173
+* chore(deps): bump serde_json from 1.0.143 to 1.0.148 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/171
+* chore(tfh-backup): enable TLS support for Redis connections by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/181
+* chore(deps): bump mockito from 1.7.0 to 1.7.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/158
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.1...0.8.2
+
+
+
+
+# [0.8.1] - 2026-01-29
+
+## What's Changed
+* Update GH workflows to use public runner groups by @ernish in https://github.com/worldcoin/backup-service/pull/168
+* chore(deps): bump openidconnect from 4.0.0 to 4.0.1 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/159
+* feat: improve max file size handling by @paolodamico in https://github.com/worldcoin/backup-service/pull/177
+
+## New Contributors
+* @ernish made their first contribution in https://github.com/worldcoin/backup-service/pull/168
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.8.0...0.8.1
+
+
+
+
+# [0.8.0] - 2025-12-09
+
+## What's Changed
+* feat: debug invalid oidc tokens by @paolodamico in https://github.com/worldcoin/backup-service/pull/165
+* chore: MIT license by @paolodamico in https://github.com/worldcoin/backup-service/pull/166
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.12...0.8.0
+
+
+
+
+# [0.7.12] - 2025-12-08
+
+## What's Changed
+* fix: docker hub login CI by @paolodamico in https://github.com/worldcoin/backup-service/pull/162
+* chore(deps): bump tokio from 1.47.1 to 1.48.0 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/157
+* chore(deps): bump async-trait from 0.1.88 to 0.1.89 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/160
+* chore(deps): bump tower-http from 0.6.6 to 0.6.7 by @dependabot[bot] in https://github.com/worldcoin/backup-service/pull/156
+* feat: improve errors for failed signature by @paolodamico in https://github.com/worldcoin/backup-service/pull/163
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.11...0.7.12
+
+
+
+
+# [0.7.11] - 2025-12-02
+
+## What's Changed
+* feat: return backup meta on creation by @paolodamico in https://github.com/worldcoin/backup-service/pull/154
+* chore(e2e): attestation token support to E2E test script by @nme-mvasylenko in https://github.com/worldcoin/backup-service/pull/151
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.10...0.7.11
+
+
+
+
+# [0.7.10] - 2025-11-20
+
+## What's Changed
+* feat: return metadata on endpoints by @paolodamico in https://github.com/worldcoin/backup-service/pull/152
+* feat: add support for SSE on S3 bucket by @paolodamico in https://github.com/worldcoin/backup-service/pull/150
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.9...0.7.10
+
+
+
+
+# [0.7.9] - 2025-11-10
+
+## What's Changed
+* feat: expose credential_id for passkeys by @paolodamico in https://github.com/worldcoin/backup-service/pull/146
+* feat: backup status endpoint by @paolodamico in https://github.com/worldcoin/backup-service/pull/147
+* fix!: update backup ID requirements by @paolodamico in https://github.com/worldcoin/backup-service/pull/148
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.8...0.7.9
+
+
+
+
+# [0.7.8] - 2025-10-27
+
+## What's Changed
+* fix: only verify passkey challenge for existing Turnkey by @paolodamico in https://github.com/worldcoin/backup-service/pull/143
+* feat: improved error messages by @paolodamico in https://github.com/worldcoin/backup-service/pull/144
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.7...0.7.8
+
+
+
+
+# [0.7.7] - 2025-10-23
+
+## What's Changed
+* feat!: improvements to deletion process by @paolodamico in https://github.com/worldcoin/backup-service/pull/139
+* fix: tiny log improvements & use Docker Hub token for CI by @paolodamico in https://github.com/worldcoin/backup-service/pull/140
+* feat: only allow one key per type by @paolodamico in https://github.com/worldcoin/backup-service/pull/141
+
+
+**Full Changelog**: https://github.com/worldcoin/backup-service/compare/0.7.6...0.7.7
+
+
+
+
 # [0.7.6] - 2025-10-16
 
 ## What's Changed

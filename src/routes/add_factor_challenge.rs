@@ -16,8 +16,6 @@ pub enum NewFactor {
     OidcAccount { oidc_token: String },
     #[serde(rename_all = "camelCase")]
     PasskeyRegistration {},
-    #[serde(rename_all = "camelCase")]
-    EcKeypair {},
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -25,7 +23,6 @@ pub enum NewFactor {
 pub enum ExistingFactorKind {
     Passkey,
     OidcAccount,
-    EcKeypair,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -52,10 +49,9 @@ pub struct AddFactorChallengeResponse {
 /// Request to get challenges for adding a new factor.
 ///
 /// This endpoint generates two challenges:
-/// 1. For the existing passkey factor to prove ownership over the backup. Currently, this is signed
-///    with a passkey using a Turnkey activity with extra metadata — see `turnkey_activity.rs` for more.
-/// 2. For the new factor to prove ownership over the new factor. Currently, this is a keypair
-///    that's in the nonce of an OIDC token that user wants to add.
+/// 1. For the existing Main Factor (Passkey or OIDC) to prove ownership over the backup.
+///    Passkey existing uses a Turnkey activity with extra metadata — see `turnkey_activity.rs`.
+/// 2. For the new Main Factor (Passkey registration or OIDC) to prove ownership of the new factor.
 ///
 /// Both challenges are required to add a factor in the /add-factor endpoint.
 pub async fn handler(
@@ -73,7 +69,6 @@ pub async fn handler(
             oidc_token: oidc_token.clone(),
         },
         NewFactor::PasskeyRegistration {} => NewFactorType::PasskeyRegistration {},
-        NewFactor::EcKeypair {} => NewFactorType::EcKeypair {},
     };
 
     let existing_challenge_type = match request
@@ -81,7 +76,7 @@ pub async fn handler(
         .unwrap_or(ExistingFactorKind::Passkey)
     {
         ExistingFactorKind::Passkey => ChallengeType::Passkey,
-        ExistingFactorKind::OidcAccount | ExistingFactorKind::EcKeypair => ChallengeType::Keypair,
+        ExistingFactorKind::OidcAccount => ChallengeType::Keypair,
     };
     let existing_factor_token = challenge_manager
         .create_challenge_token(
@@ -108,7 +103,7 @@ pub async fn handler(
                 .await?;
             (challenge_json, token)
         }
-        NewFactor::OidcAccount { .. } | NewFactor::EcKeypair {} => {
+        NewFactor::OidcAccount { .. } => {
             let mut new_factor_challenge = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut new_factor_challenge);
             let token = challenge_manager

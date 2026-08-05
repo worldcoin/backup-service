@@ -49,9 +49,10 @@ impl Environment {
     pub fn s3_bucket(&self) -> String {
         match self {
             Self::Production | Self::Staging => env::var("BACKUP_S3_BUCKET")
-                .expect("BACKUP_S3_BUCKET environment variable is not set")
-                .to_string(),
-            Self::Development { .. } => "backup-service-bucket".to_string(),
+                .expect("BACKUP_S3_BUCKET environment variable is not set"),
+            Self::Development { .. } => {
+                env::var("BACKUP_S3_BUCKET").unwrap_or_else(|_| "backup-service-bucket".to_string())
+            }
         }
     }
 
@@ -82,7 +83,7 @@ impl Environment {
 
     /// AWS configuration to be used for the application, including any environment-specific overrides
     pub async fn aws_config(&self) -> aws_config::SdkConfig {
-        let mut aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2025_01_17());
+        let mut aws_config = aws_config::defaults(aws_config::BehaviorVersion::v2026_01_12());
         if let Some(endpoint_url) = self.override_aws_endpoint_url() {
             aws_config = aws_config.endpoint_url(endpoint_url);
         }
@@ -100,6 +101,20 @@ impl Environment {
             builder.set_force_path_style(Some(true));
         }
         builder.build()
+    }
+
+    /// Optional KMS key configuration if the S3 bucket has SSE-KMS encryption enabled.
+    ///
+    /// If **both** are set, all S3 operations will use SSE-KMS encryption
+    /// `BACKUP_S3_BUCKET_KMS_KEY_ARN` should be the ARN of a KMS key that is used to encrypt the data in the S3 bucket
+    #[must_use]
+    pub fn s3_sse_kms_key_arn(&self) -> Option<String> {
+        let val = env::var("BACKUP_S3_BUCKET_KMS_KEY_ARN").ok()?;
+        if val.is_empty() {
+            None
+        } else {
+            Some(val)
+        }
     }
 
     /// Returns whether the API docs should be visible
@@ -170,7 +185,14 @@ impl Environment {
     #[must_use]
     pub fn max_backup_file_size(&self) -> usize {
         // generally each PCP is ~4MB, plus some buffer
-        10 * 1024 * 1024 // 10 MB
+        15 * 1024 * 1024 // 15 MB
+    }
+
+    /// Max size of the entire request body for requests that create/sync the backup
+    #[must_use]
+    pub fn max_request_size(&self) -> usize {
+        // Max request size is backup file size + 1MB buffer for metadata
+        self.max_backup_file_size() + 1024 * 1024 // 1 MB
     }
 
     /// JWK Set URL for the Google OIDC provider
@@ -194,7 +216,6 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Google OIDC provider
     #[must_use]
     pub fn google_client_id(&self) -> ClientId {
         match self {
@@ -240,16 +261,25 @@ impl Environment {
         }
     }
 
-    /// The client ID for the Apple OIDC provider
+    /// Returns the list of allowed Apple OIDC Client IDs for token verification.
     ///
-    /// # Panics
-    /// Will not panic. Values are hardcoded per environment.
+    /// Please see [`crate::oidc_token_verifier`] for details.
     #[must_use]
-    pub fn apple_client_id(&self) -> ClientId {
+    pub fn allowed_apple_client_ids(&self) -> Vec<&str> {
         match self {
-            Self::Production => ClientId::new("org.worldcoin.insight".to_string()),
-            Self::Staging => ClientId::new("org.worldcoin.insight.staging".to_string()),
-            Self::Development { .. } => ClientId::new("placeholder".to_string()),
+            Self::Staging | Self::Development { .. } => vec![
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                "org.worldcoin.insight.staging", // World App iOS
+                "org.world.staging.id",          // World ID App iOS
+                "org.world.sandbox.id",          // World App iOS [Sandbox Environment]
+                "app.world.apple.staging",       // Web (used for all Android clients)
+            ],
+            Self::Production => vec![
+                // It is imperative this is the first one for backwards compat (World App iOS was the first client supported)
+                "org.worldcoin.insight", // World App iOS
+                "org.world.id",          // World ID App iOS
+                "app.world.apple",       // Web (used for all Android clients)
+            ],
         }
     }
 
@@ -282,12 +312,156 @@ impl Environment {
         }
     }
 
+    /// Determines whether attestation gateway failures or invalid inputs should be treated
+    /// as errors or only logged. Setting this to `true` disables important security features.
     #[must_use]
-    pub fn enable_attestation_gateway(&self) -> bool {
-        //  TODO: Swap to `DISABLE_ATTESTATION_GATEWAY`
-        match env::var("ENABLE_ATTESTATION_GATEWAY") {
-            Ok(val) => val.trim().eq_ignore_ascii_case("true"),
-            Err(_) => false,
+    pub fn disable_attestation_gateway_enforcement(&self) -> bool {
+        env_bool("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", false)
+            || env_bool("DISABLE_ATTESTATION_GATEWAY", false)
+        // `DISABLE_ATTESTATION_GATEWAY` is a legacy environment variable
+    }
+}
+
+/// Parses a boolean flag env value.
+///
+/// Truthy: `true`, `1`. Falsy: `false`, `0`.
+fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Reads a boolean flag from an environment variable.
+///
+/// Returns `default` when the variable is unset or empty. An unrecognized value is logged.
+fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(raw) if !raw.trim().is_empty() => parse_bool_flag(&raw).unwrap_or_else(|| {
+            tracing::warn!(
+                env_var = name,
+                default,
+                "WARNING! Unrecognized boolean value for environment variable; using default"
+            );
+            default
+        }),
+        _ => default,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_flag_truthy() {
+        for value in ["true", "TRUE", "True", "1", "  true  ", "\t1\n"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(true),
+                "{value:?} should be truthy"
+            );
         }
+    }
+
+    #[test]
+    fn test_parse_flag_falsy() {
+        for value in ["false", "FALSE", "False", "0", "  false  ", " 0 "] {
+            assert_eq!(
+                parse_bool_flag(value),
+                Some(false),
+                "{value:?} should be falsy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_flag_unrecognized() {
+        for value in ["", "   ", "yes", "on", "ture", "2", "enabled", "-1"] {
+            assert_eq!(
+                parse_bool_flag(value),
+                None,
+                "{value:?} should be unrecognized"
+            );
+        }
+    }
+
+    #[test]
+    fn test_env_flag_unset_returns_default() {
+        assert!(env_bool("BACKUP_SERVICE_UNSET_FLAG", true));
+        assert!(!env_bool("BACKUP_SERVICE_UNSET_FLAG", false));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_disable_attestation_gateway_enforcement() {
+        let env = Environment::Production;
+
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+        // Safe default: enforcement is on (do not disable) when nothing is set.
+        assert!(!env.disable_attestation_gateway_enforcement());
+
+        // The primary flag disables enforcement.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "true");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::set_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT", "false");
+        assert!(!env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY_ENFORCEMENT");
+
+        // The legacy flag is still honored.
+        env::set_var("DISABLE_ATTESTATION_GATEWAY", "1");
+        assert!(env.disable_attestation_gateway_enforcement());
+        env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+    }
+
+    #[test]
+    fn test_apple_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(
+            *env.allowed_apple_client_ids().first().unwrap(),
+            "org.worldcoin.insight"
+        );
+        assert!(env.allowed_apple_client_ids().contains(&"org.world.id"));
+    }
+
+    #[test]
+    fn test_apple_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            *env.allowed_apple_client_ids().first().unwrap(),
+            "org.worldcoin.insight.staging"
+        );
+        assert!(env
+            .allowed_apple_client_ids()
+            .contains(&"org.world.staging.id"));
+    }
+
+    #[test]
+    fn test_google_client_id_production() {
+        let env = Environment::Production;
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_staging() {
+        let env = Environment::Staging;
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "730924878354-jvi49m445q2mv6s1dn4oklm8i4vlpct9.apps.googleusercontent.com"
+        );
+    }
+
+    #[test]
+    fn test_google_client_id_development() {
+        let env = Environment::development(None);
+        assert_eq!(
+            env.google_client_id().as_str(),
+            "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
+        );
     }
 }

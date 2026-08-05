@@ -57,28 +57,39 @@ pub async fn handler(
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
+    let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::info!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request("missing_payload_field")
+        tracing::debug!(message = "Missing payload field in multipart data");
+        ErrorResponse::bad_request(
+            "missing_payload_field",
+            "Missing payload field in multipart data",
+        )
     })?;
     let request: SyncBackupRequest = serde_json::from_slice(request).map_err(|err| {
-        tracing::info!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload")
+        tracing::debug!(message = "Failed to deserialize payload", error = ?err);
+        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.get("backup").ok_or_else(|| {
-        tracing::info!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request("missing_backup_field")
+    let backup = multipart_fields.remove("backup").ok_or_else(|| {
+        tracing::debug!(message = "Missing backup field in multipart data");
+        ErrorResponse::bad_request(
+            "missing_backup_field",
+            "Missing backup field in multipart data",
+        )
     })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
-        tracing::info!(message = "Empty backup file");
-        return Err(ErrorResponse::bad_request("empty_backup_file"));
+        tracing::debug!(message = "Empty backup file");
+        return Err(ErrorResponse::bad_request(
+            "empty_backup_file",
+            "Empty backup file",
+        ));
     }
     if backup.len() > environment.max_backup_file_size() {
-        tracing::info!(message = "Backup file too large");
-        return Err(ErrorResponse::bad_request("backup_file_too_large"));
+        tracing::debug!(message = "Backup file too large");
+        return Err(ErrorResponse::content_too_large(
+            "Backup file exceeds maximum allowed size.".to_string(),
+        ));
     }
 
     // Step 2: Auth. Verify the solved challenge in the authorization parameter
@@ -111,7 +122,7 @@ pub async fn handler(
         let update_result = backup_storage
             .update_backup(
                 &backup_id,
-                backup.to_vec(),
+                backup,
                 request.current_manifest_hash,
                 request.new_manifest_hash,
             )

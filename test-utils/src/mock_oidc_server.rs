@@ -1,4 +1,7 @@
-#![allow(clippy::missing_panics_doc)] // this is module used for testing, panics are allowed and self-explanatory
+#![allow(clippy::missing_panics_doc)]
+use std::str::FromStr;
+
+// this is module used for testing, panics are allowed and self-explanatory
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
 use openidconnect::core::{
@@ -6,13 +9,14 @@ use openidconnect::core::{
     CoreRsaPrivateSigningKey,
 };
 use openidconnect::{
-    Audience, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
+    Audience, ClientId, EmptyAdditionalClaims, EndUserEmail, IssuerUrl, JsonWebKeyId, Nonce,
     PrivateSigningKey, StandardClaims, SubjectIdentifier,
 };
 use p256::ecdsa::VerifyingKey;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
 use sha2::{Digest, Sha256};
+use url::Url;
 use uuid::Uuid;
 
 pub enum MockOidcProvider {
@@ -28,7 +32,7 @@ impl MockOidcProvider {
             Self::Google => {
                 "949370763172-0pu3c8c3rmp8ad665jsb1qkf8lai592i.apps.googleusercontent.com"
             }
-            Self::Apple => "placeholder",
+            Self::Apple => "org.worldcoin.insight.staging",
         }
     }
 
@@ -108,14 +112,7 @@ impl MockOidcServer {
     ) -> String {
         let subject = subject.unwrap_or_else(|| SubjectIdentifier::new(Uuid::new_v4().to_string()));
 
-        // convert public key to expected turnkey nonce
-        // see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
-        let public_key_bytes = STANDARD.decode(public_key_sec1_base64).unwrap();
-        let public_key = VerifyingKey::from_sec1_bytes(&public_key_bytes).unwrap();
-        let public_key_hex = hex::encode(public_key.to_encoded_point(true));
-        let mut hasher = Sha256::new();
-        hasher.update(public_key_hex.as_bytes());
-        let nonce_value = hex::encode(hasher.finalize());
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
 
         // Initialize claims with subject and standard OIDC fields
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
@@ -179,7 +176,8 @@ impl MockOidcServer {
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new("test-nonce".to_string())));
 
         // Create a new signing key for incorrect signing
         let mut rng = rand::thread_rng();
@@ -208,15 +206,21 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect issuer for the specified provider
-    pub fn generate_token_with_incorrect_issuer(&self, provider: &MockOidcProvider) -> String {
+    pub fn generate_token_with_incorrect_issuer(
+        &self,
+        provider: &MockOidcProvider,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
-            provider.as_issuer_url(),
+            IssuerUrl::from_url(Url::from_str("https://malicious.example.com").unwrap()),
             vec![Audience::new(provider.as_client_id().to_string())],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(
@@ -231,16 +235,23 @@ impl MockOidcServer {
         id_token.to_string()
     }
 
-    /// Generate a token with incorrect audience for the specified provider
-    pub fn generate_token_with_incorrect_audience(&self, provider: &MockOidcProvider) -> String {
+    /// Generate a token with the provided audience
+    pub fn generate_token_with_aud(
+        &self,
+        provider: &MockOidcProvider,
+        aud: String,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             provider.as_issuer_url(),
-            vec![Audience::new("incorrect-audience".to_string())],
+            vec![Audience::new(aud)],
             Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
             Utc::now(),                                                 // issued at
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(
@@ -256,7 +267,12 @@ impl MockOidcServer {
     }
 
     /// Generate a token with incorrect `issued_at` time for the specified provider
-    pub fn generate_token_with_incorrect_issued_at(&self, provider: &MockOidcProvider) -> String {
+    pub fn generate_token_with_incorrect_issued_at(
+        &self,
+        provider: &MockOidcProvider,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
         let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
             provider.as_issuer_url(),
             vec![Audience::new(provider.as_client_id().to_string())],
@@ -266,7 +282,8 @@ impl MockOidcServer {
                 .unwrap(), // issued at in future
             StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
             EmptyAdditionalClaims {},
-        );
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)));
 
         // Sign the claims with the private key
         let id_token = CoreIdToken::new(
@@ -279,5 +296,57 @@ impl MockOidcServer {
         .expect("failed to create id_token");
 
         id_token.to_string()
+    }
+
+    /// Generate a token whose audience lists the correct client ID plus an
+    /// additional audience the client does not trust.
+    ///
+    /// OIDC allows `aud` to be an array, but requires the client to reject a
+    /// token carrying additional audiences it does not trust.
+    pub fn generate_token_with_extra_audience(
+        &self,
+        provider: &MockOidcProvider,
+        public_key_sec1_base64: &str,
+    ) -> String {
+        let nonce_value = Self::pubkey_to_nonce(public_key_sec1_base64);
+        let claims: CoreIdTokenClaims = CoreIdTokenClaims::new(
+            provider.as_issuer_url(),
+            vec![
+                Audience::new(provider.as_client_id().to_string()),
+                Audience::new("com.example.evil".to_string()),
+            ],
+            Utc::now().checked_add_signed(Duration::hours(1)).unwrap(), // expiration time
+            Utc::now(),                                                 // issued at
+            StandardClaims::new(SubjectIdentifier::new("test-subject".to_string())),
+            EmptyAdditionalClaims {},
+        )
+        .set_nonce(Some(Nonce::new(nonce_value)))
+        // Set it to ensure the untrusted extra audience is the only rejection reason
+        .set_authorized_party(Some(ClientId::new(provider.as_client_id().to_string())));
+
+        // Sign the claims with the private key
+        let id_token = CoreIdToken::new(
+            claims,
+            &self.signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            None,
+            None,
+        )
+        .expect("failed to create id_token");
+
+        id_token.to_string()
+    }
+
+    /// Converts the public key to expected turnkey nonce,
+    /// see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
+    fn pubkey_to_nonce(public_key_sec1_base64: &str) -> String {
+        // convert public key to expected turnkey nonce
+        // see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
+        let public_key_bytes = STANDARD.decode(public_key_sec1_base64).unwrap();
+        let public_key = VerifyingKey::from_sec1_bytes(&public_key_bytes).unwrap();
+        let public_key_hex = hex::encode(public_key.to_encoded_point(true));
+        let mut hasher = Sha256::new();
+        hasher.update(public_key_hex.as_bytes());
+        hex::encode(hasher.finalize())
     }
 }

@@ -74,10 +74,11 @@ impl Factor {
             created_at: self.created_at.timestamp(),
             kind: match &self.kind {
                 FactorKind::Passkey {
+                    webauthn_credential,
                     registration,
                     label,
-                    ..
                 } => ExportedFactorKind::Passkey {
+                    credential_id: BASE64_URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
                     label: label.clone(),
                     registration: registration.clone(),
                 },
@@ -120,25 +121,25 @@ impl Factor {
             } => {
                 let (issuer_url, sub) = match account {
                     OidcAccountKind::Google { sub, .. } => {
-                        (environment.google_issuer_url().to_string(), sub.to_string())
+                        (environment.google_issuer_url().to_string(), sub.clone())
                     }
                     OidcAccountKind::Apple { sub, .. } => {
-                        (environment.apple_issuer_url().to_string(), sub.to_string())
+                        (environment.apple_issuer_url().to_string(), sub.clone())
                     }
                 };
                 FactorToLookup::from_oidc_account(issuer_url, sub)
             }
             FactorKind::EcKeypair { public_key } => {
-                FactorToLookup::from_ec_keypair(public_key.to_string())
+                FactorToLookup::from_ec_keypair(public_key.clone())
             }
         }
     }
 
     pub fn as_flattened_kind(&self) -> &'static str {
         match &self.kind {
-            FactorKind::Passkey { .. } => "passkey",
-            FactorKind::OidcAccount { .. } => "oidc",
-            FactorKind::EcKeypair { .. } => "ec_keypair",
+            FactorKind::Passkey { .. } => "PASSKEY",
+            FactorKind::OidcAccount { .. } => "OIDC_ACCOUNT",
+            FactorKind::EcKeypair { .. } => "EC_KEYPAIR",
         }
     }
 }
@@ -275,6 +276,15 @@ pub enum OidcAccountKind {
     },
 }
 
+impl OidcAccountKind {
+    pub fn as_flattened_kind(&self) -> &'static str {
+        match self {
+            OidcAccountKind::Google { .. } => "GOOGLE",
+            OidcAccountKind::Apple { .. } => "APPLE",
+        }
+    }
+}
+
 impl PartialEq for OidcAccountKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -328,6 +338,9 @@ pub struct ExportedFactor {
 pub enum ExportedFactorKind {
     #[serde(rename_all = "camelCase")]
     Passkey {
+        /// The credential ID of the passkey, base64url-encoded (no padding).
+        /// This matches the `WebAuthN` standard format used by iOS and Android.
+        credential_id: String,
         /// TODO: Remove once the client migrates to create the Turnkey account immediately upon registration.
         /// Registration object presented by the client when signing up. Used by the client to be
         /// to register the passkey in Turnkey later, not during initial sign up.
@@ -473,5 +486,58 @@ mod tests {
         };
 
         assert_eq!(factor_1, factor_2);
+    }
+
+    #[tokio::test]
+    async fn test_exported_factor_includes_credential_id() {
+        let mut client = get_mock_passkey_client();
+
+        let (challenge, registration) = Environment::development(None)
+            .webauthn_config()
+            .start_passkey_registration(Uuid::new_v4(), "test", "test", None)
+            .unwrap();
+
+        let challenge = json!({
+            "challenge": challenge,
+        });
+
+        let passkey = Environment::development(None)
+            .webauthn_config()
+            .finish_passkey_registration(
+                &serde_json::from_value(
+                    make_credential_from_passkey_challenge(&mut client, &challenge).await,
+                )
+                .unwrap(),
+                &registration,
+            )
+            .unwrap();
+
+        let expected_credential_id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id());
+
+        let factor = Factor::new_passkey(
+            passkey,
+            json!({"test": "registration"}),
+            "Added on Pixel 7".to_string(),
+        );
+
+        let exported = factor.exported();
+
+        match &exported.kind {
+            ExportedFactorKind::Passkey {
+                credential_id,
+                label,
+                registration,
+            } => {
+                assert_eq!(credential_id, &expected_credential_id);
+                assert_eq!(label, "Added on Pixel 7");
+                assert_eq!(registration, &json!({"test": "registration"}));
+            }
+            _ => panic!("Expected Passkey variant"),
+        }
+
+        // Also verify JSON serialization uses camelCase
+        let json_str = serde_json::to_string(&exported).unwrap();
+        assert!(json_str.contains("credentialId"));
+        assert!(json_str.contains(&expected_credential_id));
     }
 }

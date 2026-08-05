@@ -2,18 +2,21 @@ mod common;
 
 use crate::common::{
     generate_keypair, generate_random_backup_id, get_keypair_challenge, get_passkey_challenge,
-    make_sync_factor, send_post_request_with_multipart, sign_keypair_challenge,
+    get_test_router, make_sync_factor, send_post_request_with_multipart, sign_keypair_challenge,
     verify_s3_backup_exists, verify_s3_metadata_exists,
 };
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::http::StatusCode;
 use backup_service::types::Environment;
 use backup_service_test_utils::{
     get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
     MockOidcServer,
 };
+use http::Request;
 use http_body_util::BodyExt;
 use serde_json::json;
+use tower::ServiceExt;
+use uuid::Uuid;
 
 // Happy path - passkey
 #[tokio::test]
@@ -60,7 +63,7 @@ async fn test_create_backup_with_passkey() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
     assert_eq!(backup_id, backup_account_id);
 
     // Check that backup was successfully created on S3
@@ -112,7 +115,7 @@ async fn test_create_backup_with_passkey() {
             "allowRetry": false,
             "error": {
                 "code": "already_used",
-                "message": "already_used",
+                "message": "Token has already been used.",
             },
         })
     );
@@ -176,7 +179,7 @@ async fn test_create_backup_with_oidc_token() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Check that backup was successfully created on S3
     verify_s3_backup_exists(backup_id, b"TEST FILE").await;
@@ -226,7 +229,7 @@ async fn test_create_backup_with_ec_keypair() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Check that backup was successfully created on S3
     verify_s3_backup_exists(backup_id, b"TEST FILE").await;
@@ -280,7 +283,7 @@ async fn test_create_backup_with_incorrect_token() {
             "allowRetry": false,
             "error": {
                 "code": "jwt_error",
-                "message": "jwt_error",
+                "message": "Invalid or expired token.",
             },
         })
     );
@@ -342,8 +345,8 @@ async fn test_create_backup_with_incorrectly_passkey_solved_challenge() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_client_error",
-                "message": "webauthn_client_error",
+                "code": "webauthn_error",
+                "message": "The JSON from the client did not indicate webauthn.<method> correctly",
             },
         })
     );
@@ -397,7 +400,7 @@ async fn test_create_backup_with_empty_file() {
             "allowRetry": false,
             "error": {
                 "code": "empty_backup_file",
-                "message": "empty_backup_file",
+                "message": "Empty backup file",
             },
         })
     );
@@ -435,12 +438,12 @@ async fn test_create_backup_with_large_file() {
             "manifestHash": hex::encode([1u8; 32]),
             "backupAccountId": generate_random_backup_id(),
         }),
-        Bytes::from(vec![0; 10 * 1024 * 1024 + 1]), // 10 MB file + 1 byte
+        Bytes::from(vec![0; 15 * 1024 * 1024 + 1]), // 15 MB file + 1 byte
         None,
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -450,8 +453,8 @@ async fn test_create_backup_with_large_file() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "backup_file_too_large",
-                "message": "backup_file_too_large",
+                "code": "content_too_large",
+                "message": "Backup file exceeds maximum allowed size.",
             },
         })
     );
@@ -518,7 +521,7 @@ async fn test_create_backup_with_invalid_oidc_token() {
             "allowRetry": false,
             "error": {
                 "code": "oidc_token_verification_error",
-                "message": "oidc_token_verification_error",
+                "message": "Failed to verify OIDC token.",
             },
         })
     );
@@ -582,16 +585,7 @@ async fn test_create_backup_with_incorrect_nonce_in_oidc_token() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "oidc_token_verification_error",
-                "message": "oidc_token_verification_error",
-            },
-        })
-    );
+    assert_eq!(response["error"]["code"], "oidc_token_invalid_nonce");
 }
 
 #[tokio::test]
@@ -647,7 +641,7 @@ async fn test_create_backup_with_invalid_ec_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed",
             },
         })
     );
@@ -716,7 +710,7 @@ async fn test_create_backup_with_invalid_sync_factor() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_sync_factor_type",
-                "message": "invalid_sync_factor_type",
+                "message": "Client-side auth failure: invalid_sync_factor_type",
             },
         })
     );
@@ -776,7 +770,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Failed to decode a value from base64: Invalid padd",
             },
         })
     );
@@ -867,7 +861,7 @@ async fn test_create_backup_with_duplicate_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "backup_account_id_already_exists",
-                "message": "backup_account_id_already_exists",
+                "message": "Backup ID already exists. Please `/sync` instead.",
             },
         })
     );
@@ -920,7 +914,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_payload",
-                "message": "invalid_payload",
+                "message": "Failed to deserialize payload",
             },
         })
     );
@@ -962,7 +956,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
             "allowRetry": false,
             "error": {
                 "code": "invalid_payload",
-                "message": "invalid_payload",
+                "message": "Failed to deserialize payload",
             },
         })
     );
@@ -1054,4 +1048,34 @@ async fn test_no_race_conditions_on_concurrent_backup_account_id() {
         num_concurrent_requests - 1,
         error_count
     );
+}
+
+/// Ensures the multipart parsing error is propagated
+#[tokio::test]
+async fn test_create_backup_with_malformed_multipart_data() {
+    let environment = Environment::development(None);
+    let boundary = format!("Boundary-{}", Uuid::new_v4());
+
+    let body_bytes = b"This is not valid multipart data\r\n";
+    let req = Request::builder()
+        .uri("/v1/create")
+        .method("POST")
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
+        .header("Content-Length", body_bytes.len())
+        .body(Body::from(body_bytes.to_vec()))
+        .unwrap();
+
+    let app = get_test_router(Some(environment), None).await;
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response["error"]["code"], "multipart_error");
+    assert_eq!(response["error"]["message"], "incomplete multipart stream");
 }

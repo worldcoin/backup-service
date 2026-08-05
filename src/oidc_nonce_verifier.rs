@@ -115,8 +115,7 @@ mod tests {
             verifier
                 .clone()
                 .verify(Some(&incorrect_nonce))
-                .unwrap_err()
-                .to_string(),
+                .unwrap_err().clone(),
             "Nonce mismatch: expected 1663bba492a323085b13895634a3618792c4ec6896f3c34ef3c26396df22ef82, got 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         );
         assert_eq!(

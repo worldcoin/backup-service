@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::{BackupStorage, DeletionResult};
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use aide::transform::TransformOperation;
@@ -31,6 +32,7 @@ pub struct DeleteFactorRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFactorResponse {
     backup_deleted: bool,
+    backup_metadata: Option<ExportedBackupMetadata>,
 }
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
@@ -59,7 +61,10 @@ pub async fn handler(
 
     // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
     if request.scope == FactorScope::Sync && encryption_key.is_some() {
-        return Err(ErrorResponse::bad_request("encryption_key_not_allowed"));
+        return Err(ErrorResponse::bad_request(
+            "encryption_key_not_allowed",
+            "Removing an encryption key is not allowed when removing sync factors",
+        ));
     }
 
     // Step 2: Auth. Verify the solved challenge
@@ -90,31 +95,39 @@ pub async fn handler(
 
         let Some(factor_to_delete) = factor_to_delete else {
             tracing::info!(message = "Factor not found in backup metadata");
-            return Err(ErrorResponse::bad_request("factor_not_found"));
+            return Err(ErrorResponse::bad_request("factor_not_found", "Factor not found in backup"));
         };
 
         // Step 4: Delete the factor from the backup storage
-        let mut backup_deleted = false;
-        match request.scope {
+        let metadata = match request.scope {
             FactorScope::Main => {
                 let result = backup_storage
                     .remove_factor(&backup_id, &factor_id, encryption_key.as_ref())
                     .await?;
-                backup_deleted = matches!(result, DeletionResult::BackupDeleted);
+               match result {
+                DeletionResult::BackupDeleted => {
+                    None
+                }
+                DeletionResult::OnlyFactorDeleted(metadata) => {
+                    Some(metadata)
+                }
+               }
             }
             FactorScope::Sync => {
-                backup_storage
+                Some(backup_storage
                     .remove_sync_factor(&backup_id, &factor_id)
-                    .await?;
+                    .await?)
             }
-        }
+        };
+
+        let backup_deleted = metadata.is_none();
 
         let msg = if backup_deleted {
             "Backup deleted from removal of last main factor"
         } else {
             "Factor deleted from backup storage"
         };
-        tracing::info!(message = msg, backup_id = %backup_id, scope = %request.scope, 
+        tracing::info!(message = msg, backup_id = %backup_id, scope = %request.scope,
             backup_deleted = %backup_deleted, factor_id = %factor_id, factor_kind = %factor_to_delete.as_flattened_kind());
 
         // Note on atomicity: The factor is deleted from the backup storage first as this is the source of
@@ -133,7 +146,7 @@ pub async fn handler(
                 .await?;
         }
 
-        Ok(Json(DeleteFactorResponse { backup_deleted }))
+        Ok(Json(DeleteFactorResponse { backup_deleted, backup_metadata: metadata.map(|m| m.exported()) }))
     }
     .instrument(span)
     .await

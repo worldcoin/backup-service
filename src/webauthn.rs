@@ -9,7 +9,7 @@ pub trait TryFromValue: Sized {
     ///
     /// # Errors
     /// - Returns `AuthError::WebauthnPrfResultsNotAllowed` if PRF extension information is present in the credential. This is a security risk.
-    /// - Returns `AuthError::WebauthnClientError` if the credential is invalid or cannot be deserialized.
+    /// - Returns `AuthError::WebauthnInvalidPayload` if the credential is invalid or cannot be deserialized.
     fn try_from_value(value: &Value) -> Result<Self, AuthError>;
 }
 
@@ -29,7 +29,7 @@ impl TryFromValue for PublicKeyCredential {
         //  Deserialize credential
         serde_json::from_value(value.clone()).map_err(|err| {
             tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-            AuthError::WebauthnClientError
+            AuthError::WebauthnInvalidPayload
         })
     }
 }
@@ -80,6 +80,6 @@ mod tests {
     fn test_invalid_json_should_fail() {
         let raw = json!({ "some": "invalid" });
         let result = PublicKeyCredential::try_from_value(&raw);
-        assert!(matches!(result, Err(AuthError::WebauthnClientError)));
+        assert!(matches!(result, Err(AuthError::WebauthnInvalidPayload)));
     }
 }

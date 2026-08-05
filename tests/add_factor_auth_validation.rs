@@ -77,19 +77,27 @@ async fn test_add_factor_missing_turnkey_provider_id() {
     assert_eq!(body["error"]["code"], "missing_turnkey_provider_id");
 }
 
-// New EC signature verification error
+// OIDC(new) signature verification error
 #[tokio::test]
 #[serial]
-async fn test_add_factor_new_ec_signature_mismatch() {
+async fn test_add_factor_new_oidc_signature_mismatch() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
-    let challenges =
-        get_add_factor_challenges_generic(json!({ "kind": "EC_KEYPAIR" }), Some("OIDC_ACCOUNT"))
-            .await;
-
-    // Existing OIDC auth bound to this case's challenge using a fresh session keypair
     let (existing_session_public_key, existing_session_secret_key) =
         crate::common::generate_keypair();
+    let (new_session_public_key, _new_session_secret_key) = crate::common::generate_keypair();
+    let (_wrong_pub, wrong_sk) = crate::common::generate_keypair();
+
+    let new_oidc_token =
+        test.oidc_server
+            .generate_token(&MockOidcProvider::Google, None, &new_session_public_key);
+
+    let challenges = get_add_factor_challenges_generic(
+        json!({ "kind": "OIDC_ACCOUNT", "oidcToken": new_oidc_token }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
     let existing_sig = crate::common::sign_keypair_challenge(
         &existing_session_secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
@@ -100,10 +108,8 @@ async fn test_add_factor_new_ec_signature_mismatch() {
         &existing_session_public_key,
     );
 
-    let (pub1, _sk1) = crate::common::generate_keypair();
-    let (_pub2, sk2) = crate::common::generate_keypair();
     let wrong_sig = crate::common::sign_keypair_challenge(
-        &sk2,
+        &wrong_sk,
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
@@ -117,8 +123,14 @@ async fn test_add_factor_new_ec_signature_mismatch() {
                 "signature": existing_sig,
             },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
-            "newFactorAuthorization": { "kind": "EC_KEYPAIR", "publicKey": pub1, "signature": wrong_sig },
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": new_oidc_token },
+                "publicKey": new_session_public_key,
+                "signature": wrong_sig,
+            },
             "newFactorChallengeToken": challenges["newFactorToken"],
+            "turnkeyProviderId": "turnkey_provider_id",
             "encryptedBackupKey": null
         }),
         Some(test.environment.clone()),

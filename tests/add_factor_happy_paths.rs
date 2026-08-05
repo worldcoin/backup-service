@@ -12,75 +12,6 @@ use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
 
-// Passkey (existing) → EC keypair (new)
-#[tokio::test]
-#[serial]
-async fn test_add_factor_passkey_existing_to_ec_new_happy_path() {
-    // Create a backup with a passkey
-    let mut passkey_client = get_mock_passkey_client();
-    let (_cred, create_response) = create_test_backup(&mut passkey_client, b"BACKUP DATA").await;
-    assert_eq!(create_response.status(), StatusCode::OK);
-    let body = create_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let create_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = create_json["backupId"].as_str().unwrap();
-
-    // Request challenges for new EC keypair
-    let challenges =
-        get_add_factor_challenges_generic(json!({ "kind": "EC_KEYPAIR" }), Some("PASSKEY")).await;
-
-    // Build Turnkey activity embedding existingFactorChallenge and get passkey assertion on its hash
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
-    let passkey_assertion =
-        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
-            .await;
-
-    // Generate new EC keypair and sign the new-factor challenge
-    let (new_public_key, new_secret_key) = crate::common::generate_keypair();
-    let new_signature = crate::common::sign_keypair_challenge(
-        &new_secret_key,
-        challenges["newFactorChallenge"].as_str().unwrap(),
-    );
-
-    // Submit add-factor
-    let response = send_post_request_with_environment(
-        "/v1/add-factor",
-        json!({
-            "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion },
-            "existingFactorChallengeToken": challenges["existingFactorToken"],
-            "existingFactorTurnkeyActivity": turnkey_activity,
-            "newFactorAuthorization": {
-                "kind": "EC_KEYPAIR",
-                "publicKey": new_public_key,
-                "signature": new_signature,
-            },
-            "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
-        }),
-        None,
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let _json = parse_response_body(response).await;
-
-    let metadata = verify_s3_metadata_exists(backup_id).await;
-    let factors = metadata["factors"].as_array().unwrap();
-    let ec_found = factors.iter().any(|f| f["kind"]["kind"] == "EC_KEYPAIR");
-    assert!(ec_found);
-}
-
 // OIDC (existing) → Passkey (new)
 #[tokio::test]
 #[serial]
@@ -99,7 +30,7 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     )
     .await;
 
-    // Complete passkey registration from challeng
+    // Complete passkey registration from challenge
     let mut passkey_client = get_mock_passkey_client();
     let registration_state = challenges["newFactorChallenge"].clone();
     let registration_payload = json!({ "challenge": registration_state });
@@ -147,6 +78,7 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         .as_str()
         .unwrap()
         .to_string();
+    assert!(add_factor_response["backupMetadata"].is_object());
 
     // Verify metadata now contains the new passkey factor
     let body = test
@@ -185,84 +117,80 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     assert_eq!(retrieve_response.status(), StatusCode::OK);
 }
 
-// EC keypair (existing) → OIDC (new)
+// Passkey (existing) → OIDC (new) regression of the classic path
 #[tokio::test]
 #[serial]
-async fn test_add_factor_ec_existing_to_oidc_new_happy_path() {
-    // Create a backup with EC keypair
-    let ((existing_public_key, existing_secret_key), create_response) =
-        crate::common::create_test_backup_with_keypair(b"BACKUP DATA").await;
+async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
+    let mut passkey_client = get_mock_passkey_client();
+    let (_cred, create_response) = create_test_backup(&mut passkey_client, b"BACKUP DATA").await;
     assert_eq!(create_response.status(), StatusCode::OK);
-
-    // Extract backup ID
     let body = create_response
         .into_body()
         .collect()
         .await
         .unwrap()
         .to_bytes();
-    let create_response_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = create_response_json["backupId"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let create_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
 
-    // Setup OIDC server and generate token for a session keypair
     let oidc_server = backup_service_test_utils::MockOidcServer::new().await;
     let environment = backup_service::types::Environment::development(Some(
         oidc_server.server.socket_address().port() as usize,
     ));
-
     let (session_public_key, session_secret_key) = crate::common::generate_keypair();
-    let subject = format!("subject-{}", Uuid::new_v4());
     let oidc_token = oidc_server.generate_token(
         &backup_service_test_utils::MockOidcProvider::Google,
-        Some(openidconnect::SubjectIdentifier::new(subject)),
+        None,
         &session_public_key,
     );
 
-    // Request challenges with existing EC, new OIDC
     let challenges = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
             "oidcToken": oidc_token,
         }),
-        Some("EC_KEYPAIR"),
+        Some("PASSKEY"),
     )
     .await;
 
-    // Sign the existing-factor challenge with the existing EC factor's secret key
-    let existing_authorization = json!({
-        "kind": "EC_KEYPAIR",
-        "publicKey": existing_public_key,
-        "signature": crate::common::sign_keypair_challenge(&existing_secret_key, challenges["existingFactorChallenge"].as_str().unwrap()),
-    });
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion =
+        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
+            .await;
+    let new_signature = crate::common::sign_keypair_challenge(
+        &session_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
 
-    // Submit add-factor (new OIDC requires turnkeyProviderId)
     let response = send_post_request_with_environment(
         "/v1/add-factor",
         json!({
-            "existingFactorAuthorization": existing_authorization,
+            "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion },
             "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
                 "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
                 "publicKey": session_public_key,
-                "signature": crate::common::sign_keypair_challenge(&session_secret_key, challenges["newFactorChallenge"].as_str().unwrap()),
+                "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "turnkeyProviderId": "turnkey_provider_id",
-            "encryptedBackupKey": null
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
         }),
         Some(environment),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-
-    // Verify metadata now contains OIDC factor
-    let metadata = verify_s3_metadata_exists(&backup_id).await;
+    let metadata = verify_s3_metadata_exists(backup_id).await;
     let factors = metadata["factors"].as_array().unwrap();
-    let oidc_found = factors.iter().any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT");
-    assert!(oidc_found);
+    assert!(factors.iter().any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT"));
 }

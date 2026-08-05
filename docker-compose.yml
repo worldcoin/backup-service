@@ -1,16 +1,17 @@
 name: backup-service
 services:
-  redis:
+  redis-backup-service:
     image: redis:latest
     ports:
       - "6379:6379"
-  localstack:
-    image: localstack/localstack
+  localstack-backup-service:
+    image: localstack/localstack:4.14
     ports:
       - "4566:4566"
     environment:
       - SERVICES=s3,kms,dynamodb
       - DISABLE_EVENTS=1
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN-}
     volumes:
       - /var/lib/localstack
       - /var/run/docker.sock:/var/run/docker.sock

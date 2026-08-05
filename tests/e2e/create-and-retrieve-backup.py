@@ -22,7 +22,7 @@ import requests
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
 
 
 def generate_keypair() -> Tuple[ec.EllipticCurvePrivateKey, str]:
@@ -52,19 +52,28 @@ def sign_challenge(private_key: ec.EllipticCurvePrivateKey, challenge_base64: st
     return base64.b64encode(der_signature).decode('utf-8')
 
 
-def create_backup(base_url: str) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivateKey, ec.EllipticCurvePrivateKey]:
+def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivateKey, ec.EllipticCurvePrivateKey]:
     """
     Create a backup with EC keypair authentication and a sync factor.
-    
+
     Returns:
         Tuple of (response_data, main_private_key, sync_private_key)
     """
     print("Generating main EC keypair...")
     main_private_key, main_public_key = generate_keypair()
-    
+
+    # Generate backup_account_id from the main public key (compressed SEC1 format)
+    main_public_key_obj = main_private_key.public_key()
+    compressed_public_key = main_public_key_obj.public_bytes(
+        encoding=Encoding.X962,
+        format=PublicFormat.CompressedPoint
+    )
+    backup_account_id = "backup_account_" + compressed_public_key.hex()
+    print(f"Generated backup_account_id: {backup_account_id}")
+
     print("Generating sync factor EC keypair...")
     sync_private_key, sync_public_key = generate_keypair()
-    
+
     # Get challenge for main keypair
     print("Requesting main challenge...")
     challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={})
@@ -98,6 +107,10 @@ def create_backup(base_url: str) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivat
     
     # Create backup
     print("Creating backup...")
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
     payload = {
         "authorization": {
             "kind": "EC_KEYPAIR",
@@ -116,6 +129,7 @@ def create_backup(base_url: str) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivat
         },
         "initialSyncChallengeToken": sync_token,
         "manifestHash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        "backupAccountId": backup_account_id,
     }
     
     # Create multipart form-data
@@ -124,8 +138,8 @@ def create_backup(base_url: str) -> Tuple[Dict[str, Any], ec.EllipticCurvePrivat
         'backup': ('backup.bin', b'THIS IS A MOCK BACKUP', 'application/octet-stream')
     }
     
-    create_response = requests.post(f"{base_url}/v1/create", files=files)
-    
+    create_response = requests.post(f"{base_url}/v1/create", files=files, headers=headers)
+
     if create_response.status_code != 200:
         print(f"Error creating backup: {create_response.status_code}")
         print(create_response.text)
@@ -190,10 +204,10 @@ def retrieve_backup(base_url: str, backup_id: str, private_key: ec.EllipticCurve
     return retrieve_data
 
 
-def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey) -> Dict[str, Any]:
+def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, attestation_token: str = None) -> Dict[str, Any]:
     """Retrieve backup metadata using the sync factor keypair."""
     print(f"Retrieving metadata for backup {backup_id}...")
-    
+
     # Get challenge for keypair
     challenge_response = requests.post(f"{base_url}/v1/retrieve-metadata/challenge/keypair", json={})
     challenge_data = challenge_response.json()
@@ -221,9 +235,14 @@ def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.Ellipt
         },
         "challengeToken": token,
     }
-    
-    retrieve_response = requests.post(f"{base_url}/v1/retrieve-metadata", json=retrieve_payload)
-    
+
+    # Add attestation token header if provided
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
+    retrieve_response = requests.post(f"{base_url}/v1/retrieve-metadata", json=retrieve_payload, headers=headers)
+
     if retrieve_response.status_code != 200:
         print(f"Error retrieving metadata: {retrieve_response.status_code}")
         print(retrieve_response.text)
@@ -242,10 +261,10 @@ def retrieve_metadata(base_url: str, backup_id: str, sync_private_key: ec.Ellipt
     return retrieve_data
 
 
-def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, new_content: bytes, current_manifest_hash: str = None, new_manifest_hash: str = None) -> Dict[str, Any]:
+def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurvePrivateKey, new_content: bytes, attestation_token: str = None, current_manifest_hash: str = None, new_manifest_hash: str = None) -> Dict[str, Any]:
     """Sync (update) a backup using the sync factor keypair."""
     print(f"Syncing backup {backup_id}...")
-    
+
     # Get challenge for sync keypair
     challenge_response = requests.post(f"{base_url}/v1/sync/challenge/keypair", json={})
     challenge_data = challenge_response.json()
@@ -281,9 +300,14 @@ def sync_backup(base_url: str, backup_id: str, sync_private_key: ec.EllipticCurv
         'payload': ('payload.json', json.dumps(payload), 'application/json'),
         'backup': ('backup.bin', new_content, 'application/octet-stream')
     }
-    
-    sync_response = requests.post(f"{base_url}/v1/sync", files=files)
-    
+
+    # Add attestation token header if provided
+    headers = {}
+    if attestation_token:
+        headers["attestation-token"] = attestation_token
+
+    sync_response = requests.post(f"{base_url}/v1/sync", files=files, headers=headers)
+
     if sync_response.status_code != 200:
         print(f"Error syncing backup: {sync_response.status_code}")
         print(sync_response.text)

@@ -1,20 +1,73 @@
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
-use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+use bytes::Bytes;
 use std::sync::Arc;
 
-/// Stores and retrieves backups and metadata from S3. Does not handle access checks or validate
-/// limits.
+/// Stores and retrieves backups and metadata from S3. Does not handle access checks.
+///
+/// Factor-count limits (`MAX_MAIN_FACTORS_PER_BACKUP`, `MAX_SYNC_FACTORS_PER_BACKUP`) are enforced
+/// in [`BackupStorage::add_factor`] and [`BackupStorage::add_sync_factor`].
 #[derive(Clone, Debug)]
 pub struct BackupStorage {
     environment: Environment,
     s3_client: Arc<S3Client>,
 }
 
+/// Outcome of writing a new factor into S3 backup metadata.
+///
+/// Used by callers that insert a `FactorLookup` row *before* updating metadata, so they can decide
+/// whether rolling that lookup entry back is safe without matching on specific error variants.
+#[derive(Debug)]
+pub enum FactorMetadataWrite<T> {
+    /// Metadata was successfully updated to include the new factor.
+    Inserted(T),
+    /// Failure before any metadata write (or a rejected write). Safe to roll back `FactorLookup`.
+    NotInserted(BackupManagerError),
+    /// Do **not** roll back `FactorLookup`: the metadata write may have committed (and could not be
+    /// confirmed absent), or the factor is already present (`FactorAlreadyExists`).
+    Unknown(BackupManagerError),
+}
+
+impl<T> FactorMetadataWrite<T> {
+    /// Converts to a plain `Result`, discarding whether a failed write was ambiguous.
+    ///
+    /// # Errors
+    /// Returns the underlying [`BackupManagerError`] for `NotInserted` and `Unknown`.
+    #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
+    pub fn into_result(self) -> Result<T, BackupManagerError> {
+        match self {
+            Self::Inserted(value) => Ok(value),
+            Self::NotInserted(err) | Self::Unknown(err) => Err(err),
+        }
+    }
+
+    /// Whether a preceding `FactorLookup` insert should be rolled back for this outcome.
+    pub const fn should_rollback_lookup(&self) -> bool {
+        matches!(self, Self::NotInserted(_))
+    }
+}
+
 type ETag = Option<String>;
+
+/// Maximum number of `Main` factors that can be registered for one backup account.
+pub const MAX_MAIN_FACTORS_PER_BACKUP: usize = 10;
+
+/// Maximum number of `Sync` factors that can be registered for one backup account.
+///
+/// This limit is also consistent with client-side enforcement for Sync Factors and is
+/// below Turnkey's hard limit of 100.
+pub const MAX_SYNC_FACTORS_PER_BACKUP: usize = 25;
+
+/// Which factor list in [`BackupMetadata`] an add/reconcile operation targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactorListScope {
+    Main,
+    Sync,
+}
 
 impl BackupStorage {
     #[must_use]
@@ -34,12 +87,11 @@ impl BackupStorage {
     ///   Note that if the backup already exists, this function will throw an error.
     pub async fn create(
         &self,
-        backup: Vec<u8>,
+        backup: Bytes,
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
         // Save encrypted backup to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(&backup_metadata.id))
             .body(ByteStream::from(backup))
@@ -48,8 +100,7 @@ impl BackupStorage {
             .await?;
 
         // Save metadata to S3
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(&backup_metadata.id))
             .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
@@ -158,7 +209,7 @@ impl BackupStorage {
     pub async fn update_backup(
         &self,
         backup_id: &str,
-        backup: Vec<u8>,
+        backup: Bytes,
         current_manifest_hash: String,
         new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
@@ -176,8 +227,7 @@ impl BackupStorage {
 
         metadata.manifest_hash = new_manifest_hash;
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
             .body(ByteStream::from(backup))
@@ -187,8 +237,7 @@ impl BackupStorage {
         // Save the new metadata
         // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
         // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -202,55 +251,104 @@ impl BackupStorage {
     /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
     ///
-    /// # Errors
+    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
+    /// when the metadata write definitely did not land.
+    ///
+    /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor).
+    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Same-scope
+    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
+    ///   so a just-inserted lookup for this scope is rolled back.
     pub async fn add_factor(
         &self,
         backup_id: &str,
         factor: Factor,
         new_encryption_key: Option<BackupEncryptionKey>,
-    ) -> Result<(), BackupManagerError> {
+    ) -> FactorMetadataWrite<BackupMetadata> {
         // Get the current metadata
-        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
+        let (mut metadata, e_tag) = match self.get_metadata_by_backup_id(backup_id).await {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound);
+            }
+            Err(err) => return FactorMetadataWrite::NotInserted(err),
         };
 
         let Some(e_tag) = e_tag else {
-            return Err(BackupManagerError::ETagNotFound);
+            return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
-        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
-        if metadata.factors.iter().any(|f| f.kind == factor.kind)
-            || metadata.sync_factors.iter().any(|f| f.kind == factor.kind)
+        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. `cred_id`).
+        if let Some(duplicate) =
+            Self::duplicate_factor_outcome(&metadata, &factor.kind, FactorListScope::Main)
         {
-            return Err(BackupManagerError::FactorAlreadyExists);
+            return duplicate;
         }
+
+        if metadata.factors.len() >= MAX_MAIN_FACTORS_PER_BACKUP {
+            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
+                limit: MAX_MAIN_FACTORS_PER_BACKUP,
+            });
+        }
+
+        let factor_kind = factor.kind.clone();
 
         // Add the factor to the metadata
         metadata.factors.push(factor);
 
         // Add the new encryption key if provided
         if let Some(encryption_key) = new_encryption_key {
+            if metadata
+                .keys
+                .iter()
+                .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+            {
+                return FactorMetadataWrite::NotInserted(
+                    BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed,
+                );
+            }
             metadata.keys.push(encryption_key);
         }
 
+        let body = match serde_json::to_vec(&metadata) {
+            Ok(body) => body,
+            Err(err) => return FactorMetadataWrite::NotInserted(err.into()),
+        };
+
         // Save the updated metadata
-        self.s3_client
+        match self
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .body(ByteStream::from(body))
             .send()
-            .await?;
-
-        Ok(())
+            .await
+        {
+            Ok(_) => FactorMetadataWrite::Inserted(metadata),
+            Err(err) => {
+                self.resolve_put_object_outcome(
+                    backup_id,
+                    &factor_kind,
+                    FactorListScope::Main,
+                    err,
+                    |m| m,
+                )
+                .await
+            }
+        }
     }
 
     /// Appends only a new encryption key without adding a factor.
     /// Succeeds even if the key already exists
+    ///
+    /// # Errors
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
+    /// Appends an encryption key to backup metadata without adding a factor.
+    ///
+    /// Used for metadata-only upgrades when the factor already exists. No-ops if a key of the same
+    /// flattened kind is already present.
     ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
@@ -267,10 +365,18 @@ impl BackupStorage {
             return Err(BackupManagerError::ETagNotFound);
         };
 
+        if metadata
+            .keys
+            .iter()
+            .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+        {
+            // Key type already present — nothing to do (idempotent).
+            return Ok(());
+        }
+
         metadata.keys.push(encryption_key);
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -283,57 +389,204 @@ impl BackupStorage {
 
     /// Adds a sync factor to the backup metadata in S3.
     ///
-    /// # Errors
+    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
+    /// when the metadata write definitely did not land.
+    ///
+    /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Duplicates are prevented because it makes no sense and makes
-    ///   maintenance harder (e.g. when deleting a factor)
+    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
+    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
+    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
-    ) -> Result<(), BackupManagerError> {
+    ) -> FactorMetadataWrite<()> {
         // Sync factor must be a keypair
         match sync_factor.kind {
             FactorKind::EcKeypair { .. } => {}
             FactorKind::Passkey { .. } | FactorKind::OidcAccount { .. } => {
-                return Err(BackupManagerError::SyncFactorMustBeKeypair);
+                return FactorMetadataWrite::NotInserted(
+                    BackupManagerError::SyncFactorMustBeKeypair,
+                );
             }
         }
 
         // Get the current metadata
-        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
+        let (mut metadata, e_tag) = match self.get_metadata_by_backup_id(backup_id).await {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound);
+            }
+            Err(err) => return FactorMetadataWrite::NotInserted(err),
         };
 
         let Some(e_tag) = e_tag else {
-            return Err(BackupManagerError::ETagNotFound);
+            return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
-        // Check if this factor already exists by comparing the full `FactorKind` (which includes its relevant credential identifier, e.g. `cred_id` for Passkey)
-        if metadata.factors.iter().any(|f| f.kind == sync_factor.kind)
-            || metadata
-                .sync_factors
-                .iter()
-                .any(|f| f.kind == sync_factor.kind)
+        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
+        if let Some(duplicate) =
+            Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
         {
-            return Err(BackupManagerError::FactorAlreadyExists);
+            return duplicate;
         }
+
+        if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
+            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
+                limit: MAX_SYNC_FACTORS_PER_BACKUP,
+            });
+        }
+
+        let factor_kind = sync_factor.kind.clone();
 
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
 
+        let body = match serde_json::to_vec(&metadata) {
+            Ok(body) => body,
+            Err(err) => return FactorMetadataWrite::NotInserted(err.into()),
+        };
+
         // Save the updated metadata
-        self.s3_client
+        match self
             .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .body(ByteStream::from(body))
             .send()
-            .await?;
+            .await
+        {
+            Ok(_) => FactorMetadataWrite::Inserted(()),
+            Err(err) => {
+                self.resolve_put_object_outcome(
+                    backup_id,
+                    &factor_kind,
+                    FactorListScope::Sync,
+                    err,
+                    |_| (),
+                )
+                .await
+            }
+        }
+    }
 
-        Ok(())
+    /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
+    ///
+    /// `NotInserted` for definite non-writes: construction failures, and 4xx rejections other than
+    /// `412` (ambiguous under `if_match` retries). Timeouts, dispatch/response errors, `412`, and
+    /// 5xx are `Unknown` until reconciled via [`Self::resolve_put_object_outcome`].
+    fn classify_put_object_error<T>(
+        err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
+    ) -> FactorMetadataWrite<T> {
+        let definite_non_write = match &err {
+            SdkError::ConstructionFailure(_) => true,
+            SdkError::ServiceError(service_err) => {
+                let status = service_err.raw().status();
+                status.is_client_error() && status.as_u16() != 412
+            }
+            _ => false,
+        };
+
+        if definite_non_write {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(err))
+        } else {
+            FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(err))
+        }
+    }
+
+    /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in the
+    /// target scope's metadata list.
+    ///
+    /// - Factor present in target scope → `Inserted` (e.g. lost ACK after a successful put).
+    /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
+    /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
+    /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
+    async fn resolve_put_object_outcome<T>(
+        &self,
+        backup_id: &str,
+        factor_kind: &FactorKind,
+        target_scope: FactorListScope,
+        err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
+        on_present: impl FnOnce(BackupMetadata) -> T,
+    ) -> FactorMetadataWrite<T> {
+        match Self::classify_put_object_error::<T>(err) {
+            FactorMetadataWrite::NotInserted(e) => FactorMetadataWrite::NotInserted(e),
+            FactorMetadataWrite::Inserted(_) => unreachable!("classify never returns Inserted"),
+            FactorMetadataWrite::Unknown(e) => {
+                match self.get_metadata_by_backup_id(backup_id).await {
+                    Ok(Some((metadata, _)))
+                        if Self::metadata_contains_factor_kind(
+                            &metadata,
+                            factor_kind,
+                            target_scope,
+                        ) =>
+                    {
+                        FactorMetadataWrite::Inserted(on_present(metadata))
+                    }
+                    // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
+                    // factor is not in the target list, so rolling back the lookup is safe.
+                    Ok(None) => FactorMetadataWrite::NotInserted(e),
+                    Ok(Some(_)) if Self::is_precondition_failed_put(&e) => {
+                        FactorMetadataWrite::NotInserted(e)
+                    }
+                    _ => FactorMetadataWrite::Unknown(e),
+                }
+            }
+        }
+    }
+
+    /// Classifies a pre-write duplicate: same-scope keeps lookup (`Unknown`); opposite-scope rolls
+    /// it back (`NotInserted`).
+    fn duplicate_factor_outcome<T>(
+        metadata: &BackupMetadata,
+        kind: &FactorKind,
+        target_scope: FactorListScope,
+    ) -> Option<FactorMetadataWrite<T>> {
+        let in_target = Self::metadata_contains_factor_kind(metadata, kind, target_scope);
+        let in_other = Self::metadata_contains_factor_kind(
+            metadata,
+            kind,
+            match target_scope {
+                FactorListScope::Main => FactorListScope::Sync,
+                FactorListScope::Sync => FactorListScope::Main,
+            },
+        );
+
+        if in_target {
+            Some(FactorMetadataWrite::Unknown(
+                BackupManagerError::FactorAlreadyExists,
+            ))
+        } else if in_other {
+            Some(FactorMetadataWrite::NotInserted(
+                BackupManagerError::FactorAlreadyExists,
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn metadata_contains_factor_kind(
+        metadata: &BackupMetadata,
+        kind: &FactorKind,
+        scope: FactorListScope,
+    ) -> bool {
+        match scope {
+            FactorListScope::Main => metadata.factors.iter().any(|f| &f.kind == kind),
+            FactorListScope::Sync => metadata.sync_factors.iter().any(|f| &f.kind == kind),
+        }
+    }
+
+    fn is_precondition_failed_put(err: &BackupManagerError) -> bool {
+        match err {
+            BackupManagerError::PutObjectError(SdkError::ServiceError(service_err)) => {
+                service_err.raw().status().as_u16() == 412
+                    || service_err.err().code() == Some("PreconditionFailed")
+            }
+            _ => false,
+        }
     }
 
     /// Removes a `Main` factor from the backup metadata in S3 by factor ID.
@@ -432,8 +685,7 @@ impl BackupStorage {
             }
         }
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -441,7 +693,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(DeletionResult::OnlyFactorDeleted)
+        Ok(DeletionResult::OnlyFactorDeleted(metadata))
     }
 
     /// Removes a `Sync` factor from the backup metadata in S3 by factor ID.
@@ -453,7 +705,7 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         factor_id: &str,
-    ) -> Result<(), BackupManagerError> {
+    ) -> Result<BackupMetadata, BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
@@ -470,8 +722,7 @@ impl BackupStorage {
 
         metadata.sync_factors.remove(index);
 
-        self.s3_client
-            .put_object()
+        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
@@ -479,7 +730,7 @@ impl BackupStorage {
             .send()
             .await?;
 
-        Ok(())
+        Ok(metadata)
     }
 
     /// Deletes a backup and its metadata from S3.
@@ -543,6 +794,17 @@ impl BackupStorage {
             }
         }
     }
+
+    /// Helper to create a `PutObject` builder with SSE-C if configured
+    fn put_object(&self) -> aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder {
+        let mut builder = self.s3_client.put_object();
+        if let Some(key_arn) = self.environment.s3_sse_kms_key_arn() {
+            builder = builder
+                .ssekms_key_id(key_arn)
+                .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms);
+        }
+        builder
+    }
 }
 
 pub struct FoundBackup {
@@ -558,10 +820,23 @@ fn get_metadata_key(backup_id: &str) -> String {
     format!("{backup_id}/metadata")
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DeletionResult {
     BackupDeleted,
-    OnlyFactorDeleted,
+    OnlyFactorDeleted(BackupMetadata),
+}
+
+impl PartialEq for DeletionResult {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DeletionResult::BackupDeleted, DeletionResult::BackupDeleted) => true,
+            (
+                DeletionResult::OnlyFactorDeleted(metadata),
+                DeletionResult::OnlyFactorDeleted(other_metadata),
+            ) => metadata == other_metadata,
+            _ => false,
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -582,6 +857,8 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
+    #[error("Maximum number of factors ({limit}) for this backup has been reached")]
+    TooManyFactors { limit: usize },
     #[error("Factor not found")]
     FactorNotFound,
     #[error("Encryption key not found in metadata")]
@@ -590,10 +867,16 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
-    #[error("Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first.")]
+    #[error(
+        "Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first."
+    )]
     ManifestHashMismatch,
     #[error("A factor would be orphaned by removing the specific encryption key.")]
     FactorOrphanedFromEncryptionKey,
+    /// Today only one encryption key per type is allowed. In practice a user cannot have any combination of factors that would
+    /// result in multiple encryption keys and this prevents a broken state.
+    #[error("Only one encryption key per type is allowed")]
+    OnlyOneEncryptionKeyPerTypeAllowed,
 }
 
 #[cfg(test)]
@@ -615,6 +898,392 @@ mod tests {
         let mut test_backup_id: [u8; 32] = [0; 32];
         OsRng.fill_bytes(&mut test_backup_id);
         format!("backup_account_{}", hex::encode(test_backup_id))
+    }
+
+    fn put_object_service_error(
+        status: u16,
+    ) -> SdkError<aws_sdk_s3::operation::put_object::PutObjectError> {
+        use aws_sdk_s3::config::http::HttpResponse;
+        use aws_sdk_s3::operation::put_object::PutObjectError;
+        use aws_sdk_s3::primitives::SdkBody;
+
+        let http_resp = http::Response::builder()
+            .status(status)
+            .body(SdkBody::empty())
+            .unwrap();
+        SdkError::service_error(
+            PutObjectError::unhandled("test"),
+            HttpResponse::try_from(http_resp).unwrap(),
+        )
+    }
+
+    #[test]
+    fn classify_put_object_error_rolls_back_on_construction_and_client_rejection() {
+        let construction = BackupStorage::classify_put_object_error::<()>(
+            SdkError::construction_failure("build failed"),
+        );
+        assert!(construction.should_rollback_lookup());
+
+        let rejected =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(400));
+        assert!(rejected.should_rollback_lookup());
+
+        let access_denied =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(403));
+        assert!(access_denied.should_rollback_lookup());
+    }
+
+    #[test]
+    fn classify_put_object_error_keeps_lookup_on_ambiguous_failures() {
+        let precondition =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(412));
+        assert!(!precondition.should_rollback_lookup());
+
+        let server_error =
+            BackupStorage::classify_put_object_error::<()>(put_object_service_error(500));
+        assert!(!server_error.should_rollback_lookup());
+
+        let timeout =
+            BackupStorage::classify_put_object_error::<()>(SdkError::timeout_error("timed out"));
+        assert!(!timeout.should_rollback_lookup());
+    }
+
+    #[test]
+    fn is_precondition_failed_put_detects_412() {
+        let precondition = BackupManagerError::PutObjectError(put_object_service_error(412));
+        assert!(BackupStorage::is_precondition_failed_put(&precondition));
+
+        let bad_request = BackupManagerError::PutObjectError(put_object_service_error(400));
+        assert!(!BackupStorage::is_precondition_failed_put(&bad_request));
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_inserts_when_factor_present_after_412() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "reconcile_present".to_string(),
+                masked_email: "r****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let factor_kind = factor.kind.clone();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![factor],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Simulate lost-ACK: PutObject returned 412, but the factor is already in metadata.
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                FactorListScope::Main,
+                put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(!result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::Inserted(metadata) => {
+                assert!(BackupStorage::metadata_contains_factor_kind(
+                    &metadata,
+                    &factor_kind,
+                    FactorListScope::Main,
+                ));
+            }
+            other => panic!("Expected Inserted after reconcile, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_rolls_back_412_when_factor_absent() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let missing_kind = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "reconcile_absent".to_string(),
+                masked_email: "a****@example.com".to_string(),
+            },
+            turnkey_provider_id: "turnkey_provider_id".to_string(),
+        };
+
+        // Lost if_match race: 412 and the attempted factor never landed.
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &missing_kind,
+                FactorListScope::Main,
+                put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected NotInserted(PutObjectError), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_ignores_factor_in_other_scope() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let factor = Factor::new_ec_keypair("cross-scope-key".to_string());
+        let factor_kind = factor.kind.clone();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![factor],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Kind exists as main, but sync put reconcile must not treat that as Inserted.
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                FactorListScope::Sync,
+                put_object_service_error(412),
+                |_| (),
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected NotInserted for wrong-scope presence, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_rolls_back_when_metadata_missing() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        // No backup created — simulates concurrent delete between GET and if_match PUT.
+        let missing_kind = FactorKind::EcKeypair {
+            public_key: "deleted-backup-key".to_string(),
+        };
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &gen_backup_id(),
+                &missing_kind,
+                FactorListScope::Main,
+                put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected NotInserted when metadata is missing, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_rolls_back_timeout_when_metadata_missing() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        // Ambiguous put error + missing metadata must still roll back (not stay Unknown).
+        let missing_kind = FactorKind::EcKeypair {
+            public_key: "deleted-backup-timeout-key".to_string(),
+        };
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &gen_backup_id(),
+                &missing_kind,
+                FactorListScope::Sync,
+                SdkError::timeout_error("timed out"),
+                |_| (),
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
+            other => {
+                panic!("Expected NotInserted for timeout when metadata is missing, got {other:?}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_keeps_unknown_on_timeout_when_factor_absent() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let missing_kind = FactorKind::EcKeypair {
+            public_key: "timeout-key".to_string(),
+        };
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &missing_kind,
+                FactorListScope::Sync,
+                SdkError::timeout_error("timed out"),
+                |_| (),
+            )
+            .await;
+        assert!(!result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected Unknown(PutObjectError), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_factor_concurrent_race_rolls_back_loser() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let factor_a = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "race_a".to_string(),
+                masked_email: "a****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let factor_b = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "race_b".to_string(),
+                masked_email: "b****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let kind_a = factor_a.kind.clone();
+        let kind_b = factor_b.kind.clone();
+
+        let (result_a, result_b) = tokio::join!(
+            backup_storage.add_factor(&test_backup_id, factor_a, None),
+            backup_storage.add_factor(&test_backup_id, factor_b, None),
+        );
+
+        let a_inserted = matches!(result_a, FactorMetadataWrite::Inserted(_));
+        let b_inserted = matches!(result_b, FactorMetadataWrite::Inserted(_));
+        assert!(
+            a_inserted || b_inserted,
+            "at least one writer must succeed: {result_a:?} / {result_b:?}"
+        );
+        // A lost if_match race must reconcile to NotInserted (not Unknown).
+        if !a_inserted {
+            assert!(
+                result_a.should_rollback_lookup(),
+                "loser must roll back lookup: {result_a:?}"
+            );
+        }
+        if !b_inserted {
+            assert!(
+                result_b.should_rollback_lookup(),
+                "loser must roll back lookup: {result_b:?}"
+            );
+        }
+
+        let stored = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(
+            stored.metadata.factors.len(),
+            usize::from(a_inserted) + usize::from(b_inserted)
+        );
+        assert_eq!(
+            BackupStorage::metadata_contains_factor_kind(
+                &stored.metadata,
+                &kind_a,
+                FactorListScope::Main
+            ),
+            a_inserted
+        );
+        assert_eq!(
+            BackupStorage::metadata_contains_factor_kind(
+                &stored.metadata,
+                &kind_b,
+                FactorListScope::Main
+            ),
+            b_inserted
+        );
     }
 
     #[tokio::test]
@@ -679,7 +1348,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await
             .unwrap();
 
@@ -702,7 +1371,7 @@ mod tests {
 
         // Try to create a backup with the same ID - should return an error
         let result = backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await;
         assert!(result.is_err());
         match result {
@@ -722,7 +1391,7 @@ mod tests {
             .await
             .unwrap();
         let result = backup_storage
-            .create(test_backup_data.clone(), &backup_metadata)
+            .create(test_backup_data.clone().into(), &backup_metadata)
             .await;
         assert!(result.is_err());
         match result {
@@ -747,7 +1416,7 @@ mod tests {
         // Create a backup
         backup_storage
             .create(
-                test_backup_data.clone(),
+                test_backup_data.clone().into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
                     factors: vec![],
@@ -763,7 +1432,7 @@ mod tests {
         backup_storage
             .update_backup(
                 &test_backup_id,
-                updated_backup_data.clone(),
+                updated_backup_data.clone().into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
             )
@@ -800,7 +1469,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -817,6 +1486,7 @@ mod tests {
         backup_storage
             .add_factor(&test_backup_id, google_account.clone(), None)
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify the factor was added
@@ -833,24 +1503,52 @@ mod tests {
             hex::encode([1u8; 32])
         );
 
-        // Try to add the same factor again - should fail with FactorAlreadyExists
+        // Try to add the same factor again - should fail with FactorAlreadyExists as Unknown
+        // (do not roll back FactorLookup; the factor is already in metadata).
         let result = backup_storage
             .add_factor(&test_backup_id, google_account.clone(), None)
             .await;
-        assert!(result.is_err());
+        assert!(!result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::FactorAlreadyExists) => {}
-            _ => panic!("Expected FactorAlreadyExists"),
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
+        }
+
+        // Same keypair already registered as sync must reject main add with rollback.
+        let sync_keypair = Factor::new_ec_keypair("sync-then-main".to_string());
+        let sync_then_main_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: sync_then_main_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![sync_keypair.clone()],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+        let result = backup_storage
+            .add_factor(&sync_then_main_id, sync_keypair, None)
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!(
+                "Expected NotInserted(FactorAlreadyExists) for opposite scope, got {other:?}"
+            ),
         }
 
         // Try to add a factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
             .add_factor("non_existent_backup", google_account.clone(), None)
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::BackupNotFound) => {}
-            _ => panic!("Expected BackupNotFound"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound) => {}
+            other => panic!("Expected NotInserted(BackupNotFound), got {other:?}"),
         }
     }
 
@@ -877,11 +1575,11 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
-        // Create a test factor and new encryption key
+        // Create a test factor and new encryption key (different type from initial)
         let new_factor = Factor::new_oidc_account(
             OidcAccountKind::Google {
                 sub: "67890".to_string(),
@@ -890,14 +1588,18 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
 
-        let new_key = BackupEncryptionKey::Prf {
+        let new_key = BackupEncryptionKey::Turnkey {
             encrypted_key: "NEW_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
         };
 
         // Add the factor with the new encryption key
         backup_storage
             .add_factor(&test_backup_id, new_factor.clone(), Some(new_key.clone()))
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify both the factor and key were added
@@ -913,10 +1615,10 @@ mod tests {
         // Check that both keys are present
         assert_eq!(updated_backup.metadata.keys.len(), 2);
         match &updated_backup.metadata.keys[1] {
-            BackupEncryptionKey::Prf { encrypted_key } => {
+            BackupEncryptionKey::Turnkey { encrypted_key, .. } => {
                 assert_eq!(encrypted_key, "NEW_KEY");
             }
-            _ => panic!("Expected Prf key"),
+            _ => panic!("Expected Turnkey key"),
         }
     }
 
@@ -940,7 +1642,7 @@ mod tests {
 
         // Create a backup
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -949,6 +1651,7 @@ mod tests {
         backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await
+            .into_result()
             .unwrap();
 
         // Get the updated metadata and verify the sync factor was added
@@ -964,14 +1667,41 @@ mod tests {
             keypair_factor.kind
         );
 
-        // Try to add the same sync factor again - should fail with FactorAlreadyExists
+        // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
         let result = backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await;
-        assert!(result.is_err());
+        assert!(!result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::FactorAlreadyExists) => {}
-            _ => panic!("Expected FactorAlreadyExists"),
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
+        }
+
+        // Same key as a main factor must reject sync add with rollback (opposite scope).
+        let main_only_backup_id = gen_backup_id();
+        let main_keypair = Factor::new_ec_keypair("main-only-key".to_string());
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: main_only_backup_id.clone(),
+                    factors: vec![main_keypair.clone()],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+        let result = backup_storage
+            .add_sync_factor(&main_only_backup_id, main_keypair)
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!(
+                "Expected NotInserted(FactorAlreadyExists) for opposite scope, got {other:?}"
+            ),
         }
 
         // Try to add an invalid factor type (OIDC account) as a sync factor - should fail
@@ -985,21 +1715,161 @@ mod tests {
         let result = backup_storage
             .add_sync_factor(&test_backup_id, oidc_factor)
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::SyncFactorMustBeKeypair) => {}
-            _ => panic!("Expected SyncFactorMustBeKeypair"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::SyncFactorMustBeKeypair) => {}
+            other => panic!("Expected NotInserted(SyncFactorMustBeKeypair), got {other:?}"),
         }
 
         // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
             .add_sync_factor("non_existent_backup", keypair_factor.clone())
             .await;
-        assert!(result.is_err());
+        assert!(result.should_rollback_lookup());
         match result {
-            Err(BackupManagerError::BackupNotFound) => {}
-            _ => panic!("Expected BackupNotFound"),
+            FactorMetadataWrite::NotInserted(BackupManagerError::BackupNotFound) => {}
+            other => panic!("Expected NotInserted(BackupNotFound), got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_factor_enforces_max_limit() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Seed the backup one factor below the limit.
+        let test_backup_id = gen_backup_id();
+        let factors: Vec<Factor> = (0..MAX_MAIN_FACTORS_PER_BACKUP - 1)
+            .map(|i| {
+                Factor::new_oidc_account(
+                    OidcAccountKind::Google {
+                        sub: format!("sub_{i}"),
+                        masked_email: format!("t{i}****@example.com"),
+                    },
+                    "turnkey_provider_id".to_string(),
+                )
+            })
+            .collect();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors,
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Adding the factor that brings the backup up to the limit succeeds.
+        let at_limit_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_at_limit".to_string(),
+                masked_email: "at_limit****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let metadata = backup_storage
+            .add_factor(&test_backup_id, at_limit_factor, None)
+            .await
+            .into_result()
+            .unwrap();
+        assert_eq!(metadata.factors.len(), MAX_MAIN_FACTORS_PER_BACKUP);
+
+        // Adding one more distinct factor is rejected.
+        let over_limit_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_over_limit".to_string(),
+                masked_email: "over_limit****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let result = backup_storage
+            .add_factor(&test_backup_id, over_limit_factor, None)
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors { limit }) => {
+                assert_eq!(limit, MAX_MAIN_FACTORS_PER_BACKUP);
+            }
+            other => panic!("Expected NotInserted(TooManyFactors), got {other:?}"),
+        }
+
+        // The rejected factor was not persisted.
+        let stored = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(stored.metadata.factors.len(), MAX_MAIN_FACTORS_PER_BACKUP);
+    }
+
+    #[tokio::test]
+    async fn test_add_sync_factor_enforces_max_limit() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Seed the backup one sync factor below the limit.
+        let test_backup_id = gen_backup_id();
+        let sync_factors: Vec<Factor> = (0..MAX_SYNC_FACTORS_PER_BACKUP - 1)
+            .map(|i| Factor::new_ec_keypair(format!("public-key-{i}")))
+            .collect();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors,
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Adding the sync factor that brings the backup up to the limit succeeds.
+        backup_storage
+            .add_sync_factor(
+                &test_backup_id,
+                Factor::new_ec_keypair("public-key-at-limit".to_string()),
+            )
+            .await
+            .into_result()
+            .unwrap();
+
+        // Adding one more distinct sync factor is rejected.
+        let result = backup_storage
+            .add_sync_factor(
+                &test_backup_id,
+                Factor::new_ec_keypair("public-key-over-limit".to_string()),
+            )
+            .await;
+        assert!(result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors { limit }) => {
+                assert_eq!(limit, MAX_SYNC_FACTORS_PER_BACKUP);
+            }
+            other => panic!("Expected NotInserted(TooManyFactors), got {other:?}"),
+        }
+
+        // The rejected sync factor was not persisted.
+        let stored = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(
+            stored.metadata.sync_factors.len(),
+            MAX_SYNC_FACTORS_PER_BACKUP
+        );
     }
 
     #[tokio::test]
@@ -1034,7 +1904,7 @@ mod tests {
             manifest_hash: hex::encode([1u8; 32]),
         };
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1124,7 +1994,7 @@ mod tests {
         };
 
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1151,6 +2021,93 @@ mod tests {
 
         assert_eq!(updated_backup.metadata.factors.len(), 2);
         assert_eq!(updated_backup.metadata.keys.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_only_one_encryption_key_per_type_allowed() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        // Create a test backup with one PRF key
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let initial_prf_key = BackupEncryptionKey::Prf {
+            encrypted_key: "INITIAL_PRF_KEY".to_string(),
+        };
+        let initial_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![initial_prf_key],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        backup_storage
+            .create(test_backup_data.clone().into(), &initial_metadata)
+            .await
+            .unwrap();
+
+        // Try to add a factor with another PRF key - should fail
+        let new_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                masked_email: "t****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+
+        let duplicate_prf_key = BackupEncryptionKey::Prf {
+            encrypted_key: "DUPLICATE_PRF_KEY".to_string(),
+        };
+
+        let result = backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(duplicate_prf_key))
+            .await
+            .into_result();
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {
+                // Expected error - cannot add a second PRF key
+            }
+            _ => panic!("Expected OnlyOneEncryptionKeyPerTypeAllowed"),
+        }
+
+        // Verify that adding a different type of key is allowed
+        let turnkey_key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "TURNKEY_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        let result = backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), Some(turnkey_key))
+            .await
+            .into_result();
+
+        assert!(result.is_ok());
+
+        // Verify the backup now has both PRF and Turnkey keys
+        let updated_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+
+        assert_eq!(updated_backup.metadata.keys.len(), 2);
+        assert!(updated_backup
+            .metadata
+            .keys
+            .iter()
+            .any(|k| matches!(k, BackupEncryptionKey::Prf { .. })));
+        assert!(updated_backup
+            .metadata
+            .keys
+            .iter()
+            .any(|k| matches!(k, BackupEncryptionKey::Turnkey { .. })));
     }
 
     #[tokio::test]
@@ -1235,7 +2192,7 @@ mod tests {
         };
 
         backup_storage
-            .create(test_backup_data.clone(), &initial_metadata)
+            .create(test_backup_data.clone().into(), &initial_metadata)
             .await
             .unwrap();
 
@@ -1246,7 +2203,10 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), DeletionResult::OnlyFactorDeleted);
+        assert!(matches!(
+            result.unwrap(),
+            DeletionResult::OnlyFactorDeleted(_)
+        ));
 
         // Verify the backup now has only the Passkey factor and PRF key
         let updated_backup = backup_storage
@@ -1264,5 +2224,164 @@ mod tests {
             }
             _ => panic!("Expected only PRF key to remain"),
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn test_sse_encryption_with_localstack() {
+        dotenvy::from_filename(".env.example").unwrap();
+
+        let kms_key_id =
+            "arn:aws:kms:us-east-1:000000000000:key/00000000-f510-7227-9b63-da8e18607616";
+        std::env::set_var("BACKUP_S3_BUCKET_KMS_KEY_ARN", kms_key_id);
+        let environment = Environment::development(None);
+        let kms_client = aws_sdk_kms::Client::new(&environment.aws_config().await);
+
+        kms_client
+            .enable_key()
+            .key_id(kms_key_id)
+            .send()
+            .await
+            .unwrap();
+
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        let test_backup_id = gen_backup_id();
+        let test_backup_data = vec![1, 2, 3, 4, 5];
+        let test_metadata = BackupMetadata {
+            id: test_backup_id.clone(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+
+        // Test 1: Create backup with SSE-KMS
+        backup_storage
+            .create(test_backup_data.clone().into(), &test_metadata)
+            .await
+            .unwrap();
+
+        // Verify the object is encrypted with SSE-KMS
+        let head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_backup_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(head_result.ssekms_key_id(), Some(kms_key_id));
+
+        // Test 2: Get backup with SSE-KMS (should succeed with correct key)
+        let found_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(found_backup.backup, test_backup_data);
+        assert_eq!(found_backup.metadata, test_metadata);
+
+        // Test 3: Get metadata with SSE-KMS
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata, test_metadata);
+
+        // Test 4: Update backup with SSE-KMS
+        let updated_backup_data = vec![6, 7, 8, 9, 10];
+        backup_storage
+            .update_backup(
+                &test_backup_id,
+                updated_backup_data.clone().into(),
+                hex::encode([1u8; 32]),
+                hex::encode([2u8; 32]),
+            )
+            .await
+            .unwrap();
+
+        let found_backup = backup_storage
+            .get_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Backup not found");
+        assert_eq!(found_backup.backup, updated_backup_data);
+        assert_eq!(found_backup.metadata.manifest_hash, hex::encode([2u8; 32]));
+
+        // Test 5: Add factor with SSE-KMS
+        let new_factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "12345".to_string(),
+                masked_email: "test@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        backup_storage
+            .add_factor(&test_backup_id, new_factor.clone(), None)
+            .await
+            .into_result()
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.factors.len(), 1);
+
+        // Test 6: Add sync factor with SSE-KMS
+        let sync_factor = Factor::new_ec_keypair("public-key".to_string());
+        backup_storage
+            .add_sync_factor(&test_backup_id, sync_factor.clone())
+            .await
+            .into_result()
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.sync_factors.len(), 1);
+
+        // Test 7: Remove sync factor with SSE-KMS
+        backup_storage
+            .remove_sync_factor(&test_backup_id, &sync_factor.id)
+            .await
+            .unwrap();
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("Metadata not found");
+        assert_eq!(metadata.sync_factors.len(), 0);
+
+        // Test 8: Head object with SSE-KMS
+        let exists = backup_storage
+            .does_backup_exist(&test_backup_id)
+            .await
+            .unwrap();
+        assert!(exists);
+
+        // Test 9: Verify encryption is applied to all objects
+        let metadata_head_result = s3_client
+            .head_object()
+            .bucket(environment.s3_bucket())
+            .key(get_metadata_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_head_result.server_side_encryption(),
+            Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+        );
+        assert_eq!(metadata_head_result.ssekms_key_id(), Some(kms_key_id));
     }
 }

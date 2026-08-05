@@ -24,7 +24,7 @@ async fn test_sync_backup_happy_path() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -83,7 +83,7 @@ async fn test_sync_backup_with_incorrect_authorization() {
     // Get the backup ID
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let _backup_id = response["backupId"].as_str().unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -150,7 +150,7 @@ async fn test_sync_backup_with_wrong_current_manifest_hash() {
     // Get the backup ID
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // Get a sync challenge
     let challenge_response =
@@ -270,7 +270,10 @@ async fn test_concurrent_sync_backup_prevention() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap().to_string();
+    let backup_id = response["backupMetadata"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Counter for tracking results
     let success_count = Arc::new(AtomicU32::new(0));
@@ -309,7 +312,7 @@ async fn test_concurrent_sync_backup_prevention() {
             let response = common::send_post_request_with_multipart(
                 "/v1/sync",
                 json!({
-                    "authorization": { 
+                    "authorization": {
                         "kind": "EC_KEYPAIR",
                         "publicKey": sync_public_key,
                         "signature": signature,
@@ -386,7 +389,7 @@ async fn test_lock_release_allows_subsequent_operations() {
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = response["backupId"].as_str().unwrap();
+    let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
     // First sync operation
     let challenge_response1 =
@@ -471,4 +474,143 @@ async fn test_lock_release_allows_subsequent_operations() {
 
     // Verify the final backup content
     verify_s3_backup_exists(backup_id, b"UPDATED BACKUP 2").await;
+}
+
+#[tokio::test]
+async fn test_sync_backup_with_large_file() {
+    // Create a backup with a keypair and get the sync factor secret key
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
+
+    // Get a sync challenge
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Sync the backup with a file that's too large (15 MB + 1 byte)
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        json!({
+            "authorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": sync_public_key,
+                "signature": signature,
+            },
+            "challengeToken": challenge_response["token"],
+            "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+            "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
+        }),
+        Bytes::from(vec![0; 15 * 1024 * 1024 + 1]), // 15 MB + 1 byte
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        response,
+        json!({
+            "allowRetry": false,
+            "error": {
+                "code": "content_too_large",
+                "message": "Backup file exceeds maximum allowed size.",
+            },
+        })
+    );
+}
+
+/// We test the header parser works as expected using the bona-fide `Content-Length`.
+///
+/// This is useful because Axum will truncate the multipart data if it exceeds the safety
+/// max length, and an esoteric error gets returned to the user.
+#[tokio::test]
+async fn test_sync_backup_with_extremely_large_file() {
+    // Create a backup with a keypair and get the sync factor secret key
+    let ((_, _), response, sync_secret_key) =
+        create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
+
+    // Extract the backup ID from the response
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let _backup_id = response["backupMetadata"]["id"].as_str().unwrap();
+
+    // Get a sync challenge
+    let challenge_response =
+        common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
+    let challenge_response_body = challenge_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let challenge_response: serde_json::Value =
+        serde_json::from_slice(&challenge_response_body).unwrap();
+
+    // Sign the challenge with the sync factor secret key
+    let sync_public_key = STANDARD.encode(sync_secret_key.public_key().to_sec1_bytes());
+    let signature = sign_keypair_challenge(
+        &sync_secret_key,
+        challenge_response["challenge"].as_str().unwrap(),
+    );
+
+    // Sync the backup with a file that's too large (15 MB + 1 byte)
+    let payload = json!({
+        "authorization": {
+            "kind": "EC_KEYPAIR",
+            "publicKey": sync_public_key,
+            "signature": signature,
+        },
+        "challengeToken": challenge_response["token"],
+        "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
+        "newManifestHash": "0202020202020202020202020202020202020202020202020202020202020202",
+    });
+    let backup_bytes = Bytes::from(vec![0; 30 * 1024 * 1024]); // 30 MB is way past the safety limit
+    let response = common::send_post_request_with_multipart(
+        "/v1/sync",
+        payload.clone(),
+        backup_bytes.clone(),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(response["allowRetry"], json!(false));
+    let error = response["error"].as_object().unwrap();
+    assert_eq!(error["code"], json!("content_too_large"));
+
+    let message = error["message"].as_str().unwrap();
+    const PREFIX: &str = "Request body of ";
+    const SUFFIX: &str = " bytes is too large.";
+    assert!(message.starts_with(PREFIX) && message.ends_with(SUFFIX));
+
+    let bytes = &message[PREFIX.len()..message.len() - SUFFIX.len()];
+    let reported_bytes: usize = bytes.parse().unwrap();
+    // assert to a range to account for variance in the token length
+    assert!((31_458_000..31_458_999).contains(&reported_bytes));
 }

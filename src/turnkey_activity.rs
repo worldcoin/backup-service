@@ -119,9 +119,9 @@ pub fn verify_turnkey_activity_webauthn_stamp(
 }
 
 /// For a given Turnkey activity JSON, verifies that:
-/// * The activity contains the expected account ID (corresponding to backup metadata)
 /// * The activity contains the expected activity type
 /// * The activity is not expired (based on the TTL)
+/// * The activity contains the expected account ID (only if the user previously had a Turnkey account already)
 ///
 /// # Errors
 /// - `TurnkeyActivityError::ActivityJsonParseError` if the activity JSON cannot be parsed
@@ -134,7 +134,7 @@ pub fn verify_turnkey_activity_webauthn_stamp(
 /// - `TurnkeyActivityError::ActivityExpired` if the activity is expired based on the TTL
 pub fn verify_turnkey_activity_parameters(
     activity_json: &str,
-    expected_turnkey_account_id: &str,
+    expected_turnkey_account_id: Option<String>,
     expected_activity_type: &str,
     activity_ttl: Duration,
 ) -> Result<(), TurnkeyActivityError> {
@@ -147,8 +147,10 @@ pub fn verify_turnkey_activity_parameters(
         .as_str()
         .ok_or(TurnkeyActivityError::MissingOrganizationId)?;
 
-    if organization_id != expected_turnkey_account_id {
-        return Err(TurnkeyActivityError::OrganizationIdMismatch);
+    if let Some(expected_turnkey_account_id) = expected_turnkey_account_id {
+        if organization_id != expected_turnkey_account_id {
+            return Err(TurnkeyActivityError::OrganizationIdMismatch);
+        }
     }
 
     // Verify activity type
@@ -326,7 +328,7 @@ mod tests {
 
         verify_turnkey_activity_parameters(
             &activity_json,
-            expected_account_id,
+            Some(expected_account_id.to_string()),
             expected_activity_type,
             ttl,
         )
@@ -351,7 +353,7 @@ mod tests {
 
         let result = verify_turnkey_activity_parameters(
             &activity_json,
-            expected_account_id,
+            Some(expected_account_id.to_string()),
             expected_activity_type,
             ttl,
         );
@@ -374,16 +376,11 @@ mod tests {
             "type": "ACTIVITY_TYPE_INIT_IMPORT_PRIVATE_KEY"
         })
         .to_string();
-        let expected_account_id = "17d89304-c865-4485-ba45-277a5f2076af";
         let expected_activity_type = "DIFFERENT_ACTIVITY_TYPE";
         let ttl = Duration::minutes(60);
 
-        let result = verify_turnkey_activity_parameters(
-            &activity_json,
-            expected_account_id,
-            expected_activity_type,
-            ttl,
-        );
+        let result =
+            verify_turnkey_activity_parameters(&activity_json, None, expected_activity_type, ttl);
 
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -409,7 +406,7 @@ mod tests {
 
         let result = verify_turnkey_activity_parameters(
             &activity_json,
-            expected_account_id,
+            Some(expected_account_id.to_string()),
             expected_activity_type,
             ttl,
         );

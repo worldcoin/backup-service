@@ -5,7 +5,7 @@ use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::{FactorLookup, FactorScope};
 use crate::redis_cache::RedisCacheManager;
-use crate::types::backup_metadata::BackupMetadata;
+use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
@@ -28,7 +28,10 @@ pub struct CreateBackupRequest {
     /// First `Sync` factor that will be registered for this backup.
     initial_sync_factor: Authorization,
     initial_sync_challenge_token: String,
-    /// Provider ID from Turnkey ID. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
+    /// Provider ID from Turnkey. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
+    ///
+    /// To avoid confusion, this is NOT the Turnkey account ID, it is specifically the provider ID.
+    /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
     turnkey_provider_id: Option<String>,
     /// The initial manifest hash of the backup.
     #[serde(deserialize_with = "normalize_hex_32")]
@@ -41,7 +44,10 @@ pub struct CreateBackupRequest {
 #[derive(Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupResponse {
-    pub backup_id: String,
+    /// DEPRECATED. Please use `backup_metadata.id` instead.
+    backup_id: String,
+    /// The current state of the backup metadata for the newly created backup.
+    backup_metadata: ExportedBackupMetadata,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -55,28 +61,39 @@ pub async fn handler(
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
-    let multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
+    let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
     let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::info!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request("missing_payload_field")
+        tracing::debug!(message = "Missing payload field in multipart data");
+        ErrorResponse::bad_request(
+            "missing_payload_field",
+            "Missing payload field in multipart data",
+        )
     })?;
     let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
-        tracing::info!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload")
+        tracing::debug!(message = "Failed to deserialize payload", error = ?err);
+        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.get("backup").ok_or_else(|| {
-        tracing::info!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request("missing_backup_field")
+    let backup = multipart_fields.remove("backup").ok_or_else(|| {
+        tracing::debug!(message = "Missing backup field in multipart data");
+        ErrorResponse::bad_request(
+            "missing_backup_field",
+            "Missing backup field in multipart data",
+        )
     })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
-        tracing::info!(message = "Empty backup file");
-        return Err(ErrorResponse::bad_request("empty_backup_file"));
+        tracing::debug!(message = "Empty backup file");
+        return Err(ErrorResponse::bad_request(
+            "empty_backup_file",
+            "Empty backup file",
+        ));
     }
     if backup.len() > environment.max_backup_file_size() {
-        tracing::info!(message = "Backup file too large");
-        return Err(ErrorResponse::bad_request("backup_file_too_large"));
+        tracing::debug!(message = "Backup file too large");
+        return Err(ErrorResponse::content_too_large(
+            "Backup file exceeds maximum allowed size.".to_string(),
+        ));
     }
 
     // Step 2: Verify the main authentication factor
@@ -85,7 +102,7 @@ pub async fn handler(
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.authorization,
-            request.challenge_token.to_string(),
+            request.challenge_token.clone(),
             ChallengeContext::Create {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
@@ -100,7 +117,7 @@ pub async fn handler(
     let sync_validation_result = auth_handler
         .validate_factor_registration(
             &request.initial_sync_factor,
-            request.initial_sync_challenge_token.to_string(),
+            request.initial_sync_challenge_token.clone(),
             ChallengeContext::Create {},
             None,
             true, // is a sync factor
@@ -119,7 +136,10 @@ pub async fn handler(
             message = "Backup account ID already exists",
             backup_account_id = request.backup_account_id
         );
-        return Err(ErrorResponse::conflict("backup_account_id_already_exists"));
+        return Err(ErrorResponse::conflict(
+            "backup_account_id_already_exists",
+            "Backup ID already exists. Please `/sync` instead.",
+        ));
     }
     let mut lock_guard = redis_cache_manager
         .try_acquire_lock_guard(
@@ -157,9 +177,7 @@ pub async fn handler(
         .await?;
 
     // Step 7: Save the backup to S3
-    let result = backup_storage
-        .create(backup.to_vec(), &backup_metadata)
-        .await;
+    let result = backup_storage.create(backup, &backup_metadata).await;
 
     let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
@@ -180,7 +198,10 @@ pub async fn handler(
         return Err(e.into());
     }
 
+    let backup_id = backup_metadata.id.clone();
+
     Ok(Json(CreateBackupResponse {
-        backup_id: backup_metadata.id,
+        backup_id,
+        backup_metadata: backup_metadata.exported(),
     }))
 }

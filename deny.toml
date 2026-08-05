@@ -8,11 +8,13 @@ unknown-registry = "deny"
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed." },
+    { id = "RUSTSEC-2026-0098", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
+    { id = "RUSTSEC-2026-0099", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
+    { id = "RUSTSEC-2026-0104", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
 ]
 
 [licenses]
 version = 2
-# We want really high confidence when inferring licenses from text
 confidence-threshold = 1.0
 
 # List of explicitly allowed licenses
@@ -22,15 +24,12 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "Apache-2.0",
     "BSD-2-Clause",
-    # "BSD-2-Clause-Patent",
     "BSD-3-Clause",
     "BSL-1.0",
-    # "CC0-1.0",
     "ISC",
     "MIT",
     "MPL-2.0",                        # Although this is copyleft, it is scoped to modifying the original files
     "Unicode-3.0",
-    # "Unicode-DFS-2016",
     "Unlicense",
     "Zlib",
     "CDLA-Permissive-2.0",

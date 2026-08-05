@@ -1,5 +1,8 @@
 mod common;
 
+use std::sync::Arc;
+
+use crate::common::get_test_s3_client;
 use crate::common::{
     create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
@@ -7,6 +10,9 @@ use crate::common::{
 };
 use axum::http::StatusCode;
 use axum::response::Response;
+use backup_service::backup_storage::{BackupStorage, MAX_MAIN_FACTORS_PER_BACKUP};
+use backup_service::types::backup_metadata::{Factor, OidcAccountKind};
+use backup_service::types::encryption_key::BackupEncryptionKey;
 use backup_service::types::Environment;
 use backup_service_test_utils::get_mock_passkey_client;
 use backup_service_test_utils::get_passkey_assertion;
@@ -38,7 +44,10 @@ async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockP
     // Extract the backup ID from the response
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let create_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let backup_id = create_response["backupId"].as_str().unwrap().to_string();
+    let backup_id = create_response["backupMetadata"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     (oidc_server, environment, backup_id, passkey_client)
 }
@@ -92,6 +101,107 @@ fn create_keypair_and_sign(challenge: &str) -> (String, SecretKey, String) {
 async fn parse_response_body(response: Response) -> Value {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&body).unwrap()
+}
+
+async fn add_google_oidc_factor(
+    oidc_server: &MockOidcServer,
+    environment: Environment,
+    passkey_client: &mut MockPasskeyClient,
+    subject: &str,
+) -> Response {
+    let (new_public_key, new_secret_key) = common::generate_keypair();
+    let oidc_token = oidc_server.generate_token(
+        &MockOidcProvider::Google,
+        Some(SubjectIdentifier::new(subject.to_string())),
+        &new_public_key,
+    );
+    let challenges = get_add_factor_challenges(&oidc_token).await;
+    let new_factor_signature = common::sign_keypair_challenge(
+        &new_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+    let (turnkey_activity, challenge_hash) =
+        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion = get_passkey_assertion(passkey_client, &challenge_hash).await;
+
+    common::send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": {
+                    "kind": "GOOGLE",
+                    "token": oidc_token
+                },
+                "publicKey": new_public_key,
+                "signature": new_factor_signature,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "encryptedBackupKey": null,
+            "turnkeyProviderId": "turnkey_provider_id",
+        }),
+        Some(environment),
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial]
+async fn test_add_factor_at_max_limit_rolls_back_factor_lookup() {
+    let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
+
+    // The backup starts with one passkey factor; seed distinct OIDC factors up to the limit.
+    let s3_client = Arc::new(get_test_s3_client().await);
+    let backup_storage = BackupStorage::new(environment, s3_client);
+    for i in 0..MAX_MAIN_FACTORS_PER_BACKUP - 1 {
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: format!("seed-subject-{i}"),
+                masked_email: format!("s{i}****@example.com"),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        backup_storage
+            .add_factor(&backup_id, factor, None)
+            .await
+            .into_result()
+            .unwrap();
+    }
+
+    let subject = format!("over-limit-subject-{}", uuid::Uuid::new_v4());
+
+    // First attempt is rejected for exceeding the limit.
+    let response =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_client, &subject).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        parse_response_body(response).await["error"]["code"],
+        "too_many_factors"
+    );
+
+    // Retrying the same credential is rejected for the SAME reason, not with a stale-lookup
+    // `factor_already_exists`. `FactorLookup::insert` refuses duplicate keys, so this only succeeds
+    // in reaching the limit check again if the first attempt's lookup entry was rolled back.
+    let response =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_client, &subject).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        parse_response_body(response).await["error"]["code"],
+        "too_many_factors"
+    );
+
+    // Metadata still holds exactly the limit — no rejected factor leaked in.
+    let metadata = verify_s3_metadata_exists(&backup_id).await;
+    assert_eq!(
+        metadata["factors"].as_array().unwrap().len(),
+        MAX_MAIN_FACTORS_PER_BACKUP
+    );
 }
 
 // Happy path - add a new OIDC account factor to an existing backup using a passkey
@@ -163,6 +273,20 @@ async fn test_add_factor_happy_path() {
     assert_eq!(response.status(), StatusCode::OK);
     let add_factor_response = parse_response_body(response).await;
     assert!(add_factor_response["factorId"].as_str().is_some());
+    assert!(add_factor_response["backupMetadata"].is_object());
+    assert_eq!(
+        add_factor_response["backupMetadata"]["id"]
+            .as_str()
+            .unwrap(),
+        backup_id
+    );
+    assert_eq!(
+        add_factor_response["backupMetadata"]["factors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // Verify the factor was added to the backup metadata
     let metadata = verify_s3_metadata_exists(&backup_id).await;
@@ -310,8 +434,8 @@ async fn test_add_factor_with_mismatched_oidc_token() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "invalid_oidc_token",
-                "message": "invalid_oidc_token",
+                "code": "oidc_token_mismatch",
+                "message": "OIDC Token mismatch",
             }
         })
     );
@@ -395,7 +519,7 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
     // Verify the request was rejected with an error
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let error_response = parse_response_body(response).await;
-    assert_eq!(error_response["error"]["code"], "webauthn_error");
+    assert_eq!(error_response["error"]["code"], "invalid_turnkey_activity");
 }
 
 // Modified Turnkey activity after signing
@@ -460,7 +584,7 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     // Verify the request was rejected with an error
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let error_response = parse_response_body(response).await;
-    assert_eq!(error_response["error"]["code"], "webauthn_error");
+    assert_eq!(error_response["error"]["code"], "turnkey_activity_error");
 }
 
 // Incorrectly signed challenge for new keypair
@@ -530,7 +654,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
             "allowRetry": false,
             "error": {
                 "code": "signature_verification_error",
-                "message": "signature_verification_error",
+                "message": "Signature verification failed",
             }
         })
     );
@@ -616,8 +740,8 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "turnkey_activity_error",
+                "message": "Signature verification failed",
             }
         })
     );
@@ -628,7 +752,29 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
 #[serial]
 async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encrypted_backup_key() {
     // Setup test environment
-    let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
+    let (oidc_server, environment, backup_id, mut passkey_client) = setup_test_environment().await;
+
+    // Update the backup metadata with a pre-registered OIDC factor
+    let s3_client = Arc::new(get_test_s3_client().await);
+    let backup_storage = BackupStorage::new(environment, s3_client.clone());
+    let factor = Factor::new_oidc_account(
+        OidcAccountKind::Google {
+            sub: "12345".to_string(),
+            masked_email: "t****@example.com".to_string(),
+        },
+        "turnkey_provider_id".to_string(),
+    );
+    let encryption_key = BackupEncryptionKey::Turnkey {
+        encrypted_key: "ENCRYPTED_KEY".to_string(),
+        turnkey_account_id: "org_123".to_string(),
+        turnkey_user_id: "TURNKEY_USER_ID".to_string(),
+        turnkey_private_key_id: "TURNKEY_PRIVATE_KEY_ID".to_string(),
+    };
+    backup_storage
+        .add_factor(&backup_id, factor, Some(encryption_key))
+        .await
+        .into_result()
+        .unwrap();
 
     // Create keypair for new factor
     let (new_public_key, new_secret_key) = common::generate_keypair();
@@ -673,7 +819,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
                 "encryptedKey": "ENCRYPTED_KEY",
-                // Different account ID than in the activity, not org123
+                // Different account ID than in the activity, not `org123` (doesn't match the existing backup metadata)
                 "turnkeyAccountId": "different_account_id",
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
@@ -692,8 +838,8 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
         json!({
             "allowRetry": false,
             "error": {
-                "code": "webauthn_error",
-                "message": "webauthn_error",
+                "code": "turnkey_activity_error",
+                "message": "organizationId does not match expected Turnkey account ID",
             }
         })
     );

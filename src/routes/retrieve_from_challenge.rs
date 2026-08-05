@@ -4,6 +4,7 @@ use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::factor_lookup::FactorScope;
+use crate::headers::CLIENT_VERSION;
 use crate::redis_cache::RedisCacheManager;
 use crate::types::backup_metadata::ExportedBackupMetadata;
 use crate::types::{Authorization, ErrorResponse};
@@ -11,6 +12,7 @@ use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -45,6 +47,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    headers: HeaderMap,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
@@ -57,7 +60,13 @@ pub async fn handler(
         )
         .await?;
 
-    let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = %backup_id);
+    let client_version = headers
+        .get(&CLIENT_VERSION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+
+    let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = %backup_id, client_version = %client_version);
+
     async move {
         // Step 2: Fetch the backup from S3
         let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;

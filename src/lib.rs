@@ -5,7 +5,9 @@ pub mod auth;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod factor_lookup;
+pub mod headers;
 pub mod kms_jwe;
+pub mod middleware;
 pub mod oidc_nonce_verifier;
 pub mod oidc_token_verifier;
 pub mod redis_cache;
@@ -36,12 +38,16 @@ pub fn mask_email(email: &str) -> Option<String> {
         return None;
     }
 
-    if local_part.len() <= 2 {
+    // Take the first two characters (not bytes) so multibyte UTF-8 local parts,
+    // don't cause a mid-character slice panic.
+    let mut chars = local_part.chars();
+    let prefix: String = chars.by_ref().take(2).collect();
+    if chars.next().is_none() {
+        // Local part is two characters or fewer; nothing to mask.
         return Some(email.to_string());
     }
 
-    let masked_local_part = format!("{}***", &local_part[..2]);
-    Some(format!("{masked_local_part}@{domain_part}"))
+    Some(format!("{prefix}***@{domain_part}"))
 }
 
 use serde::{de, Deserialize, Deserializer};
@@ -62,7 +68,7 @@ where
     if bytes.len() != 32 {
         return Err(de::Error::custom("Expected 32 bytes"));
     }
-    Ok(s.to_string())
+    Ok(s.to_lowercase())
 }
 
 /// Deserializes a provided backup account ID and verifies it has the correct format.
@@ -80,9 +86,10 @@ where
         ));
     }
     let bytes = hex::decode(s.trim_start_matches("backup_account_")).map_err(de::Error::custom)?;
-    if bytes.len() != 32 {
+    // 33 bytes because we expect a SEC.1 compressed public key
+    if bytes.len() != 33 {
         return Err(de::Error::custom(
-            "Invalid backup account ID. Expected 32 bytes after the prefix.",
+            "Invalid backup account ID. Expected 33 bytes after the prefix.",
         ));
     }
     Ok(s)
@@ -107,5 +114,21 @@ mod tests {
         assert_eq!(mask_email("@gmail.com"), None);
         assert_eq!(mask_email("ex@"), None);
         assert_eq!(mask_email("@"), None);
+    }
+
+    #[test]
+    fn test_mask_email_multibyte_does_not_panic() {
+        // multibyte characters do not get sliced
+        assert_eq!(
+            mask_email("😀🎉rest@gmail.com"),
+            Some("😀🎉***@gmail.com".to_string())
+        );
+        assert_eq!(
+            mask_email("ébcd@gmail.com"),
+            Some("éb***@gmail.com".to_string())
+        );
+        // two or less characters are returned as-is
+        assert_eq!(mask_email("é@gmail.com"), Some("é@gmail.com".to_string()));
+        assert_eq!(mask_email("😀@gmail.com"), Some("😀@gmail.com".to_string()));
     }
 }

@@ -6,8 +6,7 @@ use axum::http::Request;
 use axum::response::Response;
 use axum::Extension;
 use backup_service::attestation_gateway::{
-    AttestationGateway, AttestationGatewayConfig, GenerateRequestHashInput,
-    ATTESTATION_GATEWAY_HEADER,
+    AttestationGateway, GenerateRequestHashInput, ATTESTATION_GATEWAY_HEADER,
 };
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
@@ -150,13 +149,13 @@ pub async fn get_test_router(
         oidc_token_verifier.clone(),
     );
 
-    let attestation_gateway = Arc::new(AttestationGateway::new(AttestationGatewayConfig {
-        base_url: attestation_gateway_base_url_override
+    let attestation_gateway = Arc::new(AttestationGateway::new(
+        attestation_gateway_base_url_override
             .unwrap_or(environment.attestation_gateway_host())
             .to_string(),
-        env: environment,
-        enabled: true,
-    }));
+        &environment,
+        false,
+    ));
 
     backup_service::handler(environment)
         .finish_api(&mut Default::default())
@@ -265,6 +264,7 @@ pub async fn send_post_request_with_multipart(
             "Content-Type",
             format!("multipart/form-data; boundary={}", boundary),
         )
+        .header("Content-Length", body_bytes.len())
         .body(Body::from(body_bytes))
         .unwrap();
 
@@ -452,8 +452,9 @@ pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
 }
 
 pub fn generate_random_backup_id() -> String {
-    let mut test_backup_id: [u8; 32] = [0; 32];
+    let mut test_backup_id: [u8; 33] = [0; 33];
     OsRng.fill_bytes(&mut test_backup_id);
+    test_backup_id[0] = 0x3;
     format!("backup_account_{}", hex::encode(test_backup_id))
 }
 

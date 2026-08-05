@@ -225,7 +225,7 @@ async fn kms_decrypt(
             if err.is_invalid_ciphertext_exception() {
                 return Err(anyhow::anyhow!("Failed to unwrap key."));
             }
-            Err(anyhow::anyhow!("KMS error decrypting token: {}", err))
+            Err(anyhow::anyhow!("KMS error decrypting token: {err}"))
         }
     }
 }

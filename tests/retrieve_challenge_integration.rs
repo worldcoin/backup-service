@@ -80,12 +80,12 @@ async fn test_retrieve_challenge_without_attestation() {
         let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(
-            response["error"]["code"], "missing_attestation_token_header",
+            response["error"]["code"], "invalid_attestation_token_header",
             "error.code mismatch on {}",
             endpoint
         );
         assert_eq!(
-            response["error"]["message"], "missing_attestation_token_header",
+            response["error"]["message"], "Attestation token header is invalid or not present.",
             "error.message mismatch on {}",
             endpoint
         );
@@ -127,7 +127,7 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
             endpoint
         );
         assert_eq!(
-            response["error"]["message"], "invalid_attestation_token",
+            response["error"]["message"], "Invalid attestation token.",
             "error.message mismatch on {}",
             endpoint
         );

@@ -41,7 +41,7 @@ pub async fn handler(
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.sync_factor,
-            request.challenge_token.to_string(),
+            request.challenge_token.clone(),
             ChallengeContext::AddSyncFactor {},
             None,
             true, // is_sync_factor
@@ -53,7 +53,7 @@ pub async fn handler(
 
     // Step 2: Verify the sync factor token and extract the backup ID
     let backup_id = redis_cache_manager
-        .use_sync_factor_token(request.sync_factor_token.to_string())
+        .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
     // Step 3: Add the sync factor to backup lookup
@@ -62,12 +62,13 @@ pub async fn handler(
         .await?;
 
     // Step 4: Add the sync factor to the backup metadata
-    let result = backup_storage
+    let write = backup_storage
         .add_sync_factor(&backup_id, sync_factor)
         .await;
 
-    // Step 4.1: If `add_sync_factor` into the S3 metadata fails, remove sync factor from lookup and allow the token to be reused for retries
-    if let Err(e) = result {
+    // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land
+    // (`NotInserted`). Skip for `Unknown` (ambiguous S3 write or factor already present).
+    if write.should_rollback_lookup() {
         if let Err(e) = factor_lookup
             .delete(FactorScope::Sync, &sync_factor_to_lookup)
             .await
@@ -76,14 +77,14 @@ pub async fn handler(
         }
 
         if let Err(e) = redis_cache_manager
-            .unuse_sync_factor_token(request.sync_factor_token.to_string())
+            .unuse_sync_factor_token(request.sync_factor_token.clone())
             .await
         {
             tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);
         }
-
-        return Err(e.into());
     }
+
+    write.into_result()?;
 
     Ok(Json(AddSyncFactorResponse { backup_id }))
 }

@@ -26,3 +26,13 @@ pub enum BackupEncryptionKey {
         turnkey_private_key_id: String,
     },
 }
+
+impl BackupEncryptionKey {
+    pub fn flattened_kind(&self) -> &str {
+        match self {
+            BackupEncryptionKey::Prf { .. } => "prf",
+            BackupEncryptionKey::Icloud { .. } => "icloud",
+            BackupEncryptionKey::Turnkey { .. } => "turnkey",
+        }
+    }
+}
