@@ -313,8 +313,10 @@ pub async fn handler(
                     if inner.err().is_conditional_check_failed_exception()
             ) =>
         {
+            // Consistent read: ConditionalCheckFailed proves the item exists; an eventually
+            // consistent GetItem can still return None and spuriously 500.
             match factor_lookup
-                .lookup(FactorScope::Main, &factor_to_lookup)
+                .lookup_consistent(FactorScope::Main, &factor_to_lookup)
                 .await?
             {
                 Some(existing_backup_id) if existing_backup_id == backup_id => {
@@ -332,7 +334,7 @@ pub async fn handler(
                 }
                 None => {
                     tracing::error!(
-                        message = "Lookup ConditionalCheckFailed but factor not found on re-read",
+                        message = "Lookup ConditionalCheckFailed but factor not found on consistent re-read",
                         factor_pk = factor_to_lookup.primary_key(),
                     );
                     return Err(ErrorResponse::internal_server_error());
