@@ -108,12 +108,9 @@ async fn test_add_factor_challenge_binding_matrix() {
         "newFactorAuthorization": { "kind": "PASSKEY", "credential": json!({"dummy": true}) },
         "newFactorChallengeToken": challenges2["newFactorToken"],
     });
-    let resp3 = send_post_request_with_environment(
-        "/v1/add-factor",
-        mismatched_payload,
-        Some(environment),
-    )
-    .await;
+    let resp3 =
+        send_post_request_with_environment("/v1/add-factor", mismatched_payload, Some(environment))
+            .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
     let body3 = parse_response_body(resp3).await;
     assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
@@ -151,9 +148,12 @@ async fn test_add_factor_challenge_binding_matrix() {
         "newFactorChallengeToken": challenges3["existingFactorToken"],
         "turnkeyProviderId": "turnkey_provider_id",
     });
-    let resp4 =
-        send_post_request_with_environment("/v1/add-factor", swapped_tokens_payload, Some(environment))
-            .await;
+    let resp4 = send_post_request_with_environment(
+        "/v1/add-factor",
+        swapped_tokens_payload,
+        Some(environment),
+    )
+    .await;
     assert_eq!(resp4.status(), StatusCode::BAD_REQUEST);
     let body4 = parse_response_body(resp4).await;
     let code = body4["error"]["code"].as_str().unwrap_or("");

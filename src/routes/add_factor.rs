@@ -362,7 +362,8 @@ pub async fn handler(
                 .add_encryption_key_only(&backup_id, key)
                 .await?;
         }
-        let Some((metadata, _)) = backup_storage.get_metadata_by_backup_id(&backup_id).await? else {
+        let Some((metadata, _)) = backup_storage.get_metadata_by_backup_id(&backup_id).await?
+        else {
             return Err(BackupManagerError::BackupNotFound.into());
         };
         let factor_id = metadata
