@@ -85,13 +85,28 @@ async fn test_add_factor_challenge_binding_matrix() {
     let body2 = parse_response_body(resp2).await;
     assert_eq!(body2["error"]["code"], "already_used");
 
+    // Fresh challenges for cases below — tokens from case 1 are already spent.
+    let challenges2 = get_add_factor_challenges_generic(
+        json!({
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": oidc_token,
+        }),
+        Some("PASSKEY"),
+    )
+    .await;
+    let (turnkey_activity2, challenge_hash2) =
+        create_turnkey_activity_and_hash(challenges2["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion2 =
+        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash2)
+            .await;
+
     // 2) Mismatched requested new factor vs submitted (invalid_new_factor_type)
     let mismatched_payload = json!({
-        "existingFactorAuthorization": base_payload["existingFactorAuthorization"].clone(),
-        "existingFactorChallengeToken": base_payload["existingFactorChallengeToken"].clone(),
-        "existingFactorTurnkeyActivity": base_payload["existingFactorTurnkeyActivity"].clone(),
+        "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
+        "existingFactorChallengeToken": challenges2["existingFactorToken"],
+        "existingFactorTurnkeyActivity": turnkey_activity2,
         "newFactorAuthorization": { "kind": "PASSKEY", "credential": json!({"dummy": true}) },
-        "newFactorChallengeToken": base_payload["newFactorChallengeToken"].clone(),
+        "newFactorChallengeToken": challenges2["newFactorToken"],
     });
     let resp3 = send_post_request_with_environment(
         "/v1/add-factor",
@@ -103,13 +118,37 @@ async fn test_add_factor_challenge_binding_matrix() {
     let body3 = parse_response_body(resp3).await;
     assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
 
+    // Fresh challenges again (case 2 may have consumed existing-factor token on the passkey path).
+    let challenges3 = get_add_factor_challenges_generic(
+        json!({
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": oidc_token,
+        }),
+        Some("PASSKEY"),
+    )
+    .await;
+    let (turnkey_activity3, challenge_hash3) =
+        create_turnkey_activity_and_hash(challenges3["existingFactorChallenge"].as_str().unwrap());
+    let passkey_assertion3 =
+        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash3)
+            .await;
+    let signature3 = crate::common::sign_keypair_challenge(
+        &session_secret_key,
+        challenges3["newFactorChallenge"].as_str().unwrap(),
+    );
+
     // 3) Swapped tokens
     let swapped_tokens_payload = json!({
-        "existingFactorAuthorization": base_payload["existingFactorAuthorization"].clone(),
-        "existingFactorChallengeToken": base_payload["newFactorChallengeToken"].clone(),
-        "existingFactorTurnkeyActivity": base_payload["existingFactorTurnkeyActivity"].clone(),
-        "newFactorAuthorization": base_payload["newFactorAuthorization"].clone(),
-        "newFactorChallengeToken": base_payload["existingFactorChallengeToken"].clone(),
+        "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion3 },
+        "existingFactorChallengeToken": challenges3["newFactorToken"],
+        "existingFactorTurnkeyActivity": turnkey_activity3,
+        "newFactorAuthorization": {
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
+            "publicKey": session_public_key,
+            "signature": signature3,
+        },
+        "newFactorChallengeToken": challenges3["existingFactorToken"],
         "turnkeyProviderId": "turnkey_provider_id",
     });
     let resp4 =

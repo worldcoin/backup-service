@@ -9,13 +9,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::create_challenge_passkey::Platform;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactor {
     #[serde(rename_all = "camelCase")]
     OidcAccount { oidc_token: String },
     #[serde(rename_all = "camelCase")]
-    PasskeyRegistration {},
+    PasskeyRegistration { platform: Platform },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -68,7 +70,7 @@ pub async fn handler(
         NewFactor::OidcAccount { oidc_token } => NewFactorType::OidcAccount {
             oidc_token: oidc_token.clone(),
         },
-        NewFactor::PasskeyRegistration {} => NewFactorType::PasskeyRegistration {},
+        NewFactor::PasskeyRegistration { .. } => NewFactorType::PasskeyRegistration {},
     };
 
     let existing_challenge_type = match request
@@ -88,10 +90,23 @@ pub async fn handler(
 
     // Create token for the new factor
     let (new_factor_challenge_value, new_factor_token) = match &request.new_factor {
-        NewFactor::PasskeyRegistration {} => {
-            let (challenge, registration) = environment
-                .webauthn_config()
-                .start_passkey_registration(Uuid::new_v4(), "World App", "World App", None)?;
+        NewFactor::PasskeyRegistration { platform } => {
+            let (challenge, registration) = match platform {
+                Platform::Ios => environment.webauthn_config().start_passkey_registration(
+                    Uuid::new_v4(),
+                    "World App",
+                    "World App",
+                    None,
+                )?,
+                Platform::Android => environment
+                    .webauthn_config()
+                    .start_google_passkey_in_google_password_manager_only_registration(
+                        Uuid::new_v4(),
+                        "World App",
+                        "World App",
+                        None,
+                    )?,
+            };
             let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
             let registration_json = serde_json::to_string(&registration)?;
             let token = challenge_manager

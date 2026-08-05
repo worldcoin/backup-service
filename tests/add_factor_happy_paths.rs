@@ -24,7 +24,8 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     // Request challenges for adding a new Passkey with existing OIDC
     let challenges = get_add_factor_challenges_generic(
         json!({
-            "kind": "PASSKEY_REGISTRATION"
+            "kind": "PASSKEY_REGISTRATION",
+            "platform": "IOS"
         }),
         Some("OIDC_ACCOUNT"),
     )

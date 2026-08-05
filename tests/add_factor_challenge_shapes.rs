@@ -26,7 +26,7 @@ async fn test_add_factor_challenge_shapes() {
     let passkey_resp = send_post_request(
         "/v1/add-factor/challenge",
         json!({
-            "newFactor": { "kind": "PASSKEY_REGISTRATION" }
+            "newFactor": { "kind": "PASSKEY_REGISTRATION", "platform": "IOS" }
         }),
     )
     .await;

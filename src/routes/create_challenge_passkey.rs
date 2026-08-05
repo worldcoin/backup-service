@@ -15,7 +15,7 @@ pub struct CreateChallengePasskeyRequest {
     platform: Platform,
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Platform {
     Android,

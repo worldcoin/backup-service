@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorLookupError, FactorScope, FactorToLookup};
 use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
@@ -203,9 +203,9 @@ pub async fn handler(
             // in the previous steps.
 
             // Step 1A.6: Track the used challenge to prevent replay attacks
-            let _ = redis_cache_manager
+            redis_cache_manager
                 .use_challenge_token(request.existing_factor_challenge_token.clone())
-                .await;
+                .await?;
 
             // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)
@@ -299,14 +299,48 @@ pub async fn handler(
     let new_factor_id = new_factor.id.clone();
     let factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Step 3.1: Update the factor lookup with the new factor
-    // If the factor already exists in lookup, treat as idempotent and continue to metadata handling.
-    if let Err(err) = factor_lookup
+    // Step 3.1: Update the factor lookup with the new factor.
+    // Same-backup ConditionalCheckFailed is treated as idempotent; other failures abort.
+    let lookup_insert_succeeded = match factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
         .await
     {
-        tracing::info!(message = "Lookup insert failed (possibly duplicate)", error = ?err, factor_pk = factor_to_lookup.primary_key());
-    }
+        Ok(()) => true,
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            match factor_lookup
+                .lookup(FactorScope::Main, &factor_to_lookup)
+                .await?
+            {
+                Some(existing_backup_id) if existing_backup_id == backup_id => {
+                    tracing::info!(
+                        message = "Lookup insert skipped; factor already mapped to this backup",
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                    false
+                }
+                Some(_) => {
+                    return Err(ErrorResponse::bad_request(
+                        "factor_already_exists",
+                        "This factor already exists.",
+                    ));
+                }
+                None => {
+                    tracing::error!(
+                        message = "Lookup ConditionalCheckFailed but factor not found on re-read",
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                    return Err(ErrorResponse::internal_server_error());
+                }
+            }
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
     // provides the best security guarantees: it avoids a window where a factor exists in the backup
@@ -343,9 +377,9 @@ pub async fn handler(
         }));
     }
 
-    // Step 3.3: Roll back FactorLookup only when the metadata write definitely did not land
-    // (`NotInserted`). Skip rollback for `Unknown` (ambiguous S3 write or factor already present).
-    if write.should_rollback_lookup() {
+    // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
+    // write definitely did not land (`NotInserted`).
+    if lookup_insert_succeeded && write.should_rollback_lookup() {
         if let Err(delete_err) = factor_lookup
             .delete(FactorScope::Main, &factor_to_lookup)
             .await
