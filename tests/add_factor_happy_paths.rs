@@ -195,3 +195,194 @@ async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
     let factors = metadata["factors"].as_array().unwrap();
     assert!(factors.iter().any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT"));
 }
+
+// OIDC (existing) → OIDC (new, different subject)
+#[tokio::test]
+#[serial]
+async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
+    let subject = format!("existing-{}", Uuid::new_v4());
+    let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
+    assert_eq!(test.response.status(), StatusCode::OK);
+    let body = test
+        .response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let create_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
+
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
+    let (new_session_public_key, new_session_secret_key) = crate::common::generate_keypair();
+
+    let new_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(format!(
+            "new-{}",
+            Uuid::new_v4()
+        ))),
+        &new_session_public_key,
+    );
+
+    let challenges = get_add_factor_challenges_generic(
+        json!({ "kind": "OIDC_ACCOUNT", "oidcToken": new_oidc_token }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
+    let existing_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject)),
+        &existing_session_public_key,
+    );
+    let existing_sig = crate::common::sign_keypair_challenge(
+        &existing_session_secret_key,
+        challenges["existingFactorChallenge"].as_str().unwrap(),
+    );
+    let new_sig = crate::common::sign_keypair_challenge(
+        &new_session_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let response = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
+                "publicKey": existing_session_public_key,
+                "signature": existing_sig,
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": new_oidc_token },
+                "publicKey": new_session_public_key,
+                "signature": new_sig,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "turnkeyProviderId": "turnkey_provider_id",
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
+        }),
+        Some(test.environment),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let add_resp = parse_response_body(response).await;
+    assert!(add_resp["backupMetadata"].is_object());
+
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+    let factors = metadata["factors"].as_array().unwrap();
+    let oidc_count = factors
+        .iter()
+        .filter(|f| f["kind"]["kind"] == "OIDC_ACCOUNT")
+        .count();
+    assert_eq!(oidc_count, 2);
+}
+
+// Same OIDC account again with a new TURNKEY wrapped key (metadata-only upgrade)
+#[tokio::test]
+#[serial]
+async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
+    let subject = format!("same-oidc-{}", Uuid::new_v4());
+    let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
+    assert_eq!(test.response.status(), StatusCode::OK);
+    let body = test
+        .response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let create_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
+
+    let metadata_before = verify_s3_metadata_exists(backup_id).await;
+    assert!(!metadata_before["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k["kind"] == "TURNKEY"));
+
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
+    let (new_session_public_key, new_session_secret_key) = crate::common::generate_keypair();
+
+    let new_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject.clone())),
+        &new_session_public_key,
+    );
+
+    let challenges = get_add_factor_challenges_generic(
+        json!({ "kind": "OIDC_ACCOUNT", "oidcToken": new_oidc_token }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
+    let existing_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject)),
+        &existing_session_public_key,
+    );
+    let existing_sig = crate::common::sign_keypair_challenge(
+        &existing_session_secret_key,
+        challenges["existingFactorChallenge"].as_str().unwrap(),
+    );
+    let new_sig = crate::common::sign_keypair_challenge(
+        &new_session_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let response = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
+                "publicKey": existing_session_public_key,
+                "signature": existing_sig,
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": new_oidc_token },
+                "publicKey": new_session_public_key,
+                "signature": new_sig,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "turnkeyProviderId": "turnkey_provider_id",
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
+        }),
+        Some(test.environment),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+    let keys = metadata["keys"].as_array().unwrap();
+    assert!(keys.iter().any(|k| k["kind"] == "TURNKEY"));
+    // Factor list should still be a single OIDC account (no duplicate factor row).
+    let oidc_count = metadata["factors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"]["kind"] == "OIDC_ACCOUNT")
+        .count();
+    assert_eq!(oidc_count, 1);
+}

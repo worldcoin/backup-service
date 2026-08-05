@@ -22,7 +22,7 @@ async fn test_add_factor_challenge_shapes() {
     assert!(value["newFactorChallenge"].is_string());
     assert!(value["newFactorToken"].is_string());
 
-    // PASSKEY_REGISTRATION returns object challenge for new-factor
+    // PASSKEY_REGISTRATION returns object challenge for new-factor (iOS)
     let passkey_resp = send_post_request(
         "/v1/add-factor/challenge",
         json!({
@@ -37,4 +37,28 @@ async fn test_add_factor_challenge_shapes() {
     assert!(value["existingFactorToken"].is_string());
     assert!(value["newFactorChallenge"].is_object());
     assert!(value["newFactorToken"].is_string());
+
+    // Android uses the Google Password Manager registration path; challenge is still a JSON object.
+    let android_resp = send_post_request(
+        "/v1/add-factor/challenge",
+        json!({
+            "newFactor": { "kind": "PASSKEY_REGISTRATION", "platform": "ANDROID" }
+        }),
+    )
+    .await;
+    assert_eq!(android_resp.status(), http::StatusCode::OK);
+    let body = android_resp.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(value["newFactorChallenge"].is_object());
+    assert!(value["newFactorChallenge"]["publicKey"].is_object());
+    assert!(value["newFactorToken"].is_string());
+
+    // Android registration challenge must be completable by a WebAuthn client.
+    let mut passkey_client = backup_service_test_utils::get_mock_passkey_client();
+    let credential = backup_service_test_utils::make_credential_from_passkey_challenge(
+        &mut passkey_client,
+        &json!({ "challenge": value["newFactorChallenge"].clone() }),
+    )
+    .await;
+    assert!(credential["id"].is_string() || credential["rawId"].is_string());
 }

@@ -140,3 +140,118 @@ async fn test_add_factor_new_oidc_signature_mismatch() {
     let body = parse_response_body(resp).await;
     assert_eq!(body["error"]["code"], "signature_verification_error");
 }
+
+// EC keypair is rejected as an existing Main Factor for add-factor
+#[tokio::test]
+#[serial]
+async fn test_add_factor_rejects_ec_existing_main_factor() {
+    let ((public_key, secret_key), create_response) =
+        crate::common::create_test_backup_with_keypair(b"DATA").await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+
+    let (session_public_key, session_secret_key) = crate::common::generate_keypair();
+    let oidc_server = backup_service_test_utils::MockOidcServer::new().await;
+    let environment = backup_service::types::Environment::development(Some(
+        oidc_server.server.socket_address().port() as usize,
+    ));
+    let oidc_token =
+        oidc_server.generate_token(&MockOidcProvider::Google, None, &session_public_key);
+
+    let challenges = get_add_factor_challenges_generic(
+        json!({ "kind": "OIDC_ACCOUNT", "oidcToken": oidc_token }),
+        // Challenge type for EC would be Keypair; OIDC_ACCOUNT uses the same ChallengeType::Keypair.
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
+    let existing_sig = crate::common::sign_keypair_challenge(
+        &secret_key,
+        challenges["existingFactorChallenge"].as_str().unwrap(),
+    );
+    let new_sig = crate::common::sign_keypair_challenge(
+        &session_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let resp = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": public_key,
+                "signature": existing_sig,
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
+                "publicKey": session_public_key,
+                "signature": new_sig,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "turnkeyProviderId": "turnkey_provider_id",
+        }),
+        Some(environment),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(resp).await;
+    assert_eq!(body["error"]["code"], "not_supported");
+}
+
+// EC keypair is rejected as a new Main Factor for add-factor
+#[tokio::test]
+#[serial]
+async fn test_add_factor_rejects_ec_new_main_factor() {
+    let mut passkey_client = backup_service_test_utils::get_mock_passkey_client();
+    let (_cred, create_response) =
+        crate::common::create_test_backup(&mut passkey_client, b"DATA").await;
+    assert_eq!(create_response.status(), StatusCode::OK);
+
+    let (ec_public_key, ec_secret_key) = crate::common::generate_keypair();
+    // Challenge for OIDC new-factor; we will submit EC instead to hit the not_supported arm.
+    let challenges = get_add_factor_challenges_generic(
+        json!({
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": "opaque-unused",
+        }),
+        Some("PASSKEY"),
+    )
+    .await;
+
+    let (turnkey_activity, challenge_hash) = crate::common::create_turnkey_activity_and_hash(
+        challenges["existingFactorChallenge"].as_str().unwrap(),
+    );
+    let passkey_assertion =
+        backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
+            .await;
+    let ec_sig = crate::common::sign_keypair_challenge(
+        &ec_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let resp = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": passkey_assertion,
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorTurnkeyActivity": turnkey_activity,
+            "newFactorAuthorization": {
+                "kind": "EC_KEYPAIR",
+                "publicKey": ec_public_key,
+                "signature": ec_sig,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+        }),
+        None,
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(resp).await;
+    assert_eq!(body["error"]["code"], "not_supported");
+}
