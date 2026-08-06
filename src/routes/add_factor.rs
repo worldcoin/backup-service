@@ -8,7 +8,7 @@ use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
-use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
+use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse};
 use crate::webauthn::TryFromValue;
@@ -361,7 +361,6 @@ pub async fn handler(
 
     let new_factor = validation_result.factor;
     let new_factor_kind = new_factor.kind.clone();
-    let new_factor_id = new_factor.id.clone();
     let factor_to_lookup = validation_result.factor_to_lookup;
 
     // Step 3.1: Update the factor lookup with the new factor.
@@ -433,11 +432,27 @@ pub async fn handler(
         else {
             return Err(BackupManagerError::BackupNotFound.into());
         };
-        let factor_id = metadata
-            .factors
-            .iter()
-            .find(|f| f.kind == new_factor_kind)
-            .map_or(new_factor_id, |f| f.id.clone());
+        // Require the stored factor still exist. A concurrent delete can remove it between the
+        // AlreadyExists race and this read — do not invent an ID or restore a stale lookup.
+        let Some(factor_id) = stored_main_factor_id(&metadata, &new_factor_kind) else {
+            tracing::warn!(
+                message = "FactorAlreadyExists reconcile found no matching factor in metadata",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            if lookup_insert_succeeded {
+                if let Err(delete_err) = factor_lookup
+                    .delete(FactorScope::Main, &factor_to_lookup)
+                    .await
+                {
+                    tracing::error!(
+                        message = "Failed to delete factor from lookup after missing duplicate factor",
+                        error = ?delete_err,
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                }
+            }
+            return Err(BackupManagerError::FactorNotFound.into());
+        };
         // Factor is in metadata — ensure lookup still maps here (a concurrent inserter may have
         // rolled back the shared row after we adopted it).
         ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await?;
@@ -613,5 +628,63 @@ async fn ensure_main_factor_lookup(
             }
         }
         Err(err) => Err(err.into()),
+    }
+}
+
+/// Returns the stored main-factor id for `kind`, if present.
+fn stored_main_factor_id(metadata: &BackupMetadata, kind: &FactorKind) -> Option<String> {
+    metadata
+        .factors
+        .iter()
+        .find(|f| f.kind == *kind)
+        .map(|f| f.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_main_factor_id;
+    use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
+
+    #[test]
+    fn stored_main_factor_id_returns_none_when_factor_absent() {
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        let kind = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "sub".to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            turnkey_provider_id: "tp".to_string(),
+        };
+        assert!(stored_main_factor_id(&metadata, &kind).is_none());
+    }
+
+    #[test]
+    fn stored_main_factor_id_returns_persisted_id_when_present() {
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub".to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            "tp".to_string(),
+        );
+        let expected_id = factor.id.clone();
+        let kind = factor.kind.clone();
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![factor],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        assert_eq!(
+            stored_main_factor_id(&metadata, &kind).as_deref(),
+            Some(expected_id.as_str())
+        );
     }
 }
