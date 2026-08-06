@@ -307,13 +307,11 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
     let backup_id = create_json["backupId"].as_str().unwrap();
 
     let metadata_before = verify_s3_metadata_exists(backup_id).await;
-    assert!(
-        !metadata_before["keys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|k| k["kind"] == "TURNKEY")
-    );
+    assert!(!metadata_before["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k["kind"] == "TURNKEY"));
 
     let (existing_session_public_key, existing_session_secret_key) =
         crate::common::generate_keypair();
@@ -476,13 +474,11 @@ async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() 
         .filter(|f| f["kind"]["kind"] == "OIDC_ACCOUNT")
         .count();
     assert_eq!(oidc_count, 1);
-    assert!(
-        metadata["keys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|k| k["kind"] == "TURNKEY")
-    );
+    assert!(metadata["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k["kind"] == "TURNKEY"));
     // Original Turnkey provider id is preserved (no duplicate row / no overwrite).
     let provider_ids: Vec<_> = metadata["factors"]
         .as_array()
