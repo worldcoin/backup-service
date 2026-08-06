@@ -917,8 +917,9 @@ async fn retry_ensure_insert_after_vanished_row(
 /// Closes the TOCTOU where `/delete-factor` removes the factor (and its lookup) between the
 /// pre-insert presence check and a successful ensure insert.
 ///
-/// After deleting, re-heals if a concurrent same-backup `/add-factor` restored the factor (and
-/// adopted this lookup) between the `Absent` read and the delete.
+/// Runs up to two delete+heal rounds so a heal insert that races with another `/delete-factor` is
+/// reconciled once without async recursion. Deletes are owner-conditional; heal runs after both
+/// successful and ambiguous delete outcomes.
 async fn reconcile_ensured_lookup_against_metadata(
     backup_storage: &BackupStorage,
     factor_lookup: &FactorLookup,
@@ -927,44 +928,62 @@ async fn reconcile_ensured_lookup_against_metadata(
     new_factor_kind: &FactorKind,
     factor_pk: &str,
 ) -> Result<(), ErrorResponse> {
-    match factor_present_in_metadata_with_retry(
-        backup_storage,
-        backup_id,
-        new_factor_kind,
-        factor_pk,
-    )
-    .await
-    {
-        FactorPresence::Absent => {
-            match factor_lookup
-                .lookup_consistent(FactorScope::Main, factor_to_lookup)
-                .await?
-            {
-                Some(existing) if existing == backup_id => {
-                    tracing::info!(
-                        message = "Deleting FactorLookup restored after concurrent factor deletion",
-                        factor_pk,
-                    );
-                    factor_lookup
-                        .delete(FactorScope::Main, factor_to_lookup)
-                        .await?;
-                    // Concurrent add-factor may have restored the factor and adopted this mapping
-                    // before our delete; heal re-inserts if metadata now contains the factor.
-                    heal_main_factor_lookup_if_present(
-                        backup_storage,
-                        factor_lookup,
-                        factor_to_lookup,
-                        backup_id,
-                        new_factor_kind,
-                    )
-                    .await;
+    const MAX_ROUNDS: u32 = 2;
+
+    for round in 1..=MAX_ROUNDS {
+        match factor_present_in_metadata_with_retry(
+            backup_storage,
+            backup_id,
+            new_factor_kind,
+            factor_pk,
+        )
+        .await
+        {
+            FactorPresence::Present | FactorPresence::Unknown => return Ok(()),
+            FactorPresence::Absent => {
+                match factor_lookup
+                    .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                    .await?
+                {
+                    Some(existing) if existing == backup_id => {
+                        tracing::info!(
+                            message =
+                                "Deleting FactorLookup restored after concurrent factor deletion",
+                            factor_pk,
+                            round,
+                        );
+                        // Owner-conditional: do not remove another backup's mapping if ownership
+                        // changed after the consistent read. Heal even on ambiguous delete errors.
+                        if let Err(delete_err) = factor_lookup
+                            .delete_if_maps_to(FactorScope::Main, factor_to_lookup, backup_id)
+                            .await
+                        {
+                            tracing::error!(
+                                message = "Failed owner-conditional FactorLookup delete during ensure reconcile; continuing to heal",
+                                error = ?delete_err,
+                                factor_pk,
+                                round,
+                            );
+                        }
+                        // Concurrent add-factor may have restored the factor and adopted this mapping
+                        // before our delete; heal re-inserts if metadata now contains the factor.
+                        // A second loop round reconciles a heal insert that raced with delete-factor.
+                        heal_main_factor_lookup_if_present(
+                            backup_storage,
+                            factor_lookup,
+                            factor_to_lookup,
+                            backup_id,
+                            new_factor_kind,
+                        )
+                        .await;
+                    }
+                    Some(_) | None => return Ok(()),
                 }
-                Some(_) | None => {}
             }
-            Ok(())
         }
-        FactorPresence::Present | FactorPresence::Unknown => Ok(()),
     }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
