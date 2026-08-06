@@ -714,6 +714,9 @@ async fn attempt_heal_lookup_insert(
 /// resurrect a stale lookup for a factor that is no longer present. Metadata reads are retried; if
 /// they remain unavailable we still attempt the lookup insert so a transient S3 error does not
 /// abandon repair after a successful factor write.
+///
+/// After a successful insert (or adopt), re-checks metadata and deletes the lookup if the factor
+/// disappeared in the TOCTOU window between the pre-check and the Dynamo write.
 async fn ensure_main_factor_lookup(
     backup_storage: &BackupStorage,
     factor_lookup: &FactorLookup,
@@ -749,7 +752,15 @@ async fn ensure_main_factor_lookup(
                 message = "Restored FactorLookup after successful factor write",
                 factor_pk = factor_pk.as_str(),
             );
-            Ok(())
+            reconcile_ensured_lookup_against_metadata(
+                backup_storage,
+                factor_lookup,
+                factor_to_lookup,
+                backup_id,
+                new_factor_kind,
+                &factor_pk,
+            )
+            .await
         }
         Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
             if matches!(
@@ -762,7 +773,17 @@ async fn ensure_main_factor_lookup(
                 .lookup_consistent(FactorScope::Main, factor_to_lookup)
                 .await?
             {
-                Some(existing) if existing == backup_id => Ok(()),
+                Some(existing) if existing == backup_id => {
+                    reconcile_ensured_lookup_against_metadata(
+                        backup_storage,
+                        factor_lookup,
+                        factor_to_lookup,
+                        backup_id,
+                        new_factor_kind,
+                        &factor_pk,
+                    )
+                    .await
+                }
                 Some(_) => Err(ErrorResponse::bad_request(
                     "factor_already_exists",
                     "This factor already exists.",
@@ -791,7 +812,17 @@ async fn ensure_main_factor_lookup(
                         .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
                         .await
                     {
-                        Ok(()) => Ok(()),
+                        Ok(()) => {
+                            reconcile_ensured_lookup_against_metadata(
+                                backup_storage,
+                                factor_lookup,
+                                factor_to_lookup,
+                                backup_id,
+                                new_factor_kind,
+                                &factor_pk,
+                            )
+                            .await
+                        }
                         Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
                             if matches!(
                                 sdk_err,
@@ -803,7 +834,17 @@ async fn ensure_main_factor_lookup(
                                 .lookup_consistent(FactorScope::Main, factor_to_lookup)
                                 .await?
                             {
-                                Some(existing) if existing == backup_id => Ok(()),
+                                Some(existing) if existing == backup_id => {
+                                    reconcile_ensured_lookup_against_metadata(
+                                        backup_storage,
+                                        factor_lookup,
+                                        factor_to_lookup,
+                                        backup_id,
+                                        new_factor_kind,
+                                        &factor_pk,
+                                    )
+                                    .await
+                                }
                                 _ => {
                                     tracing::error!(
                                         message = "Failed to ensure FactorLookup after successful factor write",
@@ -819,6 +860,48 @@ async fn ensure_main_factor_lookup(
             }
         }
         Err(err) => Err(err.into()),
+    }
+}
+
+/// After ensuring a lookup row for `backup_id`, drop it if metadata no longer contains the factor.
+///
+/// Closes the TOCTOU where `/delete-factor` removes the factor (and its lookup) between the
+/// pre-insert presence check and a successful ensure insert.
+async fn reconcile_ensured_lookup_against_metadata(
+    backup_storage: &BackupStorage,
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+    factor_pk: &str,
+) -> Result<(), ErrorResponse> {
+    match factor_present_in_metadata_with_retry(
+        backup_storage,
+        backup_id,
+        new_factor_kind,
+        factor_pk,
+    )
+    .await
+    {
+        FactorPresence::Absent => {
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                .await?
+            {
+                Some(existing) if existing == backup_id => {
+                    tracing::info!(
+                        message = "Deleting FactorLookup restored after concurrent factor deletion",
+                        factor_pk,
+                    );
+                    factor_lookup
+                        .delete(FactorScope::Main, factor_to_lookup)
+                        .await?;
+                }
+                Some(_) | None => {}
+            }
+            Ok(())
+        }
+        FactorPresence::Present | FactorPresence::Unknown => Ok(()),
     }
 }
 
