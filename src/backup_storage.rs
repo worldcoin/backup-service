@@ -347,6 +347,9 @@ impl BackupStorage {
     /// **exactly equal** key is already present; a same flattened kind with different material
     /// returns [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`].
     ///
+    /// On `412 PreconditionFailed`, re-reads metadata and treats an exact key match as success
+    /// (concurrent identical upgrade).
+    ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
@@ -376,17 +379,42 @@ impl BackupStorage {
             return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
         }
 
-        metadata.keys.push(encryption_key);
+        metadata.keys.push(encryption_key.clone());
 
-        self.put_object()
+        match self
+            .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
-            .await?;
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                let put_err = BackupManagerError::PutObjectError(err);
+                if !Self::is_precondition_failed_put(&put_err) {
+                    return Err(put_err);
+                }
 
-        Ok(())
+                // Concurrent key-only upgrade won if_match. Re-read and treat exact key match as
+                // idempotent success; retain conflict for different material of the same kind.
+                let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+                    return Err(BackupManagerError::BackupNotFound);
+                };
+                if latest.keys.iter().any(|k| k == &encryption_key) {
+                    return Ok(());
+                }
+                if latest
+                    .keys
+                    .iter()
+                    .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+                {
+                    return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
+                }
+                Err(put_err)
+            }
+        }
     }
 
     /// Adds a sync factor to the backup metadata in S3.
@@ -1802,6 +1830,51 @@ mod tests {
             .unwrap()
             .expect("metadata");
         assert_eq!(metadata.keys, vec![existing_key]);
+    }
+
+    #[tokio::test]
+    async fn add_encryption_key_only_reconciles_412_when_exact_key_already_stored() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "CONCURRENT_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        // Concurrent same exact key: loser may see 412 and must still succeed idempotently.
+        let (a, b) = tokio::join!(
+            backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
+            backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
+        );
+        assert!(a.is_ok(), "first writer: {a:?}");
+        assert!(b.is_ok(), "second writer: {b:?}");
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("metadata");
+        assert_eq!(metadata.keys, vec![key]);
     }
 
     #[tokio::test]
