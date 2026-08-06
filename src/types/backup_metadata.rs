@@ -1,8 +1,8 @@
 use crate::factor_lookup::FactorToLookup;
-use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use crate::types::encryption_key::BackupEncryptionKey;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -190,17 +190,10 @@ impl PartialEq for FactorKind {
                 },
             ) => a == b,
 
-            // compare the rest of the fields regularly
-            (
-                OidcAccount {
-                    account: a0,
-                    turnkey_provider_id: a1,
-                },
-                OidcAccount {
-                    account: b0,
-                    turnkey_provider_id: b1,
-                },
-            ) => a0 == b0 && a1 == b1,
+            // Compare OIDC by account identity (issuer/sub via `OidcAccountKind`); ignore
+            // `turnkey_provider_id` so re-adding the same account with a new Turnkey provider id
+            // is treated as the same factor (aligns with FactorLookup which keys on iss|sub).
+            (OidcAccount { account: a, .. }, OidcAccount { account: b, .. }) => a == b,
 
             (EcKeypair { public_key: a }, EcKeypair { public_key: b }) => a == b,
 
@@ -373,7 +366,7 @@ mod tests {
     use backup_service_test_utils::{
         get_mock_passkey_client, make_credential_from_passkey_challenge,
     };
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use p256::SecretKey;
     use rand::rngs::OsRng;
     use serde_json::json;
@@ -445,7 +438,8 @@ mod tests {
         };
 
         assert_eq!(factor_1, factor_2);
-        assert_ne!(factor_1, factor_3);
+        // Same Google subject with a different Turnkey provider id is still the same factor.
+        assert_eq!(factor_1, factor_3);
         assert_ne!(factor_1, factor_4);
         assert_ne!(factor_1, factor_5);
     }
