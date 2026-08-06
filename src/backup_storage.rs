@@ -292,6 +292,7 @@ impl BackupStorage {
         }
 
         let factor_kind = factor.kind.clone();
+        let factor_id = factor.id.clone();
 
         // Add the factor to the metadata
         metadata.factors.push(factor);
@@ -330,6 +331,7 @@ impl BackupStorage {
                 self.resolve_put_object_outcome(
                     backup_id,
                     &factor_kind,
+                    &factor_id,
                     FactorListScope::Main,
                     err,
                     |m| m,
@@ -434,6 +436,7 @@ impl BackupStorage {
         }
 
         let factor_kind = sync_factor.kind.clone();
+        let factor_id = sync_factor.id.clone();
 
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
@@ -458,6 +461,7 @@ impl BackupStorage {
                 self.resolve_put_object_outcome(
                     backup_id,
                     &factor_kind,
+                    &factor_id,
                     FactorListScope::Sync,
                     err,
                     |_| (),
@@ -496,9 +500,10 @@ impl BackupStorage {
     ///
     /// - Factor present in target scope + non-`412` error → `Inserted` (e.g. lost ACK after a
     ///   successful put).
-    /// - Factor present in target scope + `412 PreconditionFailed` → `Unknown(FactorAlreadyExists)`
-    ///   (another writer won the `if_match` race; callers must reconcile keys / factor ids rather
-    ///   than assume *this* request's put applied).
+    /// - Factor present with **this request's** `attempted_factor_id` + `412` → `Inserted` (put
+    ///   landed, then a retried `if_match` got `412`).
+    /// - Factor present with a **different** id (same identity/`FactorKind`) + `412` →
+    ///   `Unknown(FactorAlreadyExists)` (another writer won; callers must reconcile).
     /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
     /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
     /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
@@ -506,6 +511,7 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         factor_kind: &FactorKind,
+        attempted_factor_id: &str,
         target_scope: FactorListScope,
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
         on_present: impl FnOnce(BackupMetadata) -> T,
@@ -522,11 +528,18 @@ impl BackupStorage {
                             target_scope,
                         ) =>
                     {
-                        if Self::is_precondition_failed_put(&e) {
-                            // Concurrent same-identity writer updated metadata first. Do not treat
-                            // this as our Inserted write (wrong factor_id / missing encryption key).
+                        if Self::is_precondition_failed_put(&e)
+                            && !Self::metadata_contains_factor_id(
+                                &metadata,
+                                attempted_factor_id,
+                                target_scope,
+                            )
+                        {
+                            // Same FactorKind identity is present, but it is not the factor row
+                            // this request tried to write — concurrent winner.
                             FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
                         } else {
+                            // Lost ACK, or 412 after our put already landed (retry with stale etag).
                             FactorMetadataWrite::Inserted(on_present(metadata))
                         }
                     }
@@ -580,6 +593,17 @@ impl BackupStorage {
         match scope {
             FactorListScope::Main => metadata.factors.iter().any(|f| &f.kind == kind),
             FactorListScope::Sync => metadata.sync_factors.iter().any(|f| &f.kind == kind),
+        }
+    }
+
+    fn metadata_contains_factor_id(
+        metadata: &BackupMetadata,
+        factor_id: &str,
+        scope: FactorListScope,
+    ) -> bool {
+        match scope {
+            FactorListScope::Main => metadata.factors.iter().any(|f| f.id == factor_id),
+            FactorListScope::Sync => metadata.sync_factors.iter().any(|f| f.id == factor_id),
         }
     }
 
@@ -977,6 +1001,7 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
         let factor_kind = factor.kind.clone();
+        let stored_factor_id = factor.id.clone();
         backup_storage
             .create(
                 vec![1, 2, 3].into(),
@@ -991,11 +1016,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Concurrent writer won if_match: 412, but the same factor identity is already present.
+        // Concurrent writer won if_match: 412, same FactorKind identity, different factor id.
         let result = backup_storage
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &factor_kind,
+                "not-the-stored-factor-id",
                 FactorListScope::Main,
                 put_object_service_error(412),
                 |m| m,
@@ -1005,6 +1031,23 @@ mod tests {
         match result {
             FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
             other => panic!("Expected Unknown(FactorAlreadyExists) after 412 race, got {other:?}"),
+        }
+
+        // Same request retried after its put already landed: 412, but our factor id is present.
+        let retry = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                &stored_factor_id,
+                FactorListScope::Main,
+                put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(!retry.should_rollback_lookup());
+        match retry {
+            FactorMetadataWrite::Inserted(_) => {}
+            other => panic!("Expected Inserted when 412 after our own put landed, got {other:?}"),
         }
     }
 
@@ -1024,6 +1067,7 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
         let factor_kind = factor.kind.clone();
+        let factor_id = factor.id.clone();
         backup_storage
             .create(
                 vec![1, 2, 3].into(),
@@ -1043,6 +1087,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &factor_kind,
+                &factor_id,
                 FactorListScope::Main,
                 SdkError::timeout_error("timed out"),
                 |m| m,
@@ -1096,6 +1141,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &missing_kind,
+                "attempted-factor-id",
                 FactorListScope::Main,
                 put_object_service_error(412),
                 |m| m,
@@ -1137,6 +1183,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &factor_kind,
+                "attempted-sync-factor-id",
                 FactorListScope::Sync,
                 put_object_service_error(412),
                 |_| (),
@@ -1164,6 +1211,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &gen_backup_id(),
                 &missing_kind,
+                "attempted-factor-id",
                 FactorListScope::Main,
                 put_object_service_error(412),
                 |m| m,
@@ -1191,6 +1239,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &gen_backup_id(),
                 &missing_kind,
+                "attempted-factor-id",
                 FactorListScope::Sync,
                 SdkError::timeout_error("timed out"),
                 |_| (),
@@ -1234,6 +1283,7 @@ mod tests {
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &missing_kind,
+                "attempted-factor-id",
                 FactorListScope::Sync,
                 SdkError::timeout_error("timed out"),
                 |_| (),
