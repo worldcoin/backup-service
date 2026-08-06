@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use crate::auth::{AuthError, AuthHandler};
-use crate::backup_storage::BackupStorage;
+use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use crate::factor_lookup::{FactorLookup, FactorLookupError, FactorScope, FactorToLookup};
+use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
@@ -58,11 +59,15 @@ pub struct AddFactorResponse {
 ///
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
 /// and the new factor (to prove ownership of the new factor).
+///
+/// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
+/// as a Main Factor for add-factor.
 #[allow(clippy::too_many_lines)] // the code is properly split out into steps
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
@@ -198,50 +203,113 @@ pub async fn handler(
             // in the previous steps.
 
             // Step 1A.6: Track the used challenge to prevent replay attacks
-            // TODO / FIXME
+            redis_cache_manager
+                .use_challenge_token(request.existing_factor_challenge_token.clone())
+                .await?;
 
             // Step 1A.7: Return the backup ID and the new factor type
             (backup_id, new_factor_type)
         }
-        Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
-            // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair.
-            // When implementing OIDC here, pass `client_name` to `validate_oidc_authentication` so the
-            // correct provider client_id (per `Environment::{google,apple}_client_id`) is used.
-            return Err(ErrorResponse::bad_request("not_supported", "Not supported"));
+        Authorization::OidcAccount { .. } => {
+            // Authenticate existing OIDC factor and bind to the expected new-factor descriptor.
+            let (_trusted_challenge, challenge_context) = challenge_manager
+                .extract_token_payload(
+                    (&request.existing_factor_authorization).into(),
+                    request.existing_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
+                return Err(ErrorResponse::bad_request(
+                    "invalid_challenge_context",
+                    "Challenge context mismatch",
+                ));
+            };
+
+            // AuthHandler.verify authenticates and marks the existing-factor challenge token as used.
+            let (verified_backup_id, _metadata) = auth_handler
+                .clone()
+                .verify(
+                    &request.existing_factor_authorization,
+                    FactorScope::Main,
+                    ChallengeContext::AddFactor {
+                        new_factor_type: new_factor_type.clone(),
+                    },
+                    request.existing_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            (verified_backup_id, new_factor_type)
+        }
+        Authorization::EcKeypair { .. } => {
+            return Err(ErrorResponse::bad_request(
+                "not_supported",
+                "EC keypair is not supported as an existing main factor for add-factor",
+            ));
         }
     };
 
-    // Step 2: Validate the new factor using AuthHandler
-    // First, we need to verify that the new factor type matches what was expected from the existing factor's challenge
-    match &request.new_factor_authorization {
-        Authorization::OidcAccount { oidc_token, .. } => {
-            // Step 2A.1: Verify the OIDC token matches what was expected from the existing factor's challenge
-            #[allow(irrefutable_let_patterns)]
-            if let NewFactorType::OidcAccount {
-                oidc_token: expected_oidc_token,
-            } = &expected_new_factor
-            {
-                let raw_oidc_token = match &oidc_token {
-                    crate::types::OidcToken::Google { token }
-                    | crate::types::OidcToken::Apple { token, aud: _ } => token,
-                };
-                if raw_oidc_token != expected_oidc_token {
-                    return Err(ErrorResponse::bad_request(
-                        "oidc_token_mismatch",
-                        "OIDC Token mismatch",
-                    ));
-                }
-            } else {
+    // Step 2: Enforce binding between expected_new_factor and new_factor_authorization
+    match (&expected_new_factor, &request.new_factor_authorization) {
+        (
+            NewFactorType::OidcAccount {
+                oidc_token: expected,
+            },
+            Authorization::OidcAccount { oidc_token, .. },
+        ) => {
+            let raw = match oidc_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token, aud: _ } => token,
+            };
+            if raw != expected {
                 return Err(ErrorResponse::bad_request(
-                    "invalid_new_factor_type",
-                    "Invalid new factor type",
+                    "oidc_token_mismatch",
+                    "OIDC Token mismatch",
                 ));
             }
         }
+        (
+            NewFactorType::PasskeyRegistration {
+                registration_hash: expected_hash,
+            },
+            Authorization::Passkey { .. },
+        ) => {
+            // Existing factor authorized this exact WebAuthn registration state (hash bound in
+            // its challenge context). Reject swapped new-factor challenge tokens.
+            let (registration_payload, new_factor_context) = challenge_manager
+                .extract_token_payload(
+                    ChallengeType::Passkey,
+                    request.new_factor_challenge_token.clone(),
+                )
+                .await?;
+            if !matches!(
+                new_factor_context,
+                ChallengeContext::AddFactorByNewFactor {}
+            ) {
+                return Err(ErrorResponse::bad_request(
+                    "invalid_challenge_context",
+                    "Challenge context mismatch",
+                ));
+            }
+            let actual_hash =
+                super::add_factor_challenge::registration_state_hash(&registration_payload);
+            if actual_hash != *expected_hash {
+                return Err(ErrorResponse::bad_request(
+                    "registration_mismatch",
+                    "Passkey registration does not match the one authorized by the existing factor",
+                ));
+            }
+        }
+        (_, Authorization::EcKeypair { .. }) => {
+            return Err(ErrorResponse::bad_request(
+                "not_supported",
+                "EC keypair is not supported as a main factor for add-factor",
+            ));
+        }
         _ => {
             return Err(ErrorResponse::bad_request(
-                "invalid_new_factor_authorization_type",
-                "Invalid new factor authorization type",
+                "invalid_new_factor_type",
+                "Invalid new factor type",
             ));
         }
     }
@@ -258,12 +326,53 @@ pub async fn handler(
         .await?;
 
     let new_factor = validation_result.factor;
+    let new_factor_kind = new_factor.kind.clone();
     let factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Step 3.1: Update the factor lookup with the new factor
-    factor_lookup
+    // Step 3.1: Update the factor lookup with the new factor.
+    // Same-backup ConditionalCheckFailed is treated as idempotent; other failures abort.
+    let lookup_insert_succeeded = match factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
-        .await?;
+        .await
+    {
+        Ok(()) => true,
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            // Consistent read: ConditionalCheckFailed proves the item exists; an eventually
+            // consistent GetItem can still return None and spuriously 500.
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, &factor_to_lookup)
+                .await?
+            {
+                Some(existing_backup_id) if existing_backup_id == backup_id => {
+                    tracing::info!(
+                        message = "Lookup insert skipped; factor already mapped to this backup",
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                    false
+                }
+                Some(_) => {
+                    return Err(ErrorResponse::bad_request(
+                        "factor_already_exists",
+                        "This factor already exists.",
+                    ));
+                }
+                None => {
+                    tracing::error!(
+                        message = "Lookup ConditionalCheckFailed but factor not found on consistent re-read",
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                    return Err(ErrorResponse::internal_server_error());
+                }
+            }
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
     // provides the best security guarantees: it avoids a window where a factor exists in the backup
@@ -278,14 +387,82 @@ pub async fn handler(
         )
         .await;
 
-    // Step 3.3: Roll back FactorLookup only when the metadata write definitely did not land
-    // (`NotInserted`). Skip rollback for `Unknown` (ambiguous S3 write or factor already present).
-    if write.should_rollback_lookup() {
-        if let Err(delete_err) = factor_lookup
-            .delete(FactorScope::Main, &factor_to_lookup)
-            .await
-        {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+    // Metadata-only encryption-key upgrade when the factor already exists (e.g. same OIDC again).
+    if let FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) = &write {
+        if let Some(key) = request.encrypted_backup_key.clone() {
+            backup_storage
+                .add_encryption_key_only(&backup_id, key)
+                .await?;
+        }
+        let Some((metadata, _)) = backup_storage.get_metadata_by_backup_id(&backup_id).await?
+        else {
+            return Err(BackupManagerError::BackupNotFound.into());
+        };
+        let Some(factor_id) = metadata
+            .factors
+            .iter()
+            .find(|f| f.kind == new_factor_kind)
+            .map(|f| f.id.clone())
+        else {
+            tracing::warn!(
+                message = "FactorAlreadyExists reconcile found no matching factor in metadata",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            if lookup_insert_succeeded {
+                if let Err(delete_err) = factor_lookup
+                    .delete(FactorScope::Main, &factor_to_lookup)
+                    .await
+                {
+                    tracing::error!(
+                        message = "Failed to delete factor from lookup after missing duplicate factor",
+                        error = ?delete_err,
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                }
+            }
+            return Err(BackupManagerError::FactorNotFound.into());
+        };
+        // Do not roll back lookup: factor is present in metadata; keeping lookup can heal inconsistency.
+        return Ok(Json(AddFactorResponse {
+            factor_id,
+            backup_metadata: metadata.exported(),
+        }));
+    }
+
+    // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
+    // write definitely did not land (`NotInserted`).
+    //
+    // Another concurrent request may have adopted this lookup row (same-backup
+    // ConditionalCheckFailed) and successfully written the factor while our write failed
+    // (e.g. encryption-key conflict). Re-check metadata before delete so we do not orphan
+    // that other request's factor.
+    if lookup_insert_succeeded && write.should_rollback_lookup() {
+        let factor_still_absent = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
+            Ok(Some((metadata, _))) => !metadata.factors.iter().any(|f| f.kind == new_factor_kind),
+            Ok(None) => true,
+            Err(err) => {
+                tracing::error!(
+                    message = "Failed to re-read metadata before lookup rollback; keeping lookup row",
+                    error = ?err,
+                    factor_pk = factor_to_lookup.primary_key(),
+                );
+                false
+            }
+        };
+
+        if factor_still_absent {
+            if let Err(delete_err) = factor_lookup
+                .delete(FactorScope::Main, &factor_to_lookup)
+                .await
+            {
+                tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+            }
+        } else {
+            tracing::info!(
+                message =
+                    "Skipping lookup rollback; factor present in metadata after concurrent write",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
         }
     }
 

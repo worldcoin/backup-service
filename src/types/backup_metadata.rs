@@ -190,17 +190,10 @@ impl PartialEq for FactorKind {
                 },
             ) => a == b,
 
-            // compare the rest of the fields regularly
-            (
-                OidcAccount {
-                    account: a0,
-                    turnkey_provider_id: a1,
-                },
-                OidcAccount {
-                    account: b0,
-                    turnkey_provider_id: b1,
-                },
-            ) => a0 == b0 && a1 == b1,
+            // Compare OIDC by account identity (issuer/sub via `OidcAccountKind`); ignore
+            // `turnkey_provider_id` so re-adding the same account with a new Turnkey provider id
+            // is treated as the same factor (aligns with FactorLookup which keys on iss|sub).
+            (OidcAccount { account: a, .. }, OidcAccount { account: b, .. }) => a == b,
 
             (EcKeypair { public_key: a }, EcKeypair { public_key: b }) => a == b,
 
@@ -445,7 +438,8 @@ mod tests {
         };
 
         assert_eq!(factor_1, factor_2);
-        assert_ne!(factor_1, factor_3);
+        // Same Google subject with a different Turnkey provider id is still the same factor.
+        assert_eq!(factor_1, factor_3);
         assert_ne!(factor_1, factor_4);
         assert_ne!(factor_1, factor_5);
     }

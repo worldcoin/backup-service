@@ -9,7 +9,7 @@ pub enum OidcProvider {
     Apple,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 pub enum OidcToken {
     #[serde(rename_all = "camelCase")]
