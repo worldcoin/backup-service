@@ -347,8 +347,8 @@ impl BackupStorage {
     /// **exactly equal** key is already present; a same flattened kind with different material
     /// returns [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`].
     ///
-    /// On `412 PreconditionFailed`, re-reads metadata and treats an exact key match as success
-    /// (concurrent identical upgrade).
+    /// On ambiguous `PutObject` failures (`412`, timeouts, 5xx, …), re-reads metadata and treats
+    /// an exact key match as success (lost ACK or concurrent identical upgrade).
     ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
@@ -391,30 +391,42 @@ impl BackupStorage {
             .await
         {
             Ok(_) => Ok(()),
-            Err(err) => {
-                let put_err = BackupManagerError::PutObjectError(err);
-                if !Self::is_precondition_failed_put(&put_err) {
-                    return Err(put_err);
+            Err(err) => match Self::classify_put_object_error::<()>(err) {
+                FactorMetadataWrite::NotInserted(e) => Err(e),
+                FactorMetadataWrite::Inserted(()) => {
+                    unreachable!("classify never returns Inserted")
                 }
-
-                // Concurrent key-only upgrade won if_match. Re-read and treat exact key match as
-                // idempotent success; retain conflict for different material of the same kind.
-                let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
-                    return Err(BackupManagerError::BackupNotFound);
-                };
-                if latest.keys.iter().any(|k| k == &encryption_key) {
-                    return Ok(());
+                FactorMetadataWrite::Unknown(put_err) => {
+                    // Ambiguous put (412 / timeout / 5xx). Re-read and treat exact key match as
+                    // success; retain conflict for different material of the same kind.
+                    let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+                        return Err(BackupManagerError::BackupNotFound);
+                    };
+                    Self::reconcile_key_only_after_ambiguous_put(&latest, &encryption_key, put_err)
                 }
-                if latest
-                    .keys
-                    .iter()
-                    .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
-                {
-                    return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
-                }
-                Err(put_err)
-            }
+            },
         }
+    }
+
+    /// After an ambiguous key-only `PutObject`, succeed if the exact key landed; conflict if a
+    /// different key of the same kind is present; otherwise surface the original put error.
+    #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
+    fn reconcile_key_only_after_ambiguous_put(
+        latest: &BackupMetadata,
+        encryption_key: &BackupEncryptionKey,
+        put_err: BackupManagerError,
+    ) -> Result<(), BackupManagerError> {
+        if latest.keys.iter().any(|k| k == encryption_key) {
+            return Ok(());
+        }
+        if latest
+            .keys
+            .iter()
+            .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+        {
+            return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
+        }
+        Err(put_err)
     }
 
     /// Adds a sync factor to the backup metadata in S3.
@@ -1875,6 +1887,65 @@ mod tests {
             .unwrap()
             .expect("metadata");
         assert_eq!(metadata.keys, vec![key]);
+    }
+
+    #[test]
+    fn reconcile_key_only_after_ambiguous_put_outcomes() {
+        let key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "KEY".to_string(),
+            turnkey_account_id: "org".to_string(),
+            turnkey_user_id: "user".to_string(),
+            turnkey_private_key_id: "pk".to_string(),
+        };
+        let other = BackupEncryptionKey::Turnkey {
+            encrypted_key: "OTHER".to_string(),
+            turnkey_account_id: "org".to_string(),
+            turnkey_user_id: "user".to_string(),
+            turnkey_private_key_id: "pk".to_string(),
+        };
+        let put_err = BackupManagerError::PutObjectError(SdkError::timeout_error("timed out"));
+
+        let with_exact = BackupMetadata {
+            id: "b".to_string(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![key.clone()],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        assert!(BackupStorage::reconcile_key_only_after_ambiguous_put(
+            &with_exact,
+            &key,
+            BackupManagerError::PutObjectError(SdkError::timeout_error("timed out")),
+        )
+        .is_ok());
+
+        let with_mismatch = BackupMetadata {
+            id: "b".to_string(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![other],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        match BackupStorage::reconcile_key_only_after_ambiguous_put(
+            &with_mismatch,
+            &key,
+            BackupManagerError::PutObjectError(SdkError::timeout_error("timed out")),
+        ) {
+            Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {}
+            other => panic!("Expected OnlyOneEncryptionKeyPerTypeAllowed, got {other:?}"),
+        }
+
+        let empty = BackupMetadata {
+            id: "b".to_string(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        match BackupStorage::reconcile_key_only_after_ambiguous_put(&empty, &key, put_err) {
+            Err(BackupManagerError::PutObjectError(_)) => {}
+            other => panic!("Expected PutObjectError when key absent, got {other:?}"),
+        }
     }
 
     #[tokio::test]
