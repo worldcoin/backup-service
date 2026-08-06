@@ -318,11 +318,12 @@ pub async fn handler(
     // When the same OIDC ID token + session keypair authorize both sides (same-account
     // metadata-only upgrade), the existing-factor verify already consumed the nonce — skip a
     // second Redis mark so registration can still verify the new-factor challenge signature.
-    let reuse_same_oidc_session = matches!(
-        (
-            &request.existing_factor_authorization,
-            &request.new_factor_authorization
-        ),
+    // Compare raw JWT (+ session key), not full `OidcToken`, so Apple `aud: None` vs explicit
+    // default does not block reuse of the already-consumed nonce.
+    let reuse_same_oidc_session = match (
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
+    ) {
         (
             Authorization::OidcAccount {
                 oidc_token: existing_token,
@@ -334,8 +335,19 @@ pub async fn handler(
                 public_key: new_pk,
                 ..
             },
-        ) if existing_token == new_token && existing_pk == new_pk
-    );
+        ) => {
+            let existing_raw = match existing_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token, .. } => token.as_str(),
+            };
+            let new_raw = match new_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token, .. } => token.as_str(),
+            };
+            existing_raw == new_raw && existing_pk == new_pk
+        }
+        _ => false,
+    };
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.new_factor_authorization,
