@@ -438,7 +438,9 @@ pub async fn handler(
             .iter()
             .find(|f| f.kind == new_factor_kind)
             .map_or(new_factor_id, |f| f.id.clone());
-        // Do not roll back lookup: factor is present in metadata; keeping lookup can heal inconsistency.
+        // Factor is in metadata — ensure lookup still maps here (a concurrent inserter may have
+        // rolled back the shared row after we adopted it).
+        ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await?;
         return Ok(Json(AddFactorResponse {
             factor_id,
             backup_metadata: metadata.exported(),
@@ -530,9 +532,86 @@ pub async fn handler(
 
     let updated_metadata = write.into_result()?;
 
+    // Successful writer always verifies lookup: a concurrent request that inserted the row may
+    // still roll it back around our metadata commit.
+    ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await?;
+
     // Step 4: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {
         factor_id: new_factor.id,
         backup_metadata: updated_metadata.exported(),
     }))
+}
+
+/// Ensures `FactorLookup` maps this factor to `backup_id` after metadata was written successfully.
+///
+/// Closes the race where another request inserted the lookup, we adopted it, wrote metadata, and
+/// that other request then deleted the row during its `NotInserted` rollback.
+async fn ensure_main_factor_lookup(
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+) -> Result<(), ErrorResponse> {
+    match factor_lookup
+        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                message = "Restored FactorLookup after successful factor write",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            Ok(())
+        }
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                .await?
+            {
+                Some(existing) if existing == backup_id => Ok(()),
+                Some(_) => Err(ErrorResponse::bad_request(
+                    "factor_already_exists",
+                    "This factor already exists.",
+                )),
+                None => {
+                    // Row disappeared between ConditionalCheckFailed and read (rollback race).
+                    match factor_lookup
+                        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+                        .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+                            if matches!(
+                                sdk_err,
+                                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                                    if inner.err().is_conditional_check_failed_exception()
+                            ) =>
+                        {
+                            match factor_lookup
+                                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                                .await?
+                            {
+                                Some(existing) if existing == backup_id => Ok(()),
+                                _ => {
+                                    tracing::error!(
+                                        message = "Failed to ensure FactorLookup after successful factor write",
+                                        factor_pk = factor_to_lookup.primary_key(),
+                                    );
+                                    Err(ErrorResponse::internal_server_error())
+                                }
+                            }
+                        }
+                        Err(err) => Err(err.into()),
+                    }
+                }
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
 }
