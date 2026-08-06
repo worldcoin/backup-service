@@ -110,7 +110,7 @@ impl FactorLookup {
         Ok(())
     }
 
-    /// Looks up the backup ID for the given factor.
+    /// Looks up the backup ID for the given factor (eventually consistent `GetItem`).
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbGetError` - if the factor cannot be fetched from the `DynamoDB` table.
@@ -120,6 +120,28 @@ impl FactorLookup {
         scope: FactorScope,
         factor: &FactorToLookup,
     ) -> Result<Option<String>, FactorLookupError> {
+        self.lookup_inner(scope, factor, false).await
+    }
+
+    /// Strongly consistent lookup — use after a write race (e.g. `ConditionalCheckFailed` on insert)
+    /// so a stale eventually-consistent read cannot spuriously miss an existing mapping.
+    ///
+    /// # Errors
+    /// Same as [`Self::lookup`].
+    pub async fn lookup_consistent(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) -> Result<Option<String>, FactorLookupError> {
+        self.lookup_inner(scope, factor, true).await
+    }
+
+    async fn lookup_inner(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+        consistent_read: bool,
+    ) -> Result<Option<String>, FactorLookupError> {
         let result = self
             .dynamodb_client
             .get_item()
@@ -128,6 +150,7 @@ impl FactorLookup {
                 DocumentAttribute::Pk.to_string(),
                 factor_primary_key(scope, factor),
             )
+            .consistent_read(consistent_read)
             .send()
             .await?;
 
