@@ -487,55 +487,22 @@ pub async fn handler(
                 .delete(FactorScope::Main, &factor_to_lookup)
                 .await
             {
+                // Delete may still have applied despite a timeout/dispatch error — continue to
+                // heal so we do not leave a concurrent successful writer untraceable.
                 tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
-            } else {
-                // Heal: a concurrent writer may have committed the factor between the pre-delete
-                // read and this delete. Restore the lookup if metadata now contains the factor.
-                let needs_heal = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
-                    Ok(Some((metadata, _))) => {
-                        metadata.factors.iter().any(|f| f.kind == new_factor_kind)
-                    }
-                    Ok(None) => false,
-                    Err(err) => {
-                        tracing::error!(
-                            message = "Failed to re-read metadata after lookup rollback; cannot heal",
-                            error = ?err,
-                            factor_pk = factor_to_lookup.primary_key(),
-                        );
-                        false
-                    }
-                };
-
-                if needs_heal {
-                    match factor_lookup
-                        .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
-                        .await
-                    {
-                        Ok(()) => {
-                            tracing::info!(
-                                message = "Healed FactorLookup after concurrent factor write during rollback",
-                                factor_pk = factor_to_lookup.primary_key(),
-                            );
-                        }
-                        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
-                            if matches!(
-                                sdk_err,
-                                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
-                                    if inner.err().is_conditional_check_failed_exception()
-                            ) =>
-                        {
-                            // Another healer (or the concurrent writer) already restored the row.
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                message = "Failed to heal FactorLookup after concurrent factor write during rollback",
-                                error = ?err,
-                                factor_pk = factor_to_lookup.primary_key(),
-                            );
-                        }
-                    }
-                }
             }
+
+            // Heal whether delete returned Ok or Err: a concurrent writer may have committed the
+            // factor around this rollback, and an ambiguous delete response may have removed a
+            // lookup that writer had just restored.
+            heal_main_factor_lookup_if_present(
+                &backup_storage,
+                &factor_lookup,
+                &factor_to_lookup,
+                &backup_id,
+                &new_factor_kind,
+            )
+            .await;
         } else {
             tracing::info!(
                 message =
@@ -556,6 +523,61 @@ pub async fn handler(
         factor_id: new_factor.id,
         backup_metadata: updated_metadata.exported(),
     }))
+}
+
+/// After a lookup rollback delete (or ambiguous delete error), restore the row if metadata now
+/// contains the factor — covering concurrent successful writers and lost delete ACKs.
+async fn heal_main_factor_lookup_if_present(
+    backup_storage: &BackupStorage,
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+) {
+    let needs_heal = match backup_storage.get_metadata_by_backup_id(backup_id).await {
+        Ok(Some((metadata, _))) => metadata.factors.iter().any(|f| f.kind == *new_factor_kind),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::error!(
+                message = "Failed to re-read metadata after lookup rollback; cannot heal",
+                error = ?err,
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            false
+        }
+    };
+
+    if !needs_heal {
+        return;
+    }
+
+    match factor_lookup
+        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                message = "Healed FactorLookup after concurrent factor write during rollback",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+        }
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            // Another healer (or the concurrent writer) already restored the row.
+        }
+        Err(err) => {
+            tracing::error!(
+                message = "Failed to heal FactorLookup after concurrent factor write during rollback",
+                error = ?err,
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+        }
+    }
 }
 
 /// Ensures `FactorLookup` maps this factor to `backup_id` after metadata was written successfully.
