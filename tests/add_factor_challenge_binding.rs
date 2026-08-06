@@ -282,3 +282,78 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
     let body2 = parse_response_body(resp2).await;
     assert_eq!(body2["error"]["code"], "already_used");
 }
+
+/// Existing-factor approval must not accept a swapped passkey registration ceremony.
+#[tokio::test]
+#[serial]
+async fn test_add_factor_rejects_swapped_passkey_registration_token() {
+    let subject = format!("swap-{}", uuid::Uuid::new_v4());
+    let test = crate::common::create_test_backup_with_oidc_account(&subject, b"DATA").await;
+    assert_eq!(test.response.status(), StatusCode::OK);
+
+    let mut passkey_client = get_mock_passkey_client();
+
+    // Ceremony A: existing factor will authorize this registration.
+    let challenges_a = get_add_factor_challenges_generic(
+        json!({
+            "kind": "PASSKEY_REGISTRATION",
+            "platform": "IOS"
+        }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
+    // Ceremony B: attacker's alternate registration token/credential.
+    let challenges_b = get_add_factor_challenges_generic(
+        json!({
+            "kind": "PASSKEY_REGISTRATION",
+            "platform": "IOS"
+        }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+    let credential_b = backup_service_test_utils::make_credential_from_passkey_challenge(
+        &mut passkey_client,
+        &json!({ "challenge": challenges_b["newFactorChallenge"].clone() }),
+    )
+    .await;
+
+    let (existing_session_public_key, existing_session_secret_key) =
+        crate::common::generate_keypair();
+    let existing_oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject)),
+        &existing_session_public_key,
+    );
+    let existing_sig = crate::common::sign_keypair_challenge(
+        &existing_session_secret_key,
+        challenges_a["existingFactorChallenge"].as_str().unwrap(),
+    );
+
+    let resp = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": existing_oidc_token },
+                "publicKey": existing_session_public_key,
+                "signature": existing_sig,
+            },
+            "existingFactorChallengeToken": challenges_a["existingFactorToken"],
+            // Swap: credential + token from ceremony B, while existing factor signed ceremony A.
+            "newFactorAuthorization": {
+                "kind": "PASSKEY",
+                "credential": credential_b,
+                "label": "Attacker Passkey"
+            },
+            "newFactorChallengeToken": challenges_b["newFactorToken"],
+            "encryptedBackupKey": null
+        }),
+        Some(test.environment),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(resp).await;
+    assert_eq!(body["error"]["code"], "registration_mismatch");
+}

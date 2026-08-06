@@ -268,7 +268,38 @@ pub async fn handler(
                 ));
             }
         }
-        (NewFactorType::PasskeyRegistration {}, Authorization::Passkey { .. }) => {}
+        (
+            NewFactorType::PasskeyRegistration {
+                registration_hash: expected_hash,
+            },
+            Authorization::Passkey { .. },
+        ) => {
+            // Existing factor authorized this exact WebAuthn registration state (hash bound in
+            // its challenge context). Reject swapped new-factor challenge tokens.
+            let (registration_payload, new_factor_context) = challenge_manager
+                .extract_token_payload(
+                    ChallengeType::Passkey,
+                    request.new_factor_challenge_token.clone(),
+                )
+                .await?;
+            if !matches!(
+                new_factor_context,
+                ChallengeContext::AddFactorByNewFactor {}
+            ) {
+                return Err(ErrorResponse::bad_request(
+                    "invalid_challenge_context",
+                    "Challenge context mismatch",
+                ));
+            }
+            let actual_hash =
+                super::add_factor_challenge::registration_state_hash(&registration_payload);
+            if actual_hash != *expected_hash {
+                return Err(ErrorResponse::bad_request(
+                    "registration_mismatch",
+                    "Passkey registration does not match the one authorized by the existing factor",
+                ));
+            }
+        }
         (_, Authorization::EcKeypair { .. }) => {
             return Err(ErrorResponse::bad_request(
                 "not_supported",
