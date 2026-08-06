@@ -413,12 +413,40 @@ pub async fn handler(
 
     // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
     // write definitely did not land (`NotInserted`).
+    //
+    // Another concurrent request may have adopted this lookup row (same-backup
+    // ConditionalCheckFailed) and successfully written the factor while our write failed
+    // (e.g. encryption-key conflict). Re-check metadata before delete so we do not orphan
+    // that other request's factor.
     if lookup_insert_succeeded && write.should_rollback_lookup() {
-        if let Err(delete_err) = factor_lookup
-            .delete(FactorScope::Main, &factor_to_lookup)
+        let factor_still_absent = match backup_storage
+            .get_metadata_by_backup_id(&backup_id)
             .await
         {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+            Ok(Some((metadata, _))) => !metadata.factors.iter().any(|f| f.kind == new_factor_kind),
+            Ok(None) => true,
+            Err(err) => {
+                tracing::error!(
+                    message = "Failed to re-read metadata before lookup rollback; keeping lookup row",
+                    error = ?err,
+                    factor_pk = factor_to_lookup.primary_key(),
+                );
+                false
+            }
+        };
+
+        if factor_still_absent {
+            if let Err(delete_err) = factor_lookup
+                .delete(FactorScope::Main, &factor_to_lookup)
+                .await
+            {
+                tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+            }
+        } else {
+            tracing::info!(
+                message = "Skipping lookup rollback; factor present in metadata after concurrent write",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
         }
     }
 
