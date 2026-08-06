@@ -494,7 +494,11 @@ impl BackupStorage {
     /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in the
     /// target scope's metadata list.
     ///
-    /// - Factor present in target scope → `Inserted` (e.g. lost ACK after a successful put).
+    /// - Factor present in target scope + non-`412` error → `Inserted` (e.g. lost ACK after a
+    ///   successful put).
+    /// - Factor present in target scope + `412 PreconditionFailed` → `Unknown(FactorAlreadyExists)`
+    ///   (another writer won the `if_match` race; callers must reconcile keys / factor ids rather
+    ///   than assume *this* request's put applied).
     /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
     /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
     /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
@@ -518,7 +522,13 @@ impl BackupStorage {
                             target_scope,
                         ) =>
                     {
-                        FactorMetadataWrite::Inserted(on_present(metadata))
+                        if Self::is_precondition_failed_put(&e) {
+                            // Concurrent same-identity writer updated metadata first. Do not treat
+                            // this as our Inserted write (wrong factor_id / missing encryption key).
+                            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
+                        } else {
+                            FactorMetadataWrite::Inserted(on_present(metadata))
+                        }
                     }
                     // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
                     // factor is not in the target list, so rolling back the lookup is safe.
@@ -952,7 +962,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_put_object_outcome_inserts_when_factor_present_after_412() {
+    async fn resolve_put_object_outcome_already_exists_when_factor_present_after_412() {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
@@ -981,13 +991,60 @@ mod tests {
             .await
             .unwrap();
 
-        // Simulate lost-ACK: PutObject returned 412, but the factor is already in metadata.
+        // Concurrent writer won if_match: 412, but the same factor identity is already present.
         let result = backup_storage
             .resolve_put_object_outcome(
                 &test_backup_id,
                 &factor_kind,
                 FactorListScope::Main,
                 put_object_service_error(412),
+                |m| m,
+            )
+            .await;
+        assert!(!result.should_rollback_lookup());
+        match result {
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => panic!("Expected Unknown(FactorAlreadyExists) after 412 race, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_put_object_outcome_inserts_when_factor_present_after_timeout() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "reconcile_timeout".to_string(),
+                masked_email: "t****@example.com".to_string(),
+            },
+            "turnkey_provider_id".to_string(),
+        );
+        let factor_kind = factor.kind.clone();
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![factor],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Lost ACK after a successful put: timeout, but the factor is already in metadata.
+        let result = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                FactorListScope::Main,
+                SdkError::timeout_error("timed out"),
                 |m| m,
             )
             .await;
@@ -1000,7 +1057,7 @@ mod tests {
                     FactorListScope::Main,
                 ));
             }
-            other => panic!("Expected Inserted after reconcile, got {other:?}"),
+            other => panic!("Expected Inserted after timeout reconcile, got {other:?}"),
         }
     }
 
