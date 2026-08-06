@@ -474,10 +474,7 @@ pub async fn handler(
             } else {
                 // Heal: a concurrent writer may have committed the factor between the pre-delete
                 // read and this delete. Restore the lookup if metadata now contains the factor.
-                let needs_heal = match backup_storage
-                    .get_metadata_by_backup_id(&backup_id)
-                    .await
-                {
+                let needs_heal = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
                     Ok(Some((metadata, _))) => {
                         metadata.factors.iter().any(|f| f.kind == new_factor_kind)
                     }
