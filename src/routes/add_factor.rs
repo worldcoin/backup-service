@@ -448,10 +448,9 @@ pub async fn handler(
     // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
     // write definitely did not land (`NotInserted`).
     //
-    // Another concurrent request may have adopted this lookup row (same-backup
-    // ConditionalCheckFailed) and successfully written the factor while our write failed
-    // (e.g. encryption-key conflict). Re-check metadata before delete so we do not orphan
-    // that other request's factor.
+    // Another concurrent request may adopt this lookup row (same-backup ConditionalCheckFailed)
+    // and write the factor around our rollback. Skip delete if the factor is already present;
+    // after delete, re-check and re-insert (heal) if it appeared in the race window.
     if lookup_insert_succeeded && write.should_rollback_lookup() {
         let factor_still_absent = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
             Ok(Some((metadata, _))) => !metadata.factors.iter().any(|f| f.kind == new_factor_kind),
@@ -472,6 +471,56 @@ pub async fn handler(
                 .await
             {
                 tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+            } else {
+                // Heal: a concurrent writer may have committed the factor between the pre-delete
+                // read and this delete. Restore the lookup if metadata now contains the factor.
+                let needs_heal = match backup_storage
+                    .get_metadata_by_backup_id(&backup_id)
+                    .await
+                {
+                    Ok(Some((metadata, _))) => {
+                        metadata.factors.iter().any(|f| f.kind == new_factor_kind)
+                    }
+                    Ok(None) => false,
+                    Err(err) => {
+                        tracing::error!(
+                            message = "Failed to re-read metadata after lookup rollback; cannot heal",
+                            error = ?err,
+                            factor_pk = factor_to_lookup.primary_key(),
+                        );
+                        false
+                    }
+                };
+
+                if needs_heal {
+                    match factor_lookup
+                        .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
+                        .await
+                    {
+                        Ok(()) => {
+                            tracing::info!(
+                                message = "Healed FactorLookup after concurrent factor write during rollback",
+                                factor_pk = factor_to_lookup.primary_key(),
+                            );
+                        }
+                        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+                            if matches!(
+                                sdk_err,
+                                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                                    if inner.err().is_conditional_check_failed_exception()
+                            ) =>
+                        {
+                            // Another healer (or the concurrent writer) already restored the row.
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                message = "Failed to heal FactorLookup after concurrent factor write during rollback",
+                                error = ?err,
+                                factor_pk = factor_to_lookup.primary_key(),
+                            );
+                        }
+                    }
+                }
             }
         } else {
             tracing::info!(
