@@ -343,12 +343,15 @@ impl BackupStorage {
 
     /// Appends an encryption key to backup metadata without adding a factor.
     ///
-    /// Used for metadata-only upgrades when the factor already exists. No-ops if a key of the same
-    /// flattened kind is already present.
+    /// Used for metadata-only upgrades when the factor already exists. No-ops only when an
+    /// **exactly equal** key is already present; a same flattened kind with different material
+    /// returns [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`].
     ///
     /// # Errors
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
     /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
+    /// - `BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed` - if a different key of the same
+    ///   type is already present.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -361,13 +364,16 @@ impl BackupStorage {
             return Err(BackupManagerError::ETagNotFound);
         };
 
-        if metadata
+        if let Some(existing) = metadata
             .keys
             .iter()
-            .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
+            .find(|k| k.flattened_kind() == encryption_key.flattened_kind())
         {
-            // Key type already present — nothing to do (idempotent).
-            return Ok(());
+            if existing == &encryption_key {
+                // Exact match — idempotent success.
+                return Ok(());
+            }
+            return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
         }
 
         metadata.keys.push(encryption_key);
@@ -1721,6 +1727,63 @@ mod tests {
             }
             _ => panic!("Expected Turnkey key"),
         }
+    }
+
+    #[tokio::test]
+    async fn add_encryption_key_only_is_idempotent_for_exact_match_and_rejects_mismatch() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let existing_key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "EXISTING_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![existing_key.clone()],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Exact same key — idempotent success.
+        backup_storage
+            .add_encryption_key_only(&test_backup_id, existing_key.clone())
+            .await
+            .unwrap();
+
+        // Same type, different material — conflict.
+        let mismatched = BackupEncryptionKey::Turnkey {
+            encrypted_key: "DIFFERENT_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+        match backup_storage
+            .add_encryption_key_only(&test_backup_id, mismatched)
+            .await
+        {
+            Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {}
+            other => panic!("Expected OnlyOneEncryptionKeyPerTypeAllowed, got {other:?}"),
+        }
+
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("metadata");
+        assert_eq!(metadata.keys, vec![existing_key]);
     }
 
     #[tokio::test]
