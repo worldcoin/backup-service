@@ -568,7 +568,42 @@ async fn heal_main_factor_lookup_if_present(
                     if inner.err().is_conditional_check_failed_exception()
             ) =>
         {
-            // Another healer (or the concurrent writer) already restored the row.
+            // Confirm the existing row maps to this backup — ConditionalCheckFailed alone can mean
+            // another backup now owns the factor identity.
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                .await
+            {
+                Ok(Some(existing)) if existing == backup_id => {}
+                Ok(Some(other_backup_id)) => {
+                    tracing::error!(
+                        message = "Heal skipped: FactorLookup maps factor to a different backup",
+                        factor_pk = factor_to_lookup.primary_key(),
+                        expected_backup_id = backup_id,
+                        actual_backup_id = other_backup_id.as_str(),
+                    );
+                }
+                Ok(None) => {
+                    // Row vanished between ConditionalCheckFailed and read — retry once.
+                    if let Err(err) = factor_lookup
+                        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+                        .await
+                    {
+                        tracing::error!(
+                            message = "Failed to heal FactorLookup after row disappeared during reconcile",
+                            error = ?err,
+                            factor_pk = factor_to_lookup.primary_key(),
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(
+                        message = "Failed consistent FactorLookup read during heal reconcile",
+                        error = ?err,
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                }
+            }
         }
         Err(err) => {
             tracing::error!(
