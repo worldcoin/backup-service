@@ -250,6 +250,14 @@ pub enum ChallengeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
+    /// Registering a new passkey (`WebAuthn` credential creation).
+    ///
+    /// `registration_hash` is the hex-encoded SHA-256 digest of the `WebAuthn` registration-state
+    /// bytes embedded as the new-factor challenge-token payload. Binding this into the
+    /// existing-factor token prevents swapping a different registration ceremony after the old
+    /// factor has signed.
+    #[serde(rename_all = "camelCase")]
+    PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]
     OidcAccount { oidc_token: String },
 }
