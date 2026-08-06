@@ -314,7 +314,28 @@ pub async fn handler(
         }
     }
 
-    // Step 2A.2: Use AuthHandler to validate the new factor
+    // Step 2A.2: Use AuthHandler to validate the new factor.
+    // When the same OIDC ID token + session keypair authorize both sides (same-account
+    // metadata-only upgrade), the existing-factor verify already consumed the nonce — skip a
+    // second Redis mark so registration can still verify the new-factor challenge signature.
+    let reuse_same_oidc_session = matches!(
+        (
+            &request.existing_factor_authorization,
+            &request.new_factor_authorization
+        ),
+        (
+            Authorization::OidcAccount {
+                oidc_token: existing_token,
+                public_key: existing_pk,
+                ..
+            },
+            Authorization::OidcAccount {
+                oidc_token: new_token,
+                public_key: new_pk,
+                ..
+            },
+        ) if existing_token == new_token && existing_pk == new_pk
+    );
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.new_factor_authorization,
@@ -322,6 +343,7 @@ pub async fn handler(
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
+            !reuse_same_oidc_session,
         )
         .await?;
 
@@ -419,10 +441,7 @@ pub async fn handler(
     // (e.g. encryption-key conflict). Re-check metadata before delete so we do not orphan
     // that other request's factor.
     if lookup_insert_succeeded && write.should_rollback_lookup() {
-        let factor_still_absent = match backup_storage
-            .get_metadata_by_backup_id(&backup_id)
-            .await
-        {
+        let factor_still_absent = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
             Ok(Some((metadata, _))) => !metadata.factors.iter().any(|f| f.kind == new_factor_kind),
             Ok(None) => true,
             Err(err) => {
@@ -444,7 +463,8 @@ pub async fn handler(
             }
         } else {
             tracing::info!(
-                message = "Skipping lookup rollback; factor present in metadata after concurrent write",
+                message =
+                    "Skipping lookup rollback; factor present in metadata after concurrent write",
                 factor_pk = factor_to_lookup.primary_key(),
             );
         }

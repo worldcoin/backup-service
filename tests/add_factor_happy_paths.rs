@@ -387,6 +387,91 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
     assert_eq!(oidc_count, 1);
 }
 
+// Same-account Turnkey upgrade with one OIDC ID token + session keypair for both sides.
+#[tokio::test]
+#[serial]
+async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
+    let subject = format!("same-oidc-one-session-{}", Uuid::new_v4());
+    let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
+    assert_eq!(test.response.status(), StatusCode::OK);
+    let body = test
+        .response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let create_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let backup_id = create_json["backupId"].as_str().unwrap();
+
+    let (session_public_key, session_secret_key) = crate::common::generate_keypair();
+    let oidc_token = test.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject)),
+        &session_public_key,
+    );
+
+    let challenges = get_add_factor_challenges_generic(
+        json!({ "kind": "OIDC_ACCOUNT", "oidcToken": oidc_token }),
+        Some("OIDC_ACCOUNT"),
+    )
+    .await;
+
+    let existing_sig = crate::common::sign_keypair_challenge(
+        &session_secret_key,
+        challenges["existingFactorChallenge"].as_str().unwrap(),
+    );
+    let new_sig = crate::common::sign_keypair_challenge(
+        &session_secret_key,
+        challenges["newFactorChallenge"].as_str().unwrap(),
+    );
+
+    let response = send_post_request_with_environment(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
+                "publicKey": session_public_key,
+                "signature": existing_sig,
+            },
+            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "newFactorAuthorization": {
+                "kind": "OIDC_ACCOUNT",
+                "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
+                "publicKey": session_public_key,
+                "signature": new_sig,
+            },
+            "newFactorChallengeToken": challenges["newFactorToken"],
+            "turnkeyProviderId": "turnkey_provider_id",
+            "encryptedBackupKey": {
+                "kind": "TURNKEY",
+                "encryptedKey": "ENCRYPTED_KEY",
+                "turnkeyAccountId": "org123",
+                "turnkeyUserId": "TURNKEY_USER_ID",
+                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+            }
+        }),
+        Some(test.environment),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+    assert!(metadata["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k["kind"] == "TURNKEY"));
+    let oidc_count = metadata["factors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["kind"]["kind"] == "OIDC_ACCOUNT")
+        .count();
+    assert_eq!(oidc_count, 1);
+}
+
 // Same OIDC account with a different Turnkey provider id must not create a duplicate factor.
 #[tokio::test]
 #[serial]

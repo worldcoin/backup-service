@@ -45,6 +45,7 @@ pub async fn handler(
             ChallengeContext::AddSyncFactor {},
             None,
             true, // is_sync_factor
+            true, // consume OIDC nonce (N/A for EC sync factors)
         )
         .await?;
 
