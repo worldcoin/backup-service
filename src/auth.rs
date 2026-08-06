@@ -211,6 +211,10 @@ impl AuthHandler {
     ///
     /// This is called when creating a new backup with fresh factors or when adding a new `Sync` or `Main` factor to an existing backup.
     ///
+    /// `consume_oidc_nonce` should normally be `true`. Pass `false` when the same OIDC ID token /
+    /// session keypair already had its nonce marked used earlier in this request (same-account
+    /// add-factor upgrade using one sign-in).
+    ///
     /// # Errors
     /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
     pub async fn validate_factor_registration(
@@ -220,6 +224,7 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
+        consume_oidc_nonce: bool,
     ) -> Result<ValidationResult, AuthError> {
         // Step 1: Verify that the authorization type is valid for the factor scope
         // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
@@ -265,6 +270,7 @@ impl AuthHandler {
                     signature,
                     &challenge_token_payload,
                     turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
+                    consume_oidc_nonce,
                 )
                 .await?
             }
@@ -451,10 +457,11 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
+        consume_oidc_nonce: bool,
     ) -> Result<(Factor, FactorToLookup), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
+            .verify_token(oidc_token, public_key.to_string(), consume_oidc_nonce)
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
@@ -501,7 +508,7 @@ impl AuthHandler {
     ) -> Result<(String, BackupMetadata), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
+            .verify_token(oidc_token, public_key.to_string(), true)
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
