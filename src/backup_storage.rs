@@ -506,10 +506,11 @@ impl BackupStorage {
     ///
     /// - Factor present in target scope + non-`412` error → `Inserted` (e.g. lost ACK after a
     ///   successful put).
-    /// - Factor present with **this request's** `attempted_factor_id` + `412` → `Inserted` (put
-    ///   landed, then a retried `if_match` got `412`).
-    /// - Factor present with a **different** id (same identity/`FactorKind`) + `412` →
-    ///   `Unknown(FactorAlreadyExists)` (another writer won; callers must reconcile).
+    /// - Factor present with **this request's** `attempted_factor_id` → `Inserted` (put landed,
+    ///   including `412` after a stale-etag retry).
+    /// - Factor present with a **different** id (same identity/`FactorKind`) →
+    ///   `Unknown(FactorAlreadyExists)` (another writer won; for any ambiguous error, not only
+    ///   `412`).
     /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
     /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
     /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
@@ -534,19 +535,17 @@ impl BackupStorage {
                             target_scope,
                         ) =>
                     {
-                        if Self::is_precondition_failed_put(&e)
-                            && !Self::metadata_contains_factor_id(
-                                &metadata,
-                                attempted_factor_id,
-                                target_scope,
-                            )
-                        {
-                            // Same FactorKind identity is present, but it is not the factor row
-                            // this request tried to write — concurrent winner.
-                            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
-                        } else {
+                        if Self::metadata_contains_factor_id(
+                            &metadata,
+                            attempted_factor_id,
+                            target_scope,
+                        ) {
                             // Lost ACK, or 412 after our put already landed (retry with stale etag).
                             FactorMetadataWrite::Inserted(on_present(metadata))
+                        } else {
+                            // Same FactorKind identity is present, but it is not the factor row
+                            // this request tried to write — concurrent winner (any ambiguous error).
+                            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
                         }
                     }
                     // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
@@ -1109,6 +1108,25 @@ mod tests {
                 ));
             }
             other => panic!("Expected Inserted after timeout reconcile, got {other:?}"),
+        }
+
+        // Concurrent winner: timeout, same FactorKind, different factor id.
+        let concurrent = backup_storage
+            .resolve_put_object_outcome(
+                &test_backup_id,
+                &factor_kind,
+                "not-the-stored-factor-id",
+                FactorListScope::Main,
+                SdkError::timeout_error("timed out"),
+                |m| m,
+            )
+            .await;
+        assert!(!concurrent.should_rollback_lookup());
+        match concurrent {
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
+            other => {
+                panic!("Expected Unknown(FactorAlreadyExists) after timeout race, got {other:?}")
+            }
         }
     }
 
