@@ -113,6 +113,9 @@ pub enum ErrorCode {
     InvalidNewFactorType,
     /// The new factor's authorization kind does not match the requested new factor kind.
     InvalidNewFactorAuthorizationType,
+    /// The passkey registration being completed does not match the one the existing factor
+    /// authorized (bound by its registration-state hash).
+    PasskeyRegistrationMismatch,
 
     // SECTION: Encryption keys
     /// The encryption key was not found on the backup.
