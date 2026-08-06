@@ -916,6 +916,9 @@ async fn retry_ensure_insert_after_vanished_row(
 ///
 /// Closes the TOCTOU where `/delete-factor` removes the factor (and its lookup) between the
 /// pre-insert presence check and a successful ensure insert.
+///
+/// After deleting, re-heals if a concurrent same-backup `/add-factor` restored the factor (and
+/// adopted this lookup) between the `Absent` read and the delete.
 async fn reconcile_ensured_lookup_against_metadata(
     backup_storage: &BackupStorage,
     factor_lookup: &FactorLookup,
@@ -945,6 +948,16 @@ async fn reconcile_ensured_lookup_against_metadata(
                     factor_lookup
                         .delete(FactorScope::Main, factor_to_lookup)
                         .await?;
+                    // Concurrent add-factor may have restored the factor and adopted this mapping
+                    // before our delete; heal re-inserts if metadata now contains the factor.
+                    heal_main_factor_lookup_if_present(
+                        backup_storage,
+                        factor_lookup,
+                        factor_to_lookup,
+                        backup_id,
+                        new_factor_kind,
+                    )
+                    .await;
                 }
                 Some(_) | None => {}
             }
