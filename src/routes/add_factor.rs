@@ -597,8 +597,7 @@ async fn heal_main_factor_lookup_if_present(
 
         match attempt_heal_lookup_insert(factor_lookup, factor_to_lookup, backup_id, attempt).await
         {
-            HealInsertOutcome::Done => return,
-            HealInsertOutcome::WrongOwner => return,
+            HealInsertOutcome::Done | HealInsertOutcome::WrongOwner => return,
             HealInsertOutcome::RowVanished => {
                 // Retry insert without requiring another S3 metadata read (that read can fail
                 // and wrongly abandon heal).
