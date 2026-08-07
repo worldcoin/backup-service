@@ -379,7 +379,7 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+            self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::BackupMissing);
         };
@@ -412,7 +412,7 @@ impl AuthHandler {
         });
 
         if !passkey_authorized || reference_credentials.is_empty() {
-            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+            self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::UnauthorizedFactor);
         }
@@ -530,7 +530,7 @@ impl AuthHandler {
             .await?;
 
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            self.gc_stale_factor_lookup(expected_factor_scope, &oidc_factor)
+            self.delete_stale_factor_lookup(expected_factor_scope, &oidc_factor)
                 .await;
             return Err(AuthError::BackupMissing);
         };
@@ -552,7 +552,7 @@ impl AuthHandler {
         });
 
         if !is_oidc_account_in_factors {
-            self.gc_stale_factor_lookup(expected_factor_scope, &oidc_factor)
+            self.delete_stale_factor_lookup(expected_factor_scope, &oidc_factor)
                 .await;
             return Err(AuthError::UnauthorizedFactor);
         }
@@ -611,7 +611,7 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
-            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+            self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::BackupMissing);
         };
@@ -635,7 +635,7 @@ impl AuthHandler {
         });
 
         if !is_public_key_in_factors {
-            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+            self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::UnauthorizedFactor);
         }
@@ -648,7 +648,7 @@ impl AuthHandler {
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
     /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
-    async fn gc_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+    async fn delete_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
         match self.factor_lookup.delete(scope, factor).await {
             Ok(()) => {
                 tracing::info!(
