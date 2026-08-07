@@ -20,7 +20,10 @@ use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
-    factor_lookup::{FactorLookup, FactorScope, FactorToLookup},
+    factor_lookup::{
+        factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FactorToLookup,
+        FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+    },
     redis_cache::RedisCacheManager,
     types::{
         backup_metadata::{BackupMetadata, FactorKind},
@@ -648,7 +651,39 @@ impl AuthHandler {
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
     /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
+    ///
+    /// Skips the delete when the factor mutate lock is held (create/add write in flight) so we do
+    /// not remove a lookup that is about to be authorized in metadata.
     async fn delete_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+        let mut lock_guard = match self
+            .redis_cache_manager
+            .try_acquire_lock_guard(
+                FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                factor_lookup_mutate_lock_id(scope, factor),
+                Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+            )
+            .await
+        {
+            Ok(guard) => guard,
+            Err(RedisCacheError::Locked) => {
+                tracing::info!(
+                    message = "Skipping stale FactorLookup delete; mutate lock held by a writer",
+                    scope = %scope,
+                    factor_pk = factor.primary_key(),
+                );
+                return;
+            }
+            Err(err) => {
+                tracing::error!(
+                    message = "Skipping stale FactorLookup delete; failed to acquire mutate lock",
+                    error = ?err,
+                    scope = %scope,
+                    factor_pk = factor.primary_key(),
+                );
+                return;
+            }
+        };
+
         match self.factor_lookup.delete(scope, factor).await {
             Ok(()) => {
                 tracing::info!(
@@ -666,5 +701,7 @@ impl AuthHandler {
                 );
             }
         }
+
+        let _ = lock_guard.release().await;
     }
 }

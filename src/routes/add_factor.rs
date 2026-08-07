@@ -3,7 +3,11 @@ use std::sync::Arc;
 use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
+use crate::factor_lookup::{
+    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FactorToLookup,
+    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+};
+use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
@@ -63,6 +67,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
+    Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
@@ -260,6 +265,16 @@ pub async fn handler(
     let new_factor = validation_result.factor;
     let factor_to_lookup = validation_result.factor_to_lookup;
 
+    // Hold the factor mutate lock across lookup insert + metadata put so auth stale-delete cannot
+    // remove the row while S3 is still catching up.
+    let mut factor_lock = redis_cache_manager
+        .try_acquire_lock_guard(
+            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+            factor_lookup_mutate_lock_id(FactorScope::Main, &factor_to_lookup),
+            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+        )
+        .await?;
+
     // Step 3.1: Update the factor lookup with the new factor
     factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
@@ -288,6 +303,8 @@ pub async fn handler(
             tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
         }
     }
+
+    let _ = factor_lock.release().await;
 
     let updated_metadata = write.into_result()?;
 
