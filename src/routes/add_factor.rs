@@ -829,6 +829,21 @@ enum FactorPresence {
     Unknown,
 }
 
+/// Classifies a successfully fetched metadata snapshot for ensure/heal decisions.
+///
+/// `None` means the backup object is missing. Does not represent transport failures (`Unknown`).
+fn classify_fetched_metadata_factor_presence(
+    metadata: Option<&BackupMetadata>,
+    kind: &FactorKind,
+) -> FactorPresence {
+    match metadata {
+        Some(metadata) if metadata.factors.iter().any(|f| f.kind == *kind) => {
+            FactorPresence::Present
+        }
+        Some(_) | None => FactorPresence::Absent,
+    }
+}
+
 async fn factor_present_in_metadata_with_retry(
     backup_storage: &BackupStorage,
     backup_id: &str,
@@ -839,13 +854,11 @@ async fn factor_present_in_metadata_with_retry(
 
     for attempt in 1..=MAX_ATTEMPTS {
         match backup_storage.get_metadata_by_backup_id(backup_id).await {
-            Ok(None) => return FactorPresence::Absent,
+            Ok(None) => {
+                return classify_fetched_metadata_factor_presence(None, new_factor_kind);
+            }
             Ok(Some((metadata, _))) => {
-                return if metadata.factors.iter().any(|f| f.kind == *new_factor_kind) {
-                    FactorPresence::Present
-                } else {
-                    FactorPresence::Absent
-                };
+                return classify_fetched_metadata_factor_presence(Some(&metadata), new_factor_kind);
             }
             Err(err) => {
                 tracing::warn!(
@@ -877,8 +890,18 @@ fn stored_main_factor_id(metadata: &BackupMetadata, kind: &FactorKind) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::stored_main_factor_id;
+    use super::{classify_fetched_metadata_factor_presence, stored_main_factor_id, FactorPresence};
     use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
+
+    fn google_kind(sub: &str) -> FactorKind {
+        FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: sub.to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            turnkey_provider_id: "tp".to_string(),
+        }
+    }
 
     #[test]
     fn stored_main_factor_id_returns_none_when_factor_absent() {
@@ -889,13 +912,7 @@ mod tests {
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
         };
-        let kind = FactorKind::OidcAccount {
-            account: OidcAccountKind::Google {
-                sub: "sub".to_string(),
-                masked_email: "a****@b.com".to_string(),
-            },
-            turnkey_provider_id: "tp".to_string(),
-        };
+        let kind = google_kind("sub");
         assert!(stored_main_factor_id(&metadata, &kind).is_none());
     }
 
@@ -920,6 +937,61 @@ mod tests {
         assert_eq!(
             stored_main_factor_id(&metadata, &kind).as_deref(),
             Some(expected_id.as_str())
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_absent_when_backup_missing() {
+        let kind = google_kind("sub");
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(None, &kind),
+            FactorPresence::Absent
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_absent_when_kind_missing() {
+        let kind = google_kind("wanted");
+        let other = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "other".to_string(),
+                masked_email: "o****@b.com".to_string(),
+            },
+            "tp".to_string(),
+        );
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![other],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(Some(&metadata), &kind),
+            FactorPresence::Absent
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_present_when_kind_matches() {
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub".to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            "tp".to_string(),
+        );
+        let kind = factor.kind.clone();
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![factor],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(Some(&metadata), &kind),
+            FactorPresence::Present
         );
     }
 }
