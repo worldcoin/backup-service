@@ -1,7 +1,7 @@
 use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::Environment;
-use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
@@ -291,9 +291,6 @@ impl BackupStorage {
             });
         }
 
-        let factor_kind = factor.kind.clone();
-        let factor_id = factor.id.clone();
-
         // Add the factor to the metadata
         metadata.factors.push(factor);
 
@@ -327,29 +324,19 @@ impl BackupStorage {
             .await
         {
             Ok(_) => FactorMetadataWrite::Inserted(metadata),
-            Err(err) => {
-                self.resolve_put_object_outcome(
-                    backup_id,
-                    &factor_kind,
-                    &factor_id,
-                    FactorListScope::Main,
-                    err,
-                    |m| m,
-                )
-                .await
-            }
+            Err(err) => Self::classify_put_object_error(err),
         }
     }
 
     /// Appends an encryption key without adding a factor.
     ///
     /// Idempotent when the exact same key is already present; same kind with different material is
-    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts are reconciled by
-    /// re-reading metadata.
+    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts (`412`, timeouts,
+    /// 5xx) surface as errors — callers may retry; the exact-match pre-check makes retries safe.
     ///
     /// # Errors
     /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent, a conflicting
-    /// key of the same kind exists, or the put/reconcile cannot be completed.
+    /// key of the same kind exists, or the put fails.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -373,7 +360,7 @@ impl BackupStorage {
             return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
         }
 
-        metadata.keys.push(encryption_key.clone());
+        metadata.keys.push(encryption_key);
 
         match self
             .put_object()
@@ -386,38 +373,12 @@ impl BackupStorage {
         {
             Ok(_) => Ok(()),
             Err(err) => match Self::classify_put_object_error::<()>(err) {
-                FactorMetadataWrite::NotInserted(e) => Err(e),
+                FactorMetadataWrite::NotInserted(e) | FactorMetadataWrite::Unknown(e) => Err(e),
                 FactorMetadataWrite::Inserted(()) => {
                     unreachable!("classify never returns Inserted")
                 }
-                FactorMetadataWrite::Unknown(put_err) => {
-                    let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
-                        return Err(BackupManagerError::BackupNotFound);
-                    };
-                    Self::reconcile_key_only_after_ambiguous_put(&latest, &encryption_key, put_err)
-                }
             },
         }
-    }
-
-    /// Succeeds if `encryption_key` is present; conflicts on same kind / different material.
-    #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
-    fn reconcile_key_only_after_ambiguous_put(
-        latest: &BackupMetadata,
-        encryption_key: &BackupEncryptionKey,
-        put_err: BackupManagerError,
-    ) -> Result<(), BackupManagerError> {
-        if latest.keys.iter().any(|k| k == encryption_key) {
-            return Ok(());
-        }
-        if latest
-            .keys
-            .iter()
-            .any(|k| k.flattened_kind() == encryption_key.flattened_kind())
-        {
-            return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
-        }
-        Err(put_err)
     }
 
     /// Adds a sync factor to the backup metadata in S3.
@@ -472,9 +433,6 @@ impl BackupStorage {
             });
         }
 
-        let factor_kind = sync_factor.kind.clone();
-        let factor_id = sync_factor.id.clone();
-
         // Add the sync factor to the metadata
         metadata.sync_factors.push(sync_factor);
 
@@ -494,25 +452,12 @@ impl BackupStorage {
             .await
         {
             Ok(_) => FactorMetadataWrite::Inserted(()),
-            Err(err) => {
-                self.resolve_put_object_outcome(
-                    backup_id,
-                    &factor_kind,
-                    &factor_id,
-                    FactorListScope::Sync,
-                    err,
-                    |_| (),
-                )
-                .await
-            }
+            Err(err) => Self::classify_put_object_error(err),
         }
     }
 
-    /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
-    ///
-    /// `NotInserted` for definite non-writes: construction failures, and 4xx rejections other than
-    /// `412` (ambiguous under `if_match` retries). Timeouts, dispatch/response errors, `412`, and
-    /// 5xx are `Unknown` until reconciled via [`Self::resolve_put_object_outcome`].
+    /// Classifies a `PutObject` failure for `FactorLookup` rollback: definite non-writes are
+    /// `NotInserted`; `412`, timeouts, and 5xx are `Unknown` (keep the lookup; auth can GC orphans).
     fn classify_put_object_error<T>(
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
     ) -> FactorMetadataWrite<T> {
@@ -532,67 +477,7 @@ impl BackupStorage {
         }
     }
 
-    /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in the
-    /// target scope's metadata list.
-    ///
-    /// - Factor present in target scope + non-`412` error → `Inserted` (e.g. lost ACK after a
-    ///   successful put).
-    /// - Factor present with **this request's** `attempted_factor_id` → `Inserted` (put landed,
-    ///   including `412` after a stale-etag retry).
-    /// - Factor present with a **different** id (same identity/`FactorKind`) →
-    ///   `Unknown(FactorAlreadyExists)` (another writer won; for any ambiguous error, not only
-    ///   `412`).
-    /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
-    /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
-    /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
-    async fn resolve_put_object_outcome<T>(
-        &self,
-        backup_id: &str,
-        factor_kind: &FactorKind,
-        attempted_factor_id: &str,
-        target_scope: FactorListScope,
-        err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
-        on_present: impl FnOnce(BackupMetadata) -> T,
-    ) -> FactorMetadataWrite<T> {
-        match Self::classify_put_object_error::<T>(err) {
-            FactorMetadataWrite::NotInserted(e) => FactorMetadataWrite::NotInserted(e),
-            FactorMetadataWrite::Inserted(_) => unreachable!("classify never returns Inserted"),
-            FactorMetadataWrite::Unknown(e) => {
-                match self.get_metadata_by_backup_id(backup_id).await {
-                    Ok(Some((metadata, _)))
-                        if Self::metadata_contains_factor_kind(
-                            &metadata,
-                            factor_kind,
-                            target_scope,
-                        ) =>
-                    {
-                        if Self::metadata_contains_factor_id(
-                            &metadata,
-                            attempted_factor_id,
-                            target_scope,
-                        ) {
-                            // Lost ACK, or 412 after our put already landed (retry with stale etag).
-                            FactorMetadataWrite::Inserted(on_present(metadata))
-                        } else {
-                            // Same FactorKind identity is present, but it is not the factor row
-                            // this request tried to write — concurrent winner (any ambiguous error).
-                            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
-                        }
-                    }
-                    // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
-                    // factor is not in the target list, so rolling back the lookup is safe.
-                    Ok(None) => FactorMetadataWrite::NotInserted(e),
-                    Ok(Some(_)) if Self::is_precondition_failed_put(&e) => {
-                        FactorMetadataWrite::NotInserted(e)
-                    }
-                    _ => FactorMetadataWrite::Unknown(e),
-                }
-            }
-        }
-    }
-
-    /// Classifies a pre-write duplicate: same-scope keeps lookup (`Unknown`); opposite-scope rolls
-    /// it back (`NotInserted`).
+    /// Same-scope duplicate → `Unknown` (keep lookup); opposite-scope → `NotInserted` (rollback).
     fn duplicate_factor_outcome<T>(
         metadata: &BackupMetadata,
         kind: &FactorKind,
@@ -629,27 +514,6 @@ impl BackupStorage {
         match scope {
             FactorListScope::Main => metadata.factors.iter().any(|f| &f.kind == kind),
             FactorListScope::Sync => metadata.sync_factors.iter().any(|f| &f.kind == kind),
-        }
-    }
-
-    fn metadata_contains_factor_id(
-        metadata: &BackupMetadata,
-        factor_id: &str,
-        scope: FactorListScope,
-    ) -> bool {
-        match scope {
-            FactorListScope::Main => metadata.factors.iter().any(|f| f.id == factor_id),
-            FactorListScope::Sync => metadata.sync_factors.iter().any(|f| f.id == factor_id),
-        }
-    }
-
-    fn is_precondition_failed_put(err: &BackupManagerError) -> bool {
-        match err {
-            BackupManagerError::PutObjectError(SdkError::ServiceError(service_err)) => {
-                service_err.raw().status().as_u16() == 412
-                    || service_err.err().code() == Some("PreconditionFailed")
-            }
-            _ => false,
         }
     }
 
@@ -1012,347 +876,8 @@ mod tests {
         assert!(!timeout.should_rollback_lookup());
     }
 
-    #[test]
-    fn is_precondition_failed_put_detects_412() {
-        let precondition = BackupManagerError::PutObjectError(put_object_service_error(412));
-        assert!(BackupStorage::is_precondition_failed_put(&precondition));
-
-        let bad_request = BackupManagerError::PutObjectError(put_object_service_error(400));
-        assert!(!BackupStorage::is_precondition_failed_put(&bad_request));
-    }
-
     #[tokio::test]
-    async fn resolve_put_object_outcome_already_exists_when_factor_present_after_412() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        let test_backup_id = gen_backup_id();
-        let factor = Factor::new_oidc_account(
-            OidcAccountKind::Google {
-                sub: "reconcile_present".to_string(),
-                masked_email: "r****@example.com".to_string(),
-            },
-            "turnkey_provider_id".to_string(),
-        );
-        let factor_kind = factor.kind.clone();
-        let stored_factor_id = factor.id.clone();
-        backup_storage
-            .create(
-                vec![1, 2, 3].into(),
-                &BackupMetadata {
-                    id: test_backup_id.clone(),
-                    factors: vec![factor],
-                    sync_factors: vec![],
-                    keys: vec![],
-                    manifest_hash: hex::encode([1u8; 32]),
-                },
-            )
-            .await
-            .unwrap();
-
-        // Concurrent writer won if_match: 412, same FactorKind identity, different factor id.
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &factor_kind,
-                "not-the-stored-factor-id",
-                FactorListScope::Main,
-                put_object_service_error(412),
-                |m| m,
-            )
-            .await;
-        assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
-            other => panic!("Expected Unknown(FactorAlreadyExists) after 412 race, got {other:?}"),
-        }
-
-        // Same request retried after its put already landed: 412, but our factor id is present.
-        let retry = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &factor_kind,
-                &stored_factor_id,
-                FactorListScope::Main,
-                put_object_service_error(412),
-                |m| m,
-            )
-            .await;
-        assert!(!retry.should_rollback_lookup());
-        match retry {
-            FactorMetadataWrite::Inserted(_) => {}
-            other => panic!("Expected Inserted when 412 after our own put landed, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_inserts_when_factor_present_after_timeout() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        let test_backup_id = gen_backup_id();
-        let factor = Factor::new_oidc_account(
-            OidcAccountKind::Google {
-                sub: "reconcile_timeout".to_string(),
-                masked_email: "t****@example.com".to_string(),
-            },
-            "turnkey_provider_id".to_string(),
-        );
-        let factor_kind = factor.kind.clone();
-        let factor_id = factor.id.clone();
-        backup_storage
-            .create(
-                vec![1, 2, 3].into(),
-                &BackupMetadata {
-                    id: test_backup_id.clone(),
-                    factors: vec![factor],
-                    sync_factors: vec![],
-                    keys: vec![],
-                    manifest_hash: hex::encode([1u8; 32]),
-                },
-            )
-            .await
-            .unwrap();
-
-        // Lost ACK after a successful put: timeout, but the factor is already in metadata.
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &factor_kind,
-                &factor_id,
-                FactorListScope::Main,
-                SdkError::timeout_error("timed out"),
-                |m| m,
-            )
-            .await;
-        assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Inserted(metadata) => {
-                assert!(BackupStorage::metadata_contains_factor_kind(
-                    &metadata,
-                    &factor_kind,
-                    FactorListScope::Main,
-                ));
-            }
-            other => panic!("Expected Inserted after timeout reconcile, got {other:?}"),
-        }
-
-        // Concurrent winner: timeout, same FactorKind, different factor id.
-        let concurrent = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &factor_kind,
-                "not-the-stored-factor-id",
-                FactorListScope::Main,
-                SdkError::timeout_error("timed out"),
-                |m| m,
-            )
-            .await;
-        assert!(!concurrent.should_rollback_lookup());
-        match concurrent {
-            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
-            other => {
-                panic!("Expected Unknown(FactorAlreadyExists) after timeout race, got {other:?}")
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_rolls_back_412_when_factor_absent() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        let test_backup_id = gen_backup_id();
-        backup_storage
-            .create(
-                vec![1, 2, 3].into(),
-                &BackupMetadata {
-                    id: test_backup_id.clone(),
-                    factors: vec![],
-                    sync_factors: vec![],
-                    keys: vec![],
-                    manifest_hash: hex::encode([1u8; 32]),
-                },
-            )
-            .await
-            .unwrap();
-
-        let missing_kind = FactorKind::OidcAccount {
-            account: OidcAccountKind::Google {
-                sub: "reconcile_absent".to_string(),
-                masked_email: "a****@example.com".to_string(),
-            },
-            turnkey_provider_id: "turnkey_provider_id".to_string(),
-        };
-
-        // Lost if_match race: 412 and the attempted factor never landed.
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &missing_kind,
-                "attempted-factor-id",
-                FactorListScope::Main,
-                put_object_service_error(412),
-                |m| m,
-            )
-            .await;
-        assert!(result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
-            other => panic!("Expected NotInserted(PutObjectError), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_ignores_factor_in_other_scope() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        let test_backup_id = gen_backup_id();
-        let factor = Factor::new_ec_keypair("cross-scope-key".to_string());
-        let factor_kind = factor.kind.clone();
-        backup_storage
-            .create(
-                vec![1, 2, 3].into(),
-                &BackupMetadata {
-                    id: test_backup_id.clone(),
-                    factors: vec![factor],
-                    sync_factors: vec![],
-                    keys: vec![],
-                    manifest_hash: hex::encode([1u8; 32]),
-                },
-            )
-            .await
-            .unwrap();
-
-        // Kind exists as main, but sync put reconcile must not treat that as Inserted.
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &factor_kind,
-                "attempted-sync-factor-id",
-                FactorListScope::Sync,
-                put_object_service_error(412),
-                |_| (),
-            )
-            .await;
-        assert!(result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
-            other => panic!("Expected NotInserted for wrong-scope presence, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_rolls_back_when_metadata_missing() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        // No backup created — simulates concurrent delete between GET and if_match PUT.
-        let missing_kind = FactorKind::EcKeypair {
-            public_key: "deleted-backup-key".to_string(),
-        };
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &gen_backup_id(),
-                &missing_kind,
-                "attempted-factor-id",
-                FactorListScope::Main,
-                put_object_service_error(412),
-                |m| m,
-            )
-            .await;
-        assert!(result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
-            other => panic!("Expected NotInserted when metadata is missing, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_rolls_back_timeout_when_metadata_missing() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        // Ambiguous put error + missing metadata must still roll back (not stay Unknown).
-        let missing_kind = FactorKind::EcKeypair {
-            public_key: "deleted-backup-timeout-key".to_string(),
-        };
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &gen_backup_id(),
-                &missing_kind,
-                "attempted-factor-id",
-                FactorListScope::Sync,
-                SdkError::timeout_error("timed out"),
-                |_| (),
-            )
-            .await;
-        assert!(result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::NotInserted(BackupManagerError::PutObjectError(_)) => {}
-            other => {
-                panic!("Expected NotInserted for timeout when metadata is missing, got {other:?}")
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_put_object_outcome_keeps_unknown_on_timeout_when_factor_absent() {
-        dotenvy::from_filename(".env.example").unwrap();
-        let environment = Environment::development(None);
-        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
-        let backup_storage = BackupStorage::new(environment, s3_client);
-
-        let test_backup_id = gen_backup_id();
-        backup_storage
-            .create(
-                vec![1, 2, 3].into(),
-                &BackupMetadata {
-                    id: test_backup_id.clone(),
-                    factors: vec![],
-                    sync_factors: vec![],
-                    keys: vec![],
-                    manifest_hash: hex::encode([1u8; 32]),
-                },
-            )
-            .await
-            .unwrap();
-
-        let missing_kind = FactorKind::EcKeypair {
-            public_key: "timeout-key".to_string(),
-        };
-        let result = backup_storage
-            .resolve_put_object_outcome(
-                &test_backup_id,
-                &missing_kind,
-                "attempted-factor-id",
-                FactorListScope::Sync,
-                SdkError::timeout_error("timed out"),
-                |_| (),
-            )
-            .await;
-        assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(_)) => {}
-            other => panic!("Expected Unknown(PutObjectError), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn add_factor_concurrent_race_rolls_back_loser() {
+    async fn add_factor_concurrent_race_keeps_lookup_on_ambiguous_loser() {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
@@ -1401,17 +926,17 @@ mod tests {
             a_inserted || b_inserted,
             "at least one writer must succeed: {result_a:?} / {result_b:?}"
         );
-        // A lost if_match race must reconcile to NotInserted (not Unknown).
+        // Lost if_match is ambiguous (412) → Unknown: keep lookup; do not roll back.
         if !a_inserted {
             assert!(
-                result_a.should_rollback_lookup(),
-                "loser must roll back lookup: {result_a:?}"
+                !result_a.should_rollback_lookup(),
+                "ambiguous loser must keep lookup: {result_a:?}"
             );
         }
         if !b_inserted {
             assert!(
-                result_b.should_rollback_lookup(),
-                "loser must roll back lookup: {result_b:?}"
+                !result_b.should_rollback_lookup(),
+                "ambiguous loser must keep lookup: {result_b:?}"
             );
         }
 
@@ -1836,7 +1361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_encryption_key_only_reconciles_412_when_exact_key_already_stored() {
+    async fn add_encryption_key_only_concurrent_same_key_lands_once() {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
         let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
@@ -1864,13 +1389,16 @@ mod tests {
             turnkey_private_key_id: "key_789".to_string(),
         };
 
-        // Concurrent same exact key: loser may see 412 and must still succeed idempotently.
+        // Concurrent writers: one succeeds; the other may see 412 / Unknown (retry is idempotent
+        // via the exact-match pre-check). We no longer reconcile ambiguous puts to Ok.
         let (a, b) = tokio::join!(
             backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
             backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
         );
-        assert!(a.is_ok(), "first writer: {a:?}");
-        assert!(b.is_ok(), "second writer: {b:?}");
+        assert!(
+            a.is_ok() || b.is_ok(),
+            "at least one writer must succeed: {a:?} / {b:?}"
+        );
 
         let (metadata, _) = backup_storage
             .get_metadata_by_backup_id(&test_backup_id)
@@ -1878,65 +1406,6 @@ mod tests {
             .unwrap()
             .expect("metadata");
         assert_eq!(metadata.keys, vec![key]);
-    }
-
-    #[test]
-    fn reconcile_key_only_after_ambiguous_put_outcomes() {
-        let key = BackupEncryptionKey::Turnkey {
-            encrypted_key: "KEY".to_string(),
-            turnkey_account_id: "org".to_string(),
-            turnkey_user_id: "user".to_string(),
-            turnkey_private_key_id: "pk".to_string(),
-        };
-        let other = BackupEncryptionKey::Turnkey {
-            encrypted_key: "OTHER".to_string(),
-            turnkey_account_id: "org".to_string(),
-            turnkey_user_id: "user".to_string(),
-            turnkey_private_key_id: "pk".to_string(),
-        };
-        let put_err = BackupManagerError::PutObjectError(SdkError::timeout_error("timed out"));
-
-        let with_exact = BackupMetadata {
-            id: "b".to_string(),
-            factors: vec![],
-            sync_factors: vec![],
-            keys: vec![key.clone()],
-            manifest_hash: hex::encode([1u8; 32]),
-        };
-        assert!(BackupStorage::reconcile_key_only_after_ambiguous_put(
-            &with_exact,
-            &key,
-            BackupManagerError::PutObjectError(SdkError::timeout_error("timed out")),
-        )
-        .is_ok());
-
-        let with_mismatch = BackupMetadata {
-            id: "b".to_string(),
-            factors: vec![],
-            sync_factors: vec![],
-            keys: vec![other],
-            manifest_hash: hex::encode([1u8; 32]),
-        };
-        match BackupStorage::reconcile_key_only_after_ambiguous_put(
-            &with_mismatch,
-            &key,
-            BackupManagerError::PutObjectError(SdkError::timeout_error("timed out")),
-        ) {
-            Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {}
-            other => panic!("Expected OnlyOneEncryptionKeyPerTypeAllowed, got {other:?}"),
-        }
-
-        let empty = BackupMetadata {
-            id: "b".to_string(),
-            factors: vec![],
-            sync_factors: vec![],
-            keys: vec![],
-            manifest_hash: hex::encode([1u8; 32]),
-        };
-        match BackupStorage::reconcile_key_only_after_ambiguous_put(&empty, &key, put_err) {
-            Err(BackupManagerError::PutObjectError(_)) => {}
-            other => panic!("Expected PutObjectError when key absent, got {other:?}"),
-        }
     }
 
     #[tokio::test]
