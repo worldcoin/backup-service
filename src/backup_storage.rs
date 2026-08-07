@@ -341,20 +341,15 @@ impl BackupStorage {
         }
     }
 
-    /// Appends an encryption key to backup metadata without adding a factor.
+    /// Appends an encryption key without adding a factor.
     ///
-    /// Used for metadata-only upgrades when the factor already exists. No-ops only when an
-    /// **exactly equal** key is already present; a same flattened kind with different material
-    /// returns [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`].
-    ///
-    /// On ambiguous `PutObject` failures (`412`, timeouts, 5xx, …), re-reads metadata and treats
-    /// an exact key match as success (lost ACK or concurrent identical upgrade).
+    /// Idempotent when the exact same key is already present; same kind with different material is
+    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts are reconciled by
+    /// re-reading metadata.
     ///
     /// # Errors
-    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
-    /// - `BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed` - if a different key of the same
-    ///   type is already present.
+    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent, a conflicting
+    /// key of the same kind exists, or the put/reconcile cannot be completed.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -373,7 +368,6 @@ impl BackupStorage {
             .find(|k| k.flattened_kind() == encryption_key.flattened_kind())
         {
             if existing == &encryption_key {
-                // Exact match — idempotent success.
                 return Ok(());
             }
             return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
@@ -397,8 +391,6 @@ impl BackupStorage {
                     unreachable!("classify never returns Inserted")
                 }
                 FactorMetadataWrite::Unknown(put_err) => {
-                    // Ambiguous put (412 / timeout / 5xx). Re-read and treat exact key match as
-                    // success; retain conflict for different material of the same kind.
                     let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
                         return Err(BackupManagerError::BackupNotFound);
                     };
@@ -408,8 +400,7 @@ impl BackupStorage {
         }
     }
 
-    /// After an ambiguous key-only `PutObject`, succeed if the exact key landed; conflict if a
-    /// different key of the same kind is present; otherwise surface the original put error.
+    /// Succeeds if `encryption_key` is present; conflicts on same kind / different material.
     #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
     fn reconcile_key_only_after_ambiguous_put(
         latest: &BackupMetadata,
