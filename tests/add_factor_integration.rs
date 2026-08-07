@@ -844,3 +844,44 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
         })
     );
 }
+
+/// Adding an OIDC factor already owned by another backup must fail with factor_already_exists
+/// (and must not roll back the other backup's lookup row).
+#[tokio::test]
+#[serial]
+async fn test_add_factor_cross_backup_oidc_already_exists() {
+    let oidc_server = MockOidcServer::new().await;
+    let environment =
+        Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+
+    let mut passkey_a = get_mock_passkey_client();
+    let (_cred_a, create_a) = create_test_backup(&mut passkey_a, b"BACKUP A").await;
+    assert_eq!(create_a.status(), StatusCode::OK);
+
+    let shared_subject = format!("shared-{}", uuid::Uuid::new_v4());
+    let resp_a =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_a, &shared_subject).await;
+    assert_eq!(resp_a.status(), StatusCode::OK);
+
+    let mut passkey_b = get_mock_passkey_client();
+    let (_cred_b, create_b) = create_test_backup(&mut passkey_b, b"BACKUP B").await;
+    assert_eq!(create_b.status(), StatusCode::OK);
+    let body_b = create_b.into_body().collect().await.unwrap().to_bytes();
+    let create_b_json: Value = serde_json::from_slice(&body_b).unwrap();
+    let backup_b_id = create_b_json["backupId"].as_str().unwrap().to_string();
+
+    let resp_b =
+        add_google_oidc_factor(&oidc_server, environment, &mut passkey_b, &shared_subject).await;
+    assert_eq!(resp_b.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(resp_b).await;
+    assert_eq!(body["error"]["code"], "factor_already_exists");
+
+    // Backup B must not have gained the contested OIDC factor.
+    let metadata_b = common::verify_s3_metadata_exists(&backup_b_id).await;
+    let oidc_on_b = metadata_b["factors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT");
+    assert!(!oidc_on_b);
+}
