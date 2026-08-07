@@ -123,8 +123,8 @@ impl FactorLookup {
         self.lookup_inner(scope, factor, false).await
     }
 
-    /// Strongly consistent lookup — use after a write race (e.g. `ConditionalCheckFailed` on insert)
-    /// so a stale eventually-consistent read cannot spuriously miss an existing mapping.
+    /// Strongly consistent `GetItem` — use after write races where an eventually consistent read
+    /// might miss a just-written mapping.
     ///
     /// # Errors
     /// Same as [`Self::lookup`].

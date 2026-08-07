@@ -251,14 +251,8 @@ impl BackupStorage {
     /// Adds a `Main` factor to the backup metadata in S3.
     /// Optionally adds a new backup encryption key.
     ///
-    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
-    /// when the metadata write definitely did not land.
-    ///
-    /// # Errors (via `NotInserted` / `Unknown`)
-    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the factor already exists. Same-scope
-    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
-    ///   so a just-inserted lookup for this scope is rolled back.
+    /// Returns [`FactorMetadataWrite`] so callers can roll back `FactorLookup` only on
+    /// `NotInserted`. Same-scope duplicates are `Unknown`; opposite-scope are `NotInserted`.
     pub async fn add_factor(
         &self,
         backup_id: &str,
@@ -341,20 +335,11 @@ impl BackupStorage {
         }
     }
 
-    /// Appends an encryption key to backup metadata without adding a factor.
+    /// Appends an encryption key without adding a factor.
     ///
-    /// Used for metadata-only upgrades when the factor already exists. No-ops only when an
-    /// **exactly equal** key is already present; a same flattened kind with different material
-    /// returns [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`].
-    ///
-    /// On ambiguous `PutObject` failures (`412`, timeouts, 5xx, …), re-reads metadata and treats
-    /// an exact key match as success (lost ACK or concurrent identical upgrade).
-    ///
-    /// # Errors
-    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::ETagNotFound` - if `ETag` is missing (unexpected).
-    /// - `BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed` - if a different key of the same
-    ///   type is already present.
+    /// Idempotent when the exact same key is already present; same kind with different material is
+    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts are reconciled by
+    /// re-reading metadata.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -373,7 +358,6 @@ impl BackupStorage {
             .find(|k| k.flattened_kind() == encryption_key.flattened_kind())
         {
             if existing == &encryption_key {
-                // Exact match — idempotent success.
                 return Ok(());
             }
             return Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed);
@@ -397,8 +381,6 @@ impl BackupStorage {
                     unreachable!("classify never returns Inserted")
                 }
                 FactorMetadataWrite::Unknown(put_err) => {
-                    // Ambiguous put (412 / timeout / 5xx). Re-read and treat exact key match as
-                    // success; retain conflict for different material of the same kind.
                     let Some((latest, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
                         return Err(BackupManagerError::BackupNotFound);
                     };
@@ -408,8 +390,7 @@ impl BackupStorage {
         }
     }
 
-    /// After an ambiguous key-only `PutObject`, succeed if the exact key landed; conflict if a
-    /// different key of the same kind is present; otherwise surface the original put error.
+    /// Succeeds if `encryption_key` is present; conflicts on same kind / different material.
     #[expect(clippy::result_large_err)] // `BackupManagerError` wraps large AWS `SdkError` variants
     fn reconcile_key_only_after_ambiguous_put(
         latest: &BackupMetadata,
@@ -431,15 +412,8 @@ impl BackupStorage {
 
     /// Adds a sync factor to the backup metadata in S3.
     ///
-    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
-    /// when the metadata write definitely did not land.
-    ///
-    /// # Errors (via `NotInserted` / `Unknown`)
-    /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
-    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
-    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
-    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// Returns [`FactorMetadataWrite`] so callers can roll back `FactorLookup` only on
+    /// `NotInserted`. Same-scope duplicates are `Unknown`; opposite-scope are `NotInserted`.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -517,11 +491,9 @@ impl BackupStorage {
         }
     }
 
-    /// Classifies an S3 `PutObject` failure for `FactorLookup` rollback decisions.
-    ///
-    /// `NotInserted` for definite non-writes: construction failures, and 4xx rejections other than
-    /// `412` (ambiguous under `if_match` retries). Timeouts, dispatch/response errors, `412`, and
-    /// 5xx are `Unknown` until reconciled via [`Self::resolve_put_object_outcome`].
+    /// Classifies a `PutObject` failure for `FactorLookup` rollback: definite non-writes are
+    /// `NotInserted`; `412`, timeouts, and 5xx are `Unknown` pending
+    /// [`Self::resolve_put_object_outcome`].
     fn classify_put_object_error<T>(
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
     ) -> FactorMetadataWrite<T> {
@@ -541,19 +513,12 @@ impl BackupStorage {
         }
     }
 
-    /// Resolves an ambiguous `PutObject` failure by checking whether the factor landed in the
-    /// target scope's metadata list.
+    /// Single metadata re-read after an ambiguous put (not a retry loop).
     ///
-    /// - Factor present in target scope + non-`412` error → `Inserted` (e.g. lost ACK after a
-    ///   successful put).
-    /// - Factor present with **this request's** `attempted_factor_id` → `Inserted` (put landed,
-    ///   including `412` after a stale-etag retry).
-    /// - Factor present with a **different** id (same identity/`FactorKind`) →
-    ///   `Unknown(FactorAlreadyExists)` (another writer won; for any ambiguous error, not only
-    ///   `412`).
-    /// - Metadata missing → `NotInserted` (`if_match` cannot have created it; also covers delete races).
-    /// - Factor absent from target scope + `412 PreconditionFailed` → `NotInserted` (lost race).
-    /// - Otherwise → `Unknown` (keep lookup; write may still be in flight).
+    /// - Matching `attempted_factor_id` in the target scope → `Inserted`.
+    /// - Same `FactorKind`, different id → `Unknown(FactorAlreadyExists)`.
+    /// - Metadata missing, or absent factor + `412` → `NotInserted`.
+    /// - Otherwise → `Unknown`.
     async fn resolve_put_object_outcome<T>(
         &self,
         backup_id: &str,
@@ -580,16 +545,11 @@ impl BackupStorage {
                             attempted_factor_id,
                             target_scope,
                         ) {
-                            // Lost ACK, or 412 after our put already landed (retry with stale etag).
                             FactorMetadataWrite::Inserted(on_present(metadata))
                         } else {
-                            // Same FactorKind identity is present, but it is not the factor row
-                            // this request tried to write — concurrent winner (any ambiguous error).
                             FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
                         }
                     }
-                    // Metadata gone (e.g. concurrent backup delete) or a lost if_match race: the
-                    // factor is not in the target list, so rolling back the lookup is safe.
                     Ok(None) => FactorMetadataWrite::NotInserted(e),
                     Ok(Some(_)) if Self::is_precondition_failed_put(&e) => {
                         FactorMetadataWrite::NotInserted(e)
@@ -600,8 +560,7 @@ impl BackupStorage {
         }
     }
 
-    /// Classifies a pre-write duplicate: same-scope keeps lookup (`Unknown`); opposite-scope rolls
-    /// it back (`NotInserted`).
+    /// Same-scope duplicate → `Unknown` (keep lookup); opposite-scope → `NotInserted` (rollback).
     fn duplicate_factor_outcome<T>(
         metadata: &BackupMetadata,
         kind: &FactorKind,
