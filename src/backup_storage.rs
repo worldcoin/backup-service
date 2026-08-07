@@ -422,8 +422,15 @@ impl BackupStorage {
 
     /// Adds a sync factor to the backup metadata in S3.
     ///
-    /// Returns [`FactorMetadataWrite`] so callers can roll back `FactorLookup` only on
-    /// `NotInserted`. Same-scope duplicates are `Unknown`; opposite-scope are `NotInserted`.
+    /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
+    /// when the metadata write definitely did not land.
+    ///
+    /// # Errors (via `NotInserted` / `Unknown`)
+    /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
+    /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
+    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
+    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
