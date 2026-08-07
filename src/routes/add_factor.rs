@@ -8,7 +8,7 @@ use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
-use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
+use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata, FactorKind};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, ErrorResponse};
 use crate::webauthn::TryFromValue;
@@ -314,7 +314,40 @@ pub async fn handler(
         }
     }
 
-    // Step 2A.2: Use AuthHandler to validate the new factor
+    // Step 2A.2: Use AuthHandler to validate the new factor.
+    // When the same OIDC ID token + session keypair authorize both sides (same-account
+    // metadata-only upgrade), the existing-factor verify already consumed the nonce — skip a
+    // second Redis mark so registration can still verify the new-factor challenge signature.
+    // Compare raw JWT (+ session key), not full `OidcToken`, so Apple `aud: None` vs explicit
+    // default does not block reuse of the already-consumed nonce.
+    let reuse_same_oidc_session = match (
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
+    ) {
+        (
+            Authorization::OidcAccount {
+                oidc_token: existing_token,
+                public_key: existing_pk,
+                ..
+            },
+            Authorization::OidcAccount {
+                oidc_token: new_token,
+                public_key: new_pk,
+                ..
+            },
+        ) => {
+            let existing_raw = match existing_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token, .. } => token.as_str(),
+            };
+            let new_raw = match new_token {
+                crate::types::OidcToken::Google { token }
+                | crate::types::OidcToken::Apple { token, .. } => token.as_str(),
+            };
+            existing_raw == new_raw && existing_pk == new_pk
+        }
+        _ => false,
+    };
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.new_factor_authorization,
@@ -322,6 +355,7 @@ pub async fn handler(
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
+            !reuse_same_oidc_session,
         )
         .await?;
 
@@ -398,12 +432,9 @@ pub async fn handler(
         else {
             return Err(BackupManagerError::BackupNotFound.into());
         };
-        let Some(factor_id) = metadata
-            .factors
-            .iter()
-            .find(|f| f.kind == new_factor_kind)
-            .map(|f| f.id.clone())
-        else {
+        // Require the stored factor still exist. A concurrent delete can remove it between the
+        // AlreadyExists race and this read — do not invent an ID or restore a stale lookup.
+        let Some(factor_id) = stored_main_factor_id(&metadata, &new_factor_kind) else {
             tracing::warn!(
                 message = "FactorAlreadyExists reconcile found no matching factor in metadata",
                 factor_pk = factor_to_lookup.primary_key(),
@@ -422,7 +453,9 @@ pub async fn handler(
             }
             return Err(BackupManagerError::FactorNotFound.into());
         };
-        // Do not roll back lookup: factor is present in metadata; keeping lookup can heal inconsistency.
+        // Factor is in metadata — ensure lookup still maps here (a concurrent inserter may have
+        // rolled back the shared row after we adopted it).
+        ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await?;
         return Ok(Json(AddFactorResponse {
             factor_id,
             backup_metadata: metadata.exported(),
@@ -432,10 +465,9 @@ pub async fn handler(
     // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
     // write definitely did not land (`NotInserted`).
     //
-    // Another concurrent request may have adopted this lookup row (same-backup
-    // ConditionalCheckFailed) and successfully written the factor while our write failed
-    // (e.g. encryption-key conflict). Re-check metadata before delete so we do not orphan
-    // that other request's factor.
+    // Another concurrent request may adopt this lookup row (same-backup ConditionalCheckFailed)
+    // and write the factor around our rollback. Skip delete if the factor is already present;
+    // after delete, re-check and re-insert (heal) if it appeared in the race window.
     if lookup_insert_succeeded && write.should_rollback_lookup() {
         let factor_still_absent = match backup_storage.get_metadata_by_backup_id(&backup_id).await {
             Ok(Some((metadata, _))) => !metadata.factors.iter().any(|f| f.kind == new_factor_kind),
@@ -455,8 +487,22 @@ pub async fn handler(
                 .delete(FactorScope::Main, &factor_to_lookup)
                 .await
             {
+                // Delete may still have applied despite a timeout/dispatch error — continue to
+                // heal so we do not leave a concurrent successful writer untraceable.
                 tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
             }
+
+            // Heal whether delete returned Ok or Err: a concurrent writer may have committed the
+            // factor around this rollback, and an ambiguous delete response may have removed a
+            // lookup that writer had just restored.
+            heal_main_factor_lookup_if_present(
+                &backup_storage,
+                &factor_lookup,
+                &factor_to_lookup,
+                &backup_id,
+                &new_factor_kind,
+            )
+            .await;
         } else {
             tracing::info!(
                 message =
@@ -468,9 +514,234 @@ pub async fn handler(
 
     let updated_metadata = write.into_result()?;
 
+    // Successful writer always verifies lookup: a concurrent request that inserted the row may
+    // still roll it back around our metadata commit.
+    ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await?;
+
     // Step 4: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {
         factor_id: new_factor.id,
         backup_metadata: updated_metadata.exported(),
     }))
+}
+
+/// After a lookup rollback delete (or ambiguous delete error), restore the row if metadata now
+/// contains the factor — covering concurrent successful writers and lost delete ACKs.
+async fn heal_main_factor_lookup_if_present(
+    backup_storage: &BackupStorage,
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+) {
+    let needs_heal = match backup_storage.get_metadata_by_backup_id(backup_id).await {
+        Ok(Some((metadata, _))) => metadata.factors.iter().any(|f| f.kind == *new_factor_kind),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::error!(
+                message = "Failed to re-read metadata after lookup rollback; cannot heal",
+                error = ?err,
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            false
+        }
+    };
+
+    if !needs_heal {
+        return;
+    }
+
+    match factor_lookup
+        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                message = "Healed FactorLookup after concurrent factor write during rollback",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+        }
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            // Confirm the existing row maps to this backup — ConditionalCheckFailed alone can mean
+            // another backup now owns the factor identity.
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                .await
+            {
+                Ok(Some(existing)) if existing == backup_id => {}
+                Ok(Some(other_backup_id)) => {
+                    tracing::error!(
+                        message = "Heal skipped: FactorLookup maps factor to a different backup",
+                        factor_pk = factor_to_lookup.primary_key(),
+                        expected_backup_id = backup_id,
+                        actual_backup_id = other_backup_id.as_str(),
+                    );
+                }
+                Ok(None) => {
+                    // Row vanished between ConditionalCheckFailed and read — retry once.
+                    if let Err(err) = factor_lookup
+                        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+                        .await
+                    {
+                        tracing::error!(
+                            message = "Failed to heal FactorLookup after row disappeared during reconcile",
+                            error = ?err,
+                            factor_pk = factor_to_lookup.primary_key(),
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(
+                        message = "Failed consistent FactorLookup read during heal reconcile",
+                        error = ?err,
+                        factor_pk = factor_to_lookup.primary_key(),
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!(
+                message = "Failed to heal FactorLookup after concurrent factor write during rollback",
+                error = ?err,
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+        }
+    }
+}
+
+/// Ensures `FactorLookup` maps this factor to `backup_id` after metadata was written successfully.
+///
+/// Closes the race where another request inserted the lookup, we adopted it, wrote metadata, and
+/// that other request then deleted the row during its `NotInserted` rollback.
+async fn ensure_main_factor_lookup(
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+) -> Result<(), ErrorResponse> {
+    match factor_lookup
+        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                message = "Restored FactorLookup after successful factor write",
+                factor_pk = factor_to_lookup.primary_key(),
+            );
+            Ok(())
+        }
+        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+            if matches!(
+                sdk_err,
+                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                    if inner.err().is_conditional_check_failed_exception()
+            ) =>
+        {
+            match factor_lookup
+                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                .await?
+            {
+                Some(existing) if existing == backup_id => Ok(()),
+                Some(_) => Err(ErrorResponse::bad_request(
+                    "factor_already_exists",
+                    "This factor already exists.",
+                )),
+                None => {
+                    // Row disappeared between ConditionalCheckFailed and read (rollback race).
+                    match factor_lookup
+                        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
+                        .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
+                            if matches!(
+                                sdk_err,
+                                aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                                    if inner.err().is_conditional_check_failed_exception()
+                            ) =>
+                        {
+                            match factor_lookup
+                                .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                                .await?
+                            {
+                                Some(existing) if existing == backup_id => Ok(()),
+                                _ => {
+                                    tracing::error!(
+                                        message = "Failed to ensure FactorLookup after successful factor write",
+                                        factor_pk = factor_to_lookup.primary_key(),
+                                    );
+                                    Err(ErrorResponse::internal_server_error())
+                                }
+                            }
+                        }
+                        Err(err) => Err(err.into()),
+                    }
+                }
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Returns the stored main-factor id for `kind`, if present.
+fn stored_main_factor_id(metadata: &BackupMetadata, kind: &FactorKind) -> Option<String> {
+    metadata
+        .factors
+        .iter()
+        .find(|f| f.kind == *kind)
+        .map(|f| f.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_main_factor_id;
+    use crate::types::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
+
+    #[test]
+    fn stored_main_factor_id_returns_none_when_factor_absent() {
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        let kind = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "sub".to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            turnkey_provider_id: "tp".to_string(),
+        };
+        assert!(stored_main_factor_id(&metadata, &kind).is_none());
+    }
+
+    #[test]
+    fn stored_main_factor_id_returns_persisted_id_when_present() {
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub".to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            "tp".to_string(),
+        );
+        let expected_id = factor.id.clone();
+        let kind = factor.kind.clone();
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![factor],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+        };
+        assert_eq!(
+            stored_main_factor_id(&metadata, &kind).as_deref(),
+            Some(expected_id.as_str())
+        );
+    }
 }
