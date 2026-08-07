@@ -68,10 +68,8 @@ pub enum AuthError {
     #[error("Passkey serialization error: {err}")]
     PasskeySerializationError { err: String },
 
-    /// The provided factor was found in the `FactorLookup` but is no longer authorized for the backup (remember
-    /// the `FactorLookup` is only a utility to faciliate lookup, the source of truth is the backup metadata).
-    ///
-    /// This should be a rare case where the `FactorLookup` is out of sync.
+    /// The provided factor was found in the `FactorLookup` but is no longer authorized for the backup
+    /// (metadata is the source of truth). Stale lookup rows are deleted when this is detected.
     #[error("unauthorized_factor")]
     UnauthorizedFactor,
 
@@ -364,12 +362,12 @@ impl AuthHandler {
             .webauthn_config()
             .identify_discoverable_authentication(&user_provided_credential)?;
 
+        let factor_to_lookup =
+            FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(not_verified_credential_id));
+
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(
-                expected_factor_scope,
-                &FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(not_verified_credential_id)),
-            )
+            .lookup(expected_factor_scope, &factor_to_lookup)
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
@@ -381,6 +379,8 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
+            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+                .await;
             return Err(AuthError::BackupMissing);
         };
 
@@ -401,7 +401,19 @@ impl AuthHandler {
             })
             .collect();
 
-        if reference_credentials.is_empty() {
+        let passkey_authorized = backup_metadata.factors.iter().any(|factor| {
+            matches!(
+                &factor.kind,
+                FactorKind::Passkey {
+                    webauthn_credential,
+                    ..
+                } if webauthn_credential.cred_id().as_ref() == not_verified_credential_id
+            )
+        });
+
+        if !passkey_authorized || reference_credentials.is_empty() {
+            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+                .await;
             return Err(AuthError::UnauthorizedFactor);
         }
 
@@ -518,6 +530,8 @@ impl AuthHandler {
             .await?;
 
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
+            self.gc_stale_factor_lookup(expected_factor_scope, &oidc_factor)
+                .await;
             return Err(AuthError::BackupMissing);
         };
 
@@ -538,6 +552,8 @@ impl AuthHandler {
         });
 
         if !is_oidc_account_in_factors {
+            self.gc_stale_factor_lookup(expected_factor_scope, &oidc_factor)
+                .await;
             return Err(AuthError::UnauthorizedFactor);
         }
 
@@ -579,12 +595,11 @@ impl AuthHandler {
     ) -> Result<(String, BackupMetadata), AuthError> {
         verify_signature(public_key, signature, challenge_token_payload)?;
 
+        let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
+
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(
-                expected_factor_scope,
-                &FactorToLookup::from_ec_keypair(public_key.to_string()),
-            )
+            .lookup(expected_factor_scope, &factor_to_lookup)
             .await?;
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
@@ -596,6 +611,8 @@ impl AuthHandler {
             .get_metadata_by_backup_id(&not_verified_backup_id)
             .await?;
         let Some((backup_metadata, _e_tag)) = backup_metadata else {
+            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+                .await;
             return Err(AuthError::BackupMissing);
         };
 
@@ -605,7 +622,7 @@ impl AuthHandler {
             &backup_metadata.factors
         };
 
-        // This is the source of truth as to what is an authorized factor, the FactorLookup is only a utility to faciliate lookup.
+        // Metadata is the source of truth; FactorLookup is only an index.
         let is_public_key_in_factors = factors.iter().any(|factor| {
             if let FactorKind::EcKeypair {
                 public_key: factor_public_key,
@@ -618,6 +635,8 @@ impl AuthHandler {
         });
 
         if !is_public_key_in_factors {
+            self.gc_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
+                .await;
             return Err(AuthError::UnauthorizedFactor);
         }
 
@@ -625,5 +644,27 @@ impl AuthHandler {
         let verified_backup_id = not_verified_backup_id;
 
         Ok((verified_backup_id, backup_metadata))
+    }
+
+    /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
+    /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
+    async fn gc_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+        match self.factor_lookup.delete(scope, factor).await {
+            Ok(()) => {
+                tracing::info!(
+                    message = "Deleted stale FactorLookup not authorized in backup metadata",
+                    scope = %scope,
+                    factor_pk = factor.primary_key(),
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    message = "Failed to delete stale FactorLookup during authentication",
+                    error = ?err,
+                    scope = %scope,
+                    factor_pk = factor.primary_key(),
+                );
+            }
+        }
     }
 }
