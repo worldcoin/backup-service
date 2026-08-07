@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::factor_lookup::{
+    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+};
 use crate::redis_cache::RedisCacheManager;
 use crate::types::{Authorization, ErrorResponse};
 use axum::{Extension, Json};
@@ -56,6 +59,14 @@ pub async fn handler(
         .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
+    let mut factor_lock = redis_cache_manager
+        .try_acquire_lock_guard(
+            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+            factor_lookup_mutate_lock_id(FactorScope::Sync, &sync_factor_to_lookup),
+            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+        )
+        .await?;
+
     // Step 3: Add the sync factor to backup lookup
     factor_lookup
         .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
@@ -83,6 +94,8 @@ pub async fn handler(
             tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);
         }
     }
+
+    let _ = factor_lock.release().await;
 
     write.into_result()?;
 
