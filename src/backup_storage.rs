@@ -340,6 +340,10 @@ impl BackupStorage {
     /// Idempotent when the exact same key is already present; same kind with different material is
     /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts are reconciled by
     /// re-reading metadata.
+    ///
+    /// # Errors
+    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent, a conflicting
+    /// key of the same kind exists, or the put/reconcile cannot be completed.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
