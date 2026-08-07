@@ -131,7 +131,7 @@ mod tests {
         let payload = b"test payload for length coverage";
         let mut seen_lengths = std::collections::HashSet::new();
 
-        for _ in 0..1000 {
+        for _ in 0..5_000 {
             let (signing_key, verifying_key) = generate_test_keypair();
             let signature = sign_payload(&signing_key, payload);
             let signature_der = signature.to_der();
@@ -144,12 +144,15 @@ mod tests {
             let result = verify_signature(&public_key_base64, &signature_base64, payload);
             assert!(result.is_ok(), "Failed for DER length {der_len}");
 
-            if seen_lengths.len() >= 3 {
+            // Stop once the common lengths are covered (do not stop on rarer lengths like 69).
+            if seen_lengths.contains(&70)
+                && seen_lengths.contains(&71)
+                && seen_lengths.contains(&72)
+            {
                 break;
             }
         }
 
-        // We should reliably see lengths 70, 71, 72 (each ~25-50% probability)
         assert!(
             seen_lengths.contains(&70) && seen_lengths.contains(&71) && seen_lengths.contains(&72),
             "Expected to see DER lengths 70, 71, 72 but only saw: {seen_lengths:?}",
