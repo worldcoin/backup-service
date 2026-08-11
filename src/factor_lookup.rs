@@ -7,6 +7,20 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{str::FromStr, sync::Arc};
 use strum_macros::{Display, EnumString};
 
+/// Redis lock prefix for coordinating `FactorLookup` insert/delete with metadata writes.
+///
+/// Writers hold this while Dynamo may be ahead of S3; auth stale-delete skips when locked.
+pub const FACTOR_LOOKUP_MUTATE_LOCK_PREFIX: &str = "factor_lookup_mutate:";
+
+/// Fallback TTL for [`FACTOR_LOOKUP_MUTATE_LOCK_PREFIX`] (should exceed a normal put + retries).
+pub const FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS: u64 = 120;
+
+/// Lock identifier for a single scope + factor primary key.
+#[must_use]
+pub fn factor_lookup_mutate_lock_id(scope: FactorScope, factor: &FactorToLookup) -> String {
+    format!("{scope}#{}", factor.primary_key())
+}
+
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,
 /// keypair public key, iss + sub for OIDC) and the backup ID.
 ///

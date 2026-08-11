@@ -457,7 +457,7 @@ impl BackupStorage {
     }
 
     /// Classifies a `PutObject` failure for `FactorLookup` rollback: definite non-writes are
-    /// `NotInserted`; `412`, timeouts, and 5xx are `Unknown` (keep the lookup; auth can GC orphans).
+    /// `NotInserted`; `412`, timeouts, and 5xx are `Unknown` (keep the lookup; auth deletes orphans).
     fn classify_put_object_error<T>(
         err: SdkError<aws_sdk_s3::operation::put_object::PutObjectError>,
     ) -> FactorMetadataWrite<T> {

@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::{FactorLookup, FactorScope};
+use crate::factor_lookup::{
+    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+};
 use crate::redis_cache::RedisCacheManager;
 use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
@@ -158,6 +161,23 @@ pub async fn handler(
         manifest_hash: request.manifest_hash,
     };
 
+    // Hold factor mutate locks across lookup insert + S3 create so auth stale-delete cannot remove
+    // rows while metadata is still being written.
+    let mut main_factor_lock = redis_cache_manager
+        .try_acquire_lock_guard(
+            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+            factor_lookup_mutate_lock_id(FactorScope::Main, &factor_to_lookup),
+            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+        )
+        .await?;
+    let mut sync_factor_lock = redis_cache_manager
+        .try_acquire_lock_guard(
+            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+            factor_lookup_mutate_lock_id(FactorScope::Sync, &initial_sync_factor_to_lookup),
+            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+        )
+        .await?;
+
     // Step 6: Link credential ID and sync factor public key to backup ID for lookup during recovery
     // and sync. This should happen before the backup storage is updated, because
     // it might fail with a duplicate key error.
@@ -179,6 +199,8 @@ pub async fn handler(
     // Step 7: Save the backup to S3
     let result = backup_storage.create(backup, &backup_metadata).await;
 
+    let _ = main_factor_lock.release().await;
+    let _ = sync_factor_lock.release().await;
     let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     // Step 7.1: If the backup storage create fails, remove the factor from the lookup table
