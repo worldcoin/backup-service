@@ -15,10 +15,10 @@ pub const FACTOR_LOOKUP_MUTATE_LOCK_PREFIX: &str = "factor_lookup_mutate:";
 /// Fallback TTL for [`FACTOR_LOOKUP_MUTATE_LOCK_PREFIX`] (should exceed a normal put + retries).
 pub const FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS: u64 = 120;
 
-/// Lock identifier for a single scope + factor primary key.
+/// Lock identifier for a factor primary key (scope is already encoded in the Dynamo/factor id).
 #[must_use]
-pub fn factor_lookup_mutate_lock_id(scope: FactorScope, factor: &FactorToLookup) -> String {
-    format!("{scope}#{}", factor.primary_key())
+pub fn factor_lookup_mutate_lock_id(factor: &FactorToLookup) -> String {
+    factor.primary_key()
 }
 
 /// Factor Lookup allows to store the mapping between factor key (e.g., credential ID for a passkey,

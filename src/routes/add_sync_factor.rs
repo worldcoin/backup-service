@@ -54,17 +54,18 @@ pub async fn handler(
     let sync_factor = validation_result.factor;
     let sync_factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Step 2: Verify the sync factor token and extract the backup ID
-    let backup_id = redis_cache_manager
-        .use_sync_factor_token(request.sync_factor_token.clone())
-        .await?;
-
+    // Acquire before consuming the one-time sync token so a Locked response does not burn the token.
     let mut factor_lock = redis_cache_manager
         .try_acquire_lock_guard(
             FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(FactorScope::Sync, &sync_factor_to_lookup),
+            factor_lookup_mutate_lock_id(&sync_factor_to_lookup),
             Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
         )
+        .await?;
+
+    // Step 2: Verify the sync factor token and extract the backup ID
+    let backup_id = redis_cache_manager
+        .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
     // Step 3: Add the sync factor to backup lookup

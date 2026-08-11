@@ -166,14 +166,14 @@ pub async fn handler(
     let mut main_factor_lock = redis_cache_manager
         .try_acquire_lock_guard(
             FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(FactorScope::Main, &factor_to_lookup),
+            factor_lookup_mutate_lock_id(&factor_to_lookup),
             Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
         )
         .await?;
     let mut sync_factor_lock = redis_cache_manager
         .try_acquire_lock_guard(
             FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(FactorScope::Sync, &initial_sync_factor_to_lookup),
+            factor_lookup_mutate_lock_id(&initial_sync_factor_to_lookup),
             Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
         )
         .await?;
@@ -199,26 +199,29 @@ pub async fn handler(
     // Step 7: Save the backup to S3
     let result = backup_storage.create(backup, &backup_metadata).await;
 
-    let _ = main_factor_lock.release().await;
-    let _ = sync_factor_lock.release().await;
-    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
-
-    // Step 7.1: If the backup storage create fails, remove the factor from the lookup table
+    // Step 7.1: On failure, roll back lookups while still holding mutate locks, then release.
     if let Err(e) = result {
-        if let Err(e) = factor_lookup
+        if let Err(del_err) = factor_lookup
             .delete(FactorScope::Main, &factor_to_lookup)
             .await
         {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?e);
+            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
         }
-        if let Err(e) = factor_lookup
+        if let Err(del_err) = factor_lookup
             .delete(FactorScope::Sync, &initial_sync_factor_to_lookup)
             .await
         {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?e);
+            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
         }
+        let _ = main_factor_lock.release().await;
+        let _ = sync_factor_lock.release().await;
+        let _ = lock_guard.release().await;
         return Err(e.into());
     }
+
+    let _ = main_factor_lock.release().await;
+    let _ = sync_factor_lock.release().await;
+    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     let backup_id = backup_metadata.id.clone();
 
