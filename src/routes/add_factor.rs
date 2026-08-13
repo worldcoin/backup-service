@@ -270,7 +270,7 @@ pub async fn handler(
     let mut factor_lock = redis_cache_manager
         .try_acquire_lock_guard(
             FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(FactorScope::Main, &factor_to_lookup),
+            factor_lookup_mutate_lock_id(&factor_to_lookup),
             Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
         )
         .await?;

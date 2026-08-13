@@ -659,7 +659,7 @@ impl AuthHandler {
             .redis_cache_manager
             .try_acquire_lock_guard(
                 FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-                factor_lookup_mutate_lock_id(scope, factor),
+                factor_lookup_mutate_lock_id(factor),
                 Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
             )
             .await
