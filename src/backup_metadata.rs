@@ -1,11 +1,13 @@
+use crate::environment::Environment;
 use crate::factor_lookup::FactorToLookup;
-use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::Environment;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use types::{
+    BackupEncryptionKey, ExportedBackupMetadata, ExportedFactor, ExportedFactorKind,
+    ExportedOidcAccountKind,
+};
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
@@ -300,74 +302,6 @@ impl PartialEq for OidcAccountKind {
     }
 }
 
-/// The part of metadata of the backup that's exported to the client when performing the recovery.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportedBackupMetadata {
-    /// The ID of the backup.
-    id: String,
-    /// Allows user to decrypt the backup if they are able to decrypt one of keys (e.g. using PRF,
-    /// Turnkey, etc.)
-    keys: Vec<BackupEncryptionKey>,
-    /// The factors that are used to access the backup and modify it (including adding other factors).
-    factors: Vec<ExportedFactor>,
-    /// Allows user to see if they already have the sync factor keypair or they should generate a
-    /// new one.
-    sync_factors: Vec<ExportedFactor>,
-    /// The hash of the backup manifest which represents the current state of the backup. This hash must be presented when performing updates (syncs) to the backup.
-    /// This ensures that any updates on the backup are performed on the latest state of the backup.
-    manifest_hash: String,
-}
-
-/// See [`Factor`] for more details. Exported version of the factor that contains only the fields
-/// that are exported to the client when performing the recovery / viewing the metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportedFactor {
-    /// Used as a unique identifier for the factor
-    pub id: String,
-    /// Timestamp when the factor was created
-    pub created_at: i64,
-    /// The kind of factor and the associated metadata
-    pub kind: ExportedFactorKind,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
-#[allow(clippy::large_enum_variant)]
-pub enum ExportedFactorKind {
-    #[serde(rename_all = "camelCase")]
-    Passkey {
-        /// The credential ID of the passkey, base64url-encoded (no padding).
-        /// This matches the `WebAuthN` standard format used by iOS and Android.
-        credential_id: String,
-        /// TODO: Remove once the client migrates to create the Turnkey account immediately upon registration.
-        /// Registration object presented by the client when signing up. Used by the client to be
-        /// to register the passkey in Turnkey later, not during initial sign up.
-        registration: serde_json::Value,
-        /// A human-readable label for the passkey. For example, "Google Credential Manager". This is displayed to the user in the UI.
-        label: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    OidcAccount {
-        account: ExportedOidcAccountKind,
-        turnkey_provider_id: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    EcKeypair { public_key: String },
-}
-
-/// Exported version of the OIDC account. Allows the mobile app to render that some account was
-/// added, but for now, it doesn't contain which account it is.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
-pub enum ExportedOidcAccountKind {
-    #[serde(rename_all = "camelCase")]
-    Google { masked_email: String },
-    #[serde(rename_all = "camelCase")]
-    Apple { masked_email: String },
-}
-
 #[cfg(test)]
 mod tests {
     use backup_service_test_utils::{
@@ -378,7 +312,7 @@ mod tests {
     use rand::rngs::OsRng;
     use serde_json::json;
 
-    use crate::types::Environment;
+    use crate::environment::Environment;
 
     use super::*;
 

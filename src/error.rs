@@ -14,14 +14,14 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use openidconnect::DiscoveryError;
-use schemars::JsonSchema;
-use serde::Serialize;
 use std::error::Error;
+use types::{ErrorBody, ErrorCode, ErrorObject};
 use webauthn_rs::prelude::WebauthnError;
 
+/// An error sent to the client. Serializes as [`ErrorBody`].
 #[derive(Debug, Clone)]
 pub struct ErrorResponse {
-    code: String,
+    code: ErrorCode,
     message: String,
     status: StatusCode,
 }
@@ -30,24 +30,24 @@ impl ErrorResponse {
     #[must_use]
     pub fn internal_server_error() -> Self {
         Self {
-            code: "internal_server_error".to_string(),
+            code: ErrorCode::InternalServerError,
             message: "Internal server error".to_string(),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     #[must_use]
-    pub fn bad_request(code: &str, message: &str) -> Self {
+    pub fn bad_request(code: ErrorCode, message: &str) -> Self {
         Self {
-            code: code.to_string(),
+            code,
             message: message.to_string(),
             status: StatusCode::BAD_REQUEST,
         }
     }
 
-    /// The machine-readable error code sent to the client (e.g. `invalid_attestation_token_claim`).
+    /// The machine-readable error code sent to the client
     #[must_use]
-    pub fn code(&self) -> &str {
+    pub fn code(&self) -> &ErrorCode {
         &self.code
     }
 
@@ -60,7 +60,7 @@ impl ErrorResponse {
     #[must_use]
     pub fn unauthorized() -> Self {
         Self {
-            code: "unauthorized".to_string(),
+            code: ErrorCode::Unauthorized,
             message: "Unauthorized".to_string(),
             status: StatusCode::UNAUTHORIZED,
         }
@@ -69,16 +69,16 @@ impl ErrorResponse {
     #[must_use]
     pub fn locked() -> Self {
         Self {
-            code: "conflicting_lock".to_string(),
+            code: ErrorCode::ConflictingLock,
             message: "Conflicting lock on resource".to_string(),
             status: StatusCode::LOCKED,
         }
     }
 
     #[must_use]
-    pub fn conflict(code: &str, message: &str) -> Self {
+    pub fn conflict(code: ErrorCode, message: &str) -> Self {
         Self {
-            code: code.to_string(),
+            code,
             message: message.to_string(),
             status: StatusCode::CONFLICT,
         }
@@ -87,7 +87,7 @@ impl ErrorResponse {
     #[must_use]
     pub fn not_found() -> Self {
         Self {
-            code: "not_found".to_string(),
+            code: ErrorCode::NotFound,
             message: "Not Found".to_string(),
             status: StatusCode::NOT_FOUND,
         }
@@ -96,34 +96,26 @@ impl ErrorResponse {
     #[must_use]
     pub fn content_too_large(message: String) -> Self {
         Self {
-            code: "content_too_large".to_string(),
+            code: ErrorCode::ContentTooLarge,
             message,
             status: StatusCode::PAYLOAD_TOO_LARGE,
         }
     }
-}
 
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-struct ErrorResponseSchema {
-    allow_retry: bool,
-    error: ErrorResponseObject,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-struct ErrorResponseObject {
-    code: String,
-    message: String,
+    /// A client-side authentication failure, logged at debug because it is not actionable by us.
+    fn client_side_auth_failure(code: ErrorCode, err: &AuthError) -> Self {
+        tracing::debug!(message = "Client-side auth failure", error = ?err);
+        Self::bad_request(code, &format!("Client-side auth failure: {err}"))
+    }
 }
 
 impl IntoResponse for ErrorResponse {
     fn into_response(self) -> axum::response::Response {
         (
             self.status,
-            Json(ErrorResponseSchema {
+            Json(ErrorBody {
                 allow_retry: false,
-                error: ErrorResponseObject {
+                error: ErrorObject {
                     code: self.code,
                     message: self.message,
                 },
@@ -140,7 +132,7 @@ impl OperationOutput for ErrorResponse {
         ctx: &mut aide::generate::GenContext,
         operation: &mut aide::openapi::Operation,
     ) -> Option<aide::openapi::Response> {
-        Json::<ErrorResponseSchema>::operation_response(ctx, operation)
+        Json::<ErrorBody>::operation_response(ctx, operation)
     }
 }
 
@@ -162,13 +154,13 @@ impl From<WebauthnError> for ErrorResponse {
             | WebauthnError::InvalidRPIDHash
             | WebauthnError::AuthenticationFailure => {
                 tracing::info!(message = "Passkey webauthn error (safe to expose)", error = ?err);
-                ErrorResponse::bad_request("webauthn_error", &err.to_string())
+                ErrorResponse::bad_request(ErrorCode::WebauthnError, &err.to_string())
             }
             // Generic catch-all for all other errors
             _ => {
                 tracing::info!(message = "Passkey webauthn error", error = ?err);
                 ErrorResponse::bad_request(
-                    "webauthn_error",
+                    ErrorCode::WebauthnError,
                     "Authentication failed with passkey. Please try again.",
                 )
             }
@@ -187,7 +179,7 @@ impl From<MultipartError> for ErrorResponse {
     fn from(err: MultipartError) -> Self {
         tracing::info!(message = "Error when reading Multipart form data", error = ?err);
         ErrorResponse::bad_request(
-            "multipart_error",
+            ErrorCode::MultipartError,
             err.source()
                 .map_or(
                     "Failed to read multipart form data.".to_string(),
@@ -203,27 +195,44 @@ impl From<AuthError> for ErrorResponse {
         match err {
             AuthError::BackupMissing => {
                 tracing::warn!(message = "Backup is missing from storage but found in factor lookup (signals out-of-sync state)");
-                Self::bad_request(&err.to_string(), &err.to_string())
+                Self::bad_request(ErrorCode::BackupMissing, &err.to_string())
             }
-            AuthError::BackupUntraceable
-            | AuthError::BackupDoesNotExist
-            | AuthError::BackupIdMismatch
-            | AuthError::FactorNotFound
-            | AuthError::InvalidAuthorizationType
-            | AuthError::InvalidChallengeContext
-            | AuthError::InvalidSyncFactorType
-            | AuthError::MissingTurnkeyProviderId
-            | AuthError::WebauthnPrfResultsNotAllowed
-            | AuthError::MissingEmail => {
-                tracing::debug!(message = "Client-side auth failure", error = ?err);
-                Self::bad_request(
-                    &err.to_string(),
-                    &format!("Client-side auth failure: {err}"),
-                )
+            AuthError::BackupUntraceable => {
+                Self::client_side_auth_failure(ErrorCode::BackupUntraceable, &err)
+            }
+            AuthError::BackupDoesNotExist => {
+                Self::client_side_auth_failure(ErrorCode::BackupDoesNotExist, &err)
+            }
+            AuthError::BackupIdMismatch => {
+                Self::client_side_auth_failure(ErrorCode::BackupIdMismatch, &err)
+            }
+            AuthError::FactorNotFound => {
+                Self::client_side_auth_failure(ErrorCode::FactorNotFound, &err)
+            }
+            AuthError::InvalidAuthorizationType => {
+                Self::client_side_auth_failure(ErrorCode::InvalidAuthorizationType, &err)
+            }
+            AuthError::InvalidChallengeContext => {
+                Self::client_side_auth_failure(ErrorCode::InvalidChallengeContext, &err)
+            }
+            AuthError::InvalidSyncFactorType => {
+                Self::client_side_auth_failure(ErrorCode::InvalidSyncFactorType, &err)
+            }
+            AuthError::MissingTurnkeyProviderId => {
+                Self::client_side_auth_failure(ErrorCode::MissingTurnkeyProviderId, &err)
+            }
+            AuthError::WebauthnPrfResultsNotAllowed => {
+                Self::client_side_auth_failure(ErrorCode::WebauthnPrfResultsNotAllowed, &err)
+            }
+            AuthError::MissingEmail => {
+                Self::client_side_auth_failure(ErrorCode::MissingEmail, &err)
             }
             AuthError::WebauthnInvalidPayload => {
                 // no additional logging is needed as where relevant it's handled by the auth module
-                Self::bad_request("webauthn_invalid_payload", "WebAuthN payload is invalid.")
+                Self::bad_request(
+                    ErrorCode::WebauthnInvalidPayload,
+                    "WebAuthN payload is invalid.",
+                )
             }
             AuthError::PasskeySerializationError { err } => {
                 tracing::error!(message = "Passkey serialization error", error = ?err);
@@ -232,7 +241,7 @@ impl From<AuthError> for ErrorResponse {
             AuthError::UnauthorizedFactor => {
                 tracing::warn!(message = "Unauthorized factor. Provided factor is in `FactorLookup` but is no longer authorized for the backup.");
                 Self::bad_request(
-                    &err.to_string(),
+                    ErrorCode::UnauthorizedFactor,
                     "The provided factor is not authorized for this backup.",
                 )
             }
@@ -262,7 +271,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             | ChallengeManagerError::NoValidChallengeContextClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
                 tracing::debug!(message = "Challenge manager client failure", error = ?err);
-                ErrorResponse::bad_request("jwt_error", "Invalid or expired token.")
+                ErrorResponse::bad_request(ErrorCode::JwtError, "Invalid or expired token.")
             }
             ChallengeManagerError::UnexpectedChallengeType {
                 expected: _,
@@ -270,7 +279,7 @@ impl From<ChallengeManagerError> for ErrorResponse {
             } => {
                 tracing::debug!(message = err.to_string(), error = ?err);
                 ErrorResponse::bad_request(
-                    "unexpected_challenge_type",
+                    ErrorCode::UnexpectedChallengeType,
                     "The challenge type does not match the expected type.",
                 )
             }
@@ -293,13 +302,13 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::SyncFactorMustBeKeypair => {
                 tracing::info!(message = "Sync factor must be a keypair", error = ?err);
                 ErrorResponse::bad_request(
-                    "sync_factor_must_be_keypair",
+                    ErrorCode::SyncFactorMustBeKeypair,
                     "Sync factor must be a keypair.",
                 )
             }
             BackupManagerError::BackupNotFound => {
                 tracing::info!(message = "Backup not found", error = ?err);
-                ErrorResponse::bad_request("backup_not_found", "Backup not found.")
+                ErrorResponse::bad_request(ErrorCode::BackupNotFound, "Backup not found.")
             }
             BackupManagerError::ETagNotFound => {
                 tracing::info!(message = "ETag not found", error = ?err);
@@ -307,27 +316,33 @@ impl From<BackupManagerError> for ErrorResponse {
             }
             BackupManagerError::FactorAlreadyExists => {
                 tracing::info!(message = "Factor already exists", error = ?err);
-                ErrorResponse::bad_request("factor_already_exists", "This factor already exists.")
+                ErrorResponse::bad_request(
+                    ErrorCode::FactorAlreadyExists,
+                    "This factor already exists.",
+                )
             }
             BackupManagerError::TooManyFactors { .. } => {
                 tracing::info!(message = "Maximum number of factors reached", error = ?err);
                 ErrorResponse::conflict(
-                    "too_many_factors",
+                    ErrorCode::TooManyFactors,
                     "The maximum number of factors for this backup has been reached.",
                 )
             }
             BackupManagerError::FactorNotFound => {
                 tracing::info!(message = "Factor not found", error = ?err);
-                ErrorResponse::bad_request("factor_not_found", "Factor not found.")
+                ErrorResponse::bad_request(ErrorCode::FactorNotFound, "Factor not found.")
             }
             BackupManagerError::EncryptionKeyNotFound => {
                 tracing::info!(message = "Encryption key not found", error = ?err);
-                ErrorResponse::bad_request("encryption_key_not_found", "Encryption key not found.")
+                ErrorResponse::bad_request(
+                    ErrorCode::EncryptionKeyNotFound,
+                    "Encryption key not found.",
+                )
             }
             BackupManagerError::ManifestHashMismatch => {
                 tracing::info!(message = BackupManagerError::ManifestHashMismatch.to_string());
                 ErrorResponse {
-                    code: "manifest_hash_mismatch".to_string(),
+                    code: ErrorCode::ManifestHashMismatch,
                     message: "The manifest hash does not match the expected value.".to_string(),
                     status: StatusCode::PRECONDITION_FAILED,
                 }
@@ -335,14 +350,14 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::FactorOrphanedFromEncryptionKey => {
                 tracing::info!(message = "Factor would be orphaned by removing the specific encryption key.", error = ?err);
                 ErrorResponse::bad_request(
-                    "factor_orphaned_from_encryption_key",
+                    ErrorCode::FactorOrphanedFromEncryptionKey,
                     "Cannot remove encryption key as it would orphan an existing factor.",
                 )
             }
             BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed => {
                 tracing::info!(message = "Only one encryption key per type is allowed", error = ?err);
                 ErrorResponse::bad_request(
-                    "only_one_encryption_key_per_type_allowed",
+                    ErrorCode::OnlyOneEncryptionKeyPerTypeAllowed,
                     "Only one encryption key per type is allowed.",
                 )
             }
@@ -366,7 +381,7 @@ impl From<FactorLookupError> for ErrorResponse {
                 {
                     tracing::info!(message = "Factor already exists", error = ?err);
                     ErrorResponse::bad_request(
-                        "factor_already_exists",
+                        ErrorCode::FactorAlreadyExists,
                         "This factor already exists.",
                     )
                 }
@@ -390,7 +405,7 @@ impl From<VerifySignatureError> for ErrorResponse {
     fn from(err: VerifySignatureError) -> Self {
         tracing::info!(message = "Signature verification error", error = ?err);
         ErrorResponse::bad_request(
-            "signature_verification_error",
+            ErrorCode::SignatureVerificationError,
             &err.to_string().chars().take(50).collect::<String>(),
         )
     }
@@ -405,22 +420,25 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
             }
             OidcTokenVerifierError::TokenParseError => {
                 tracing::info!(message = "Failed to parse OIDC token", error = ?err);
-                ErrorResponse::bad_request("oidc_token_parse_error", "Failed to parse OIDC token.")
+                ErrorResponse::bad_request(
+                    ErrorCode::OidcTokenParseError,
+                    "Failed to parse OIDC token.",
+                )
             }
             OidcTokenVerifierError::TokenVerificationError => ErrorResponse::bad_request(
-                "oidc_token_verification_error",
+                ErrorCode::OidcTokenVerificationError,
                 "Failed to verify OIDC token.",
             ),
             OidcTokenVerifierError::InvalidNonce(e) => {
-                ErrorResponse::bad_request("oidc_token_invalid_nonce", &e.clone())
+                ErrorResponse::bad_request(ErrorCode::OidcTokenInvalidNonce, &e.clone())
             }
             OidcTokenVerifierError::InvalidAud => {
-                ErrorResponse::bad_request("oidc_token_invalid_aud", "Invalid aud provided.")
+                ErrorResponse::bad_request(ErrorCode::OidcTokenInvalidAud, "Invalid aud provided.")
             }
             OidcTokenVerifierError::MissingNonce => {
                 tracing::info!(message = "OIDC token is missing nonce claim", error = ?err);
                 ErrorResponse::bad_request(
-                    "oidc_token_parse_error",
+                    ErrorCode::OidcTokenParseError,
                     "OIDC token is missing required nonce claim.",
                 )
             }
@@ -432,7 +450,7 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
 impl From<TurnkeyActivityError> for ErrorResponse {
     fn from(err: TurnkeyActivityError) -> Self {
         tracing::info!(message = "Turnkey activity error", error = ?err);
-        ErrorResponse::bad_request("turnkey_activity_error", &err.to_string())
+        ErrorResponse::bad_request(ErrorCode::TurnkeyActivityError, &err.to_string())
     }
 }
 
@@ -452,14 +470,14 @@ impl From<AttestationGatewayError> for ErrorResponse {
             | AttestationGatewayError::AudienceClaim => {
                 tracing::info!(message = "Invalid attestation token", error = ?err);
                 ErrorResponse::bad_request(
-                    "invalid_attestation_token_claim",
+                    ErrorCode::InvalidAttestationTokenClaim,
                     &format!("Invalid attestation token claim: {err}."),
                 )
             }
             _ => {
                 tracing::info!(message = "Invalid attestation token", error = ?err);
                 ErrorResponse::bad_request(
-                    "invalid_attestation_token",
+                    ErrorCode::InvalidAttestationToken,
                     "Invalid attestation token.",
                 )
             }
@@ -480,15 +498,15 @@ impl From<RedisCacheError> for ErrorResponse {
             }
             RedisCacheError::TokenNotFound => {
                 tracing::info!(message = "Token not found", error = ?err);
-                ErrorResponse::bad_request("token_not_found", "Token not found.")
+                ErrorResponse::bad_request(ErrorCode::TokenNotFound, "Token not found.")
             }
             RedisCacheError::AlreadyUsed => {
                 tracing::info!(message = "Token already used", error = ?err);
-                ErrorResponse::bad_request("already_used", "Token has already been used.")
+                ErrorResponse::bad_request(ErrorCode::AlreadyUsed, "Token has already been used.")
             }
             RedisCacheError::TokenExpired => {
                 tracing::info!(message = "Token expired", error = ?err);
-                ErrorResponse::bad_request("token_expired", "Token has expired.")
+                ErrorResponse::bad_request(ErrorCode::TokenExpired, "Token has expired.")
             }
             RedisCacheError::Locked => {
                 tracing::info!(message = "Conflicting lock", error = ?err);

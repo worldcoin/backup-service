@@ -1,4 +1,5 @@
-use crate::types::{Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use axum::{
     body::{to_bytes, Body},
     extract::OriginalUri,
@@ -16,10 +17,11 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{sync::RwLock, time::Instant};
+use types::ErrorCode;
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
-pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-token"; // consistency with other services which World App uses
+pub use types::endpoints::ATTESTATION_TOKEN_HEADER as ATTESTATION_GATEWAY_HEADER;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationGatewayError {
@@ -351,11 +353,11 @@ impl AttestationGateway {
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
             .await
             .map_err(|_| {
-                ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+                ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Body payload is invalid")
             })?;
 
         let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|_| {
-            ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+            ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Body payload is invalid")
         })?;
 
         // Verify the attestation token header and all relevant claims
@@ -363,7 +365,7 @@ impl AttestationGateway {
             None => {
                 tracing::warn!("Attestation gateway token where expected is invalid or missing.");
                 Some(ErrorResponse::bad_request(
-                    "invalid_attestation_token_header",
+                    ErrorCode::InvalidAttestationTokenHeader,
                     "Attestation token header is invalid or not present.",
                 ))
             }
@@ -423,7 +425,7 @@ fn inform_attestation_failure(response: &mut Response<Body>, error: &ErrorRespon
     let value = HeaderValue::from_str(error.message())
         .ok()
         .unwrap_or_else(|| {
-            HeaderValue::from_str(error.code())
+            HeaderValue::from_str(error.code().as_str())
                 .ok()
                 .unwrap_or(HeaderValue::from_static("generic-failure"))
         });
