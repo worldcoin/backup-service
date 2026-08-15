@@ -1,38 +1,9 @@
 use std::sync::Arc;
 
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use types::{BackupStatusRequest, BackupStatusResponse, ExportedFactorSlim};
 
-use crate::{
-    backup_storage::BackupStorage,
-    types::{backup_metadata::FactorKind, ErrorResponse},
-};
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupStatusRequest {
-    /// The ID of the backup.
-    backup_id: String,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupStatusResponse {
-    /// The ID of the backup.
-    backup_id: String,
-    /// The flattened list of factor kinds associated with the backup. E.g. `["PASSKEY", "EC_KEYPAIR"]`.
-    factors: Vec<ExportedFactorSlim>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ExportedFactorSlim {
-    /// The kind of factor. E.g. `"PASSKEY"`, `"EC_KEYPAIR"`, `"OIDC_ACCOUNT"`.
-    kind: String,
-    /// The kind of account if the factor is an OIDC account. E.g. `"GOOGLE"`, `"APPLE"`.
-    account_kind: Option<String>,
-}
+use crate::{backup_metadata::FactorKind, backup_storage::BackupStorage, error::ErrorResponse};
 
 /// This public endpoint is used to check whether a backup exists and what are the factors associated with it.
 ///

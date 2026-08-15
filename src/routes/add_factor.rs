@@ -1,26 +1,27 @@
 use std::sync::Arc;
 
 use crate::auth::{AuthError, AuthHandler};
+use crate::backup_metadata::FactorKind;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
+use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FactorToLookup,
-    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+    factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
 use crate::redis_cache::RedisCacheManager;
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
-use crate::types::backup_metadata::{ExportedBackupMetadata, FactorKind};
-use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, ErrorResponse};
 use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Duration;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use types::{
+    AddFactorRequest, AddFactorResponse, Authorization, BackupEncryptionKey, ErrorCode,
+    FactorScope, OidcToken,
+};
 use webauthn_rs::prelude::PublicKeyCredential;
 
 /// Sanity check on what kind of activity is being signed alongside the backup service challenge.
@@ -29,34 +30,6 @@ use webauthn_rs::prelude::PublicKeyCredential;
 const EXPECTED_TURNKEY_ACTIVITY_TYPE: &str = "ACTIVITY_TYPE_CREATE_API_KEYS_V2";
 
 const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AddFactorRequest {
-    /// Authorization for the existing factor
-    existing_factor_authorization: Authorization,
-    existing_factor_challenge_token: String,
-    /// Activity used by Turnkey to create a session using the existing factor. It should also
-    ///  include the backup-service challenge as one of the fields.
-    existing_factor_turnkey_activity: Option<String>,
-
-    /// Authorization for the new factor
-    new_factor_authorization: Authorization,
-    new_factor_challenge_token: String,
-
-    /// Optional encrypted backup keypair
-    encrypted_backup_key: Option<BackupEncryptionKey>,
-
-    /// Provider ID from Turnkey ID. Only applicable if `new_factor_authorization` is `Authorization::OidcAccount`.
-    turnkey_provider_id: Option<String>,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddFactorResponse {
-    factor_id: String,
-    backup_metadata: ExportedBackupMetadata,
-}
 
 /// Adds a new factor to an existing backup.
 ///
@@ -79,7 +52,7 @@ pub async fn handler(
             // Turnkey activity is required for passkeys
             let Some(turnkey_activity) = &request.existing_factor_turnkey_activity else {
                 return Err(ErrorResponse::bad_request(
-                    "missing_turnkey_activity",
+                    ErrorCode::MissingTurnkeyActivity,
                     "Turnkey activity is missing",
                 ));
             };
@@ -161,7 +134,7 @@ pub async fn handler(
                 .map_err(|err| {
                 tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
                 ErrorResponse::bad_request(
-                    "invalid_turnkey_activity",
+                    ErrorCode::InvalidTurnkeyActivity,
                     "Provided Turnkey activity is invalid",
                 )
             })?;
@@ -174,7 +147,7 @@ pub async fn handler(
                             "Failed to get the backup-service challenge from Turnkey activity"
                     );
                     ErrorResponse::bad_request(
-                        "invalid_turnkey_activity",
+                        ErrorCode::InvalidTurnkeyActivity,
                         "Turnkey activity is missing server challenge",
                     )
                 })?;
@@ -188,14 +161,14 @@ pub async fn handler(
             // This is the most important piece, it binds the user's passkey signature to the challenge we provided originally in `/add-factor/challenge`
             if STANDARD.encode(trusted_challenge) != backup_service_challenge {
                 return Err(ErrorResponse::bad_request(
-                    "invalid_challenge",
+                    ErrorCode::InvalidChallenge,
                     "Challenge mismatch with Turnkey activity",
                 ));
             }
 
             let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
                 return Err(ErrorResponse::bad_request(
-                    "invalid_challenge_context",
+                    ErrorCode::InvalidChallengeContext,
                     "Challenge context mismatch",
                 ));
             };
@@ -212,7 +185,10 @@ pub async fn handler(
             // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair.
             // When implementing OIDC here, pass `client_name` to `validate_oidc_authentication` so the
             // correct provider client_id (per `Environment::{google,apple}_client_id`) is used.
-            return Err(ErrorResponse::bad_request("not_supported", "Not supported"));
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::NotSupported,
+                "Not supported",
+            ));
         }
     };
 
@@ -227,25 +203,24 @@ pub async fn handler(
             } = &expected_new_factor
             {
                 let raw_oidc_token = match &oidc_token {
-                    crate::types::OidcToken::Google { token }
-                    | crate::types::OidcToken::Apple { token, aud: _ } => token,
+                    OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
                 };
                 if raw_oidc_token != expected_oidc_token {
                     return Err(ErrorResponse::bad_request(
-                        "oidc_token_mismatch",
+                        ErrorCode::OidcTokenMismatch,
                         "OIDC Token mismatch",
                     ));
                 }
             } else {
                 return Err(ErrorResponse::bad_request(
-                    "invalid_new_factor_type",
+                    ErrorCode::InvalidNewFactorType,
                     "Invalid new factor type",
                 ));
             }
         }
         _ => {
             return Err(ErrorResponse::bad_request(
-                "invalid_new_factor_authorization_type",
+                ErrorCode::InvalidNewFactorAuthorizationType,
                 "Invalid new factor authorization type",
             ));
         }

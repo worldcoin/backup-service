@@ -1,6 +1,6 @@
+use crate::environment::Environment;
 use crate::oidc_nonce_verifier::OidcNonceVerifier;
 use crate::redis_cache::{RedisCacheError, RedisCacheManager};
-use crate::types::{Environment, OidcToken};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
+use types::OidcToken;
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
@@ -223,19 +224,19 @@ fn issue_time_verifier(iat: DateTime<Utc>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::OidcProvider;
     use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use p256::elliptic_curve::rand_core::OsRng;
     use p256::SecretKey;
+    use types::OidcProvider;
 
-    impl From<OidcProvider> for &MockOidcProvider {
-        fn from(provider: OidcProvider) -> Self {
-            match provider {
-                OidcProvider::Google => &MockOidcProvider::Google,
-                OidcProvider::Apple => &MockOidcProvider::Apple,
-            }
+    /// Both `OidcProvider` and `MockOidcProvider` are foreign to this crate, so this cannot be a
+    /// `From` impl.
+    const fn mock_provider(provider: OidcProvider) -> &'static MockOidcProvider {
+        match provider {
+            OidcProvider::Google => &MockOidcProvider::Google,
+            OidcProvider::Apple => &MockOidcProvider::Apple,
         }
     }
 
@@ -284,7 +285,7 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a valid token
-            let token = oidc_server.generate_token(provider.into(), None, &public_key);
+            let token = oidc_server.generate_token(mock_provider(provider), None, &public_key);
 
             // Verify the token
             let result =
@@ -316,7 +317,7 @@ mod tests {
             let secret_key = SecretKey::random(&mut OsRng);
             let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
             let token = oidc_server.generate_token_with_aud(
-                OidcProvider::Apple.into(),
+                mock_provider(OidcProvider::Apple),
                 aud.to_string(),
                 &public_key,
             );
@@ -347,7 +348,8 @@ mod tests {
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
 
         // The default audience is the client's first allowed Apple client ID.
-        let token = oidc_server.generate_token(OidcProvider::Apple.into(), None, &public_key);
+        let token =
+            oidc_server.generate_token(mock_provider(OidcProvider::Apple), None, &public_key);
 
         // Simulate a client that omits `aud` entirely from the request JSON
         let json = format!(r#"{{"kind":"APPLE","token":{token:?}}}"#);
@@ -372,7 +374,7 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate an expired token
-            let token = oidc_server.generate_expired_token(provider.into());
+            let token = oidc_server.generate_expired_token(mock_provider(provider));
 
             // Verify the token
             let result =
@@ -401,7 +403,7 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate an incorrectly signed token
-            let token = oidc_server.generate_incorrectly_signed_token(provider.into());
+            let token = oidc_server.generate_incorrectly_signed_token(mock_provider(provider));
 
             // Verify the token
             let result =
@@ -430,8 +432,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issuer
-            let token =
-                oidc_server.generate_token_with_incorrect_issuer(provider.into(), &public_key);
+            let token = oidc_server
+                .generate_token_with_incorrect_issuer(mock_provider(provider), &public_key);
 
             // Verify the token
             let result =
@@ -461,7 +463,7 @@ mod tests {
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect audience
             let token = oidc_server.generate_token_with_aud(
-                provider.into(),
+                mock_provider(provider),
                 "com.example.evil".to_string(),
                 &public_key,
             );
@@ -503,8 +505,8 @@ mod tests {
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate an otherwise spec-valid token (valid `azp`) whose audience
             // is the correct client ID *plus* an additional untrusted audience.
-            let token =
-                oidc_server.generate_token_with_extra_audience(provider.into(), &public_key);
+            let token = oidc_server
+                .generate_token_with_extra_audience(mock_provider(provider), &public_key);
 
             // Verify the token
             let result =
@@ -534,8 +536,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with incorrect issued_at
-            let token =
-                oidc_server.generate_token_with_incorrect_issued_at(provider.into(), &public_key);
+            let token = oidc_server
+                .generate_token_with_incorrect_issued_at(mock_provider(provider), &public_key);
 
             // Verify the token
             let result =
@@ -571,7 +573,8 @@ mod tests {
         // Test both Google and Apple OIDC tokens
         for provider in [OidcProvider::Google, OidcProvider::Apple] {
             // Generate a token with the correct public key
-            let token = oidc_server.generate_token(provider.into(), None, &correct_public_key);
+            let token =
+                oidc_server.generate_token(mock_provider(provider), None, &correct_public_key);
 
             // Verify the token but pass a different public key
             let result = verify_token_for_provider(
@@ -602,7 +605,8 @@ mod tests {
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
 
-        let token = oidc_server.generate_token(OidcProvider::Google.into(), None, &public_key);
+        let token =
+            oidc_server.generate_token(mock_provider(OidcProvider::Google), None, &public_key);
         let _ = verify_token_for_provider(
             &verifier,
             OidcProvider::Google,
@@ -631,7 +635,8 @@ mod tests {
         ));
 
         // Even if we generate a new token with the same nonce, it still fails
-        let new_token = oidc_server.generate_token(OidcProvider::Google.into(), None, &public_key);
+        let new_token =
+            oidc_server.generate_token(mock_provider(OidcProvider::Google), None, &public_key);
 
         assert_ne!(token, new_token);
         let result = verify_token_for_provider(

@@ -3,34 +3,14 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
+use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    factor_lookup_mutate_lock_id, FactorLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
     FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
 use crate::redis_cache::RedisCacheManager;
-use crate::types::{Authorization, ErrorResponse};
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AddSyncFactorRequest {
-    /// The challenge token that was used to create the sync factor, from `AddSyncFactorChallengeKeypairResponse`
-    challenge_token: String,
-    /// New sync factor to add. Must be an EC keypair.
-    sync_factor: Authorization,
-    /// From `sync_factor_token` in `RetrieveBackupFromChallengeResponse`, used to authorize the request
-    /// to specific backup.
-    sync_factor_token: String,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddSyncFactorResponse {
-    /// The ID of the backup that was modified
-    pub backup_id: String,
-}
+use types::{AddSyncFactorRequest, AddSyncFactorResponse, FactorScope};
 
 /// Adds a new sync factor to an existing backup.
 pub async fn handler(

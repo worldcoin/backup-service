@@ -1,34 +1,11 @@
 use std::sync::Arc;
 
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::types::{Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse, Platform};
 use uuid::Uuid;
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChallengePasskeyRequest {
-    name: String,
-    display_name: String,
-    platform: Platform,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Platform {
-    Android,
-    Ios,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChallengePasskeyResponse {
-    // Challenge should be opaque to us and implemented by the protocol
-    challenge: serde_json::Value,
-    token: String,
-}
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,

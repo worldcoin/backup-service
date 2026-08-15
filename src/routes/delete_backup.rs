@@ -3,20 +3,12 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::types::{Authorization, ErrorResponse};
+use crate::error::ErrorResponse;
+use crate::factor_lookup::FactorLookup;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteBackupRequest {
-    authorization: Authorization,
-    challenge_token: String,
-}
+use types::{DeleteBackupRequest, FactorScope};
 
 /// Request to delete the entire backup and all related metadata.
 pub async fn handler(
