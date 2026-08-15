@@ -1,9 +1,10 @@
-#![deny(clippy::all, dead_code, clippy::pedantic)]
-#![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 pub mod attestation_gateway;
 pub mod auth;
+pub mod backup_metadata;
 pub mod backup_storage;
 pub mod challenge_manager;
+pub mod environment;
+pub mod error;
 pub mod factor_lookup;
 pub mod headers;
 pub mod kms_jwe;
@@ -14,7 +15,6 @@ pub mod redis_cache;
 pub mod routes;
 pub mod server;
 pub mod turnkey_activity;
-pub mod types;
 pub mod utils;
 pub mod verify_signature;
 pub mod webauthn;
@@ -48,51 +48,6 @@ pub fn mask_email(email: &str) -> Option<String> {
     }
 
     Some(format!("{prefix}***@{domain_part}"))
-}
-
-use serde::{de, Deserialize, Deserializer};
-
-/// Deserializes a hex string into a byte array and verifies it's exactly 32 bytes long.
-///
-/// # Errors
-///
-/// Returns an error if the hex string is not a valid hex-encoded byte array
-/// or if the hex string is not exactly 32 bytes long.
-pub fn normalize_hex_32<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    let s = s.trim_start_matches("0x");
-    let bytes = hex::decode(s).map_err(de::Error::custom)?;
-    if bytes.len() != 32 {
-        return Err(de::Error::custom("Expected 32 bytes"));
-    }
-    Ok(s.to_lowercase())
-}
-
-/// Deserializes a provided backup account ID and verifies it has the correct format.
-///
-/// # Errors
-/// Returns an error if the provided value is not valid.
-pub fn validate_backup_account_id<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    if !s.starts_with("backup_account_") {
-        return Err(de::Error::custom(
-            "Invalid backup account ID. Missing expected prefix.",
-        ));
-    }
-    let bytes = hex::decode(s.trim_start_matches("backup_account_")).map_err(de::Error::custom)?;
-    // 33 bytes because we expect a SEC.1 compressed public key
-    if bytes.len() != 33 {
-        return Err(de::Error::custom(
-            "Invalid backup account ID. Expected 33 bytes after the prefix.",
-        ));
-    }
-    Ok(s)
 }
 
 #[cfg(test)]
