@@ -11,16 +11,18 @@ use crate::common::{
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use backup_service::types::Environment;
+use backup_service::environment::Environment;
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
 use serial_test::serial;
+use types::FactorScope;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // end-to-end test
 async fn test_add_sync_factor_happy_path() {
     let mut passkey_client = get_mock_passkey_client();
 

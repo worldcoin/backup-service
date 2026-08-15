@@ -1,10 +1,10 @@
 use crate::attestation_gateway::AttestationGateway;
 use crate::challenge_manager::ChallengeManager;
+use crate::environment::Environment;
 use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::redis_cache::RedisCacheManager;
 use crate::routes;
-use crate::types::Environment;
 use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
