@@ -1,18 +1,11 @@
 use std::sync::Arc;
 
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::types::{Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::Serialize;
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RetrieveChallengePasskeyResponse {
-    challenge: serde_json::Value,
-    token: String,
-}
+use types::RetrieveChallengePasskeyResponse;
 
 /// Request to retrieve a challenge for passkey authentication. Used to start the recovery process
 /// for a backup.

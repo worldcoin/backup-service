@@ -3,37 +3,16 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::FactorScope;
+use crate::error::ErrorResponse;
 use crate::headers::CLIENT_VERSION;
 use crate::redis_cache::RedisCacheManager;
-use crate::types::backup_metadata::ExportedBackupMetadata;
-use crate::types::{Authorization, ErrorResponse};
 use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http::HeaderMap;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct RetrieveBackupFromChallengeRequest {
-    authorization: Authorization,
-    challenge_token: String,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RetrieveBackupFromChallengeResponse {
-    /// Encrypted backup in base64.
-    backup: String,
-    /// Metadata about the backup, including the Turnkey ID and encryption keys.
-    metadata: ExportedBackupMetadata,
-    /// Token to add a new sync factor later.
-    sync_factor_token: String,
-}
+use types::{FactorScope, RetrieveBackupFromChallengeRequest, RetrieveBackupFromChallengeResponse};
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
     op.description(

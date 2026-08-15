@@ -3,24 +3,9 @@ use std::sync::Arc;
 use crate::auth::{AuthError, AuthHandler};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::FactorScope;
-use crate::types::backup_metadata::ExportedBackupMetadata;
-use crate::types::{Authorization, ErrorResponse};
+use crate::error::ErrorResponse;
 use axum::{extract::Extension, Json};
-use schemars::JsonSchema;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct RetrieveMetadataRequest {
-    authorization: Authorization,
-    challenge_token: String,
-    /// (Optional). If provided, the system will verify the provided backup ID matches the backup ID from the factors.
-    ///
-    /// It will also return a specific error if the backup ID no longer exists. This is useful to handle multi-device setups
-    /// where the user may have deleted their backup on one device and the other device is unaware.
-    backup_id: Option<String>,
-}
+use types::{ExportedBackupMetadata, FactorScope, RetrieveMetadataRequest};
 
 /// Retrieves the backup metadata using a sync factor. This endpoint allows a client to view
 /// the metadata of a backup using only a sync factor for authentication. It's powering the

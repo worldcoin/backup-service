@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::{
-    backup_storage::BackupStorage, factor_lookup::FactorLookup, redis_cache::RedisCacheManager,
-    types::ErrorResponse,
+    backup_storage::BackupStorage, error::ErrorResponse, factor_lookup::FactorLookup,
+    redis_cache::RedisCacheManager,
 };
 
 #[derive(Serialize, JsonSchema)]
