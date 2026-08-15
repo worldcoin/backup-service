@@ -72,8 +72,7 @@ async fn test_retrieve_challenge_without_attestation() {
         assert_eq!(
             response.status(),
             StatusCode::BAD_REQUEST,
-            "Expected BAD_REQUEST from {}",
-            endpoint
+            "Expected BAD_REQUEST from {endpoint}"
         );
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -81,13 +80,11 @@ async fn test_retrieve_challenge_without_attestation() {
 
         assert_eq!(
             response["error"]["code"], "invalid_attestation_token_header",
-            "error.code mismatch on {}",
-            endpoint
+            "error.code mismatch on {endpoint}"
         );
         assert_eq!(
             response["error"]["message"], "Attestation token header is invalid or not present.",
-            "error.message mismatch on {}",
-            endpoint
+            "error.message mismatch on {endpoint}"
         );
     }
 }
@@ -114,8 +111,7 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
         assert_eq!(
             response.status(),
             StatusCode::BAD_REQUEST,
-            "Expected BAD_REQUEST from {}",
-            endpoint
+            "Expected BAD_REQUEST from {endpoint}"
         );
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -123,13 +119,11 @@ async fn test_retrieve_challenge_with_incorrect_attestation() {
 
         assert_eq!(
             response["error"]["code"], "invalid_attestation_token",
-            "error.code mismatch on {}",
-            endpoint
+            "error.code mismatch on {endpoint}"
         );
         assert_eq!(
             response["error"]["message"], "Invalid attestation token.",
-            "error.message mismatch on {}",
-            endpoint
+            "error.message mismatch on {endpoint}"
         );
     }
 }

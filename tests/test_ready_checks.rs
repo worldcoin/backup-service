@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use axum::extract::Request;
 use backup_service::{
+    backup_metadata::BackupMetadata,
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeType},
-    factor_lookup::{FactorScope, FactorToLookup},
-    types::{backup_metadata::BackupMetadata, Environment},
+    environment::Environment,
+    factor_lookup::FactorToLookup,
 };
 use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
 use http::StatusCode;
@@ -15,6 +16,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use crate::common::{get_challenge_manager, get_test_router, get_test_s3_client};
+use types::FactorScope;
 
 mod common;
 
@@ -23,6 +25,8 @@ mod common;
 /// In particular, it will ensure the right policies for both Dynamo tables and the S3 bucket are set.
 #[tokio::test]
 async fn test_end_to_end_readiness() {
+    const TEST_BACKUP_ID: &str = "canary_backup";
+
     dotenvy::from_filename(".env.example").unwrap();
 
     let environment = Environment::development(None);
@@ -44,8 +48,6 @@ async fn test_end_to_end_readiness() {
         .await
         .unwrap(),
     );
-
-    const TEST_BACKUP_ID: &str = "canary_backup";
 
     // Step 0: Delete the `TEST_BACKUP` if it exists (this is clean up in case a previous test failed mid-way)
     let _ = backup_storage.delete_backup(TEST_BACKUP_ID).await; // we ignore the result because it's fine (even expected) that there's no backup to delete

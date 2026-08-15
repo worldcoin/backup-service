@@ -141,6 +141,7 @@ async fn test_retrieve_metadata_with_incorrect_authorization() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // end-to-end scenario, splitting it would hide the flow
 async fn test_retrieve_metadata_when_sync_factor_is_revoked() {
     // Create a backup with a keypair and get the sync factor secret key
     let ((_, _), response, sync_secret_key) =
