@@ -14,8 +14,8 @@ pub struct ErrorBody {
     /// Whether retrying the exact same request could succeed. Always `false` today; clients
     /// should treat a missing or `false` value as "do not retry".
     #[serde(default)]
-    pub allow_retry: bool
-    /// The error itself.
+    pub allow_retry: bool,
+    /// The error itself
     pub error: ErrorObject,
 }
 

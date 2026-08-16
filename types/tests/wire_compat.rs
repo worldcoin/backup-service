@@ -2,9 +2,8 @@
 //! on the wire format
 
 use backup_service_types::endpoints::{
-    AddFactorRequest, BackupStatusRequest, BodyKind, CreateBackupRequest, DeleteFactorRequest,
-    Endpoint, Method, NewFactor, Platform, ResetRequest, RetrieveBackupFromChallengeRequest,
-    SyncBackupRequest, VerifyFactorRequest, ALL_ENDPOINTS,
+    AddFactorRequest, BodyKind, CreateBackupRequest, Endpoint, Method, NewFactor, Platform,
+    ResetRequest, SyncBackupRequest, ALL_ENDPOINTS,
 };
 use backup_service_types::{
     Authorization, BackupEncryptionKey, ErrorBody, ErrorCode, ErrorObject, ExportedBackupMetadata,
