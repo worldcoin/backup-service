@@ -96,7 +96,7 @@ jobs:
         run: curl -s http://localhost:4566/_localstack/health | jq -e '.services.s3 == "running"'
 
       - name: Run tests
-        run: cargo test -- --nocapture
+        run: cargo test -- --nocapture --workspace
 
       - name: Clean up
         run: docker compose down
