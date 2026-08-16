@@ -13,7 +13,8 @@ use strum_macros::{EnumIter, EnumString, IntoStaticStr};
 pub struct ErrorBody {
     /// Whether retrying the exact same request could succeed. Always `false` today; clients
     /// should treat a missing or `false` value as "do not retry".
-    pub allow_retry: bool,
+    #[serde(default)]
+    pub allow_retry: bool
     /// The error itself.
     pub error: ErrorObject,
 }
@@ -37,6 +38,7 @@ pub struct ErrorObject {
 /// working when the service adds a code.
 #[derive(Debug, Clone, PartialEq, Eq, EnumString, IntoStaticStr, EnumIter)]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum ErrorCode {
     // SECTION: Generic
     /// An unexpected server-side failure. Not actionable by the client.

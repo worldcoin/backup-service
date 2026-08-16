@@ -260,7 +260,7 @@ async fn test_sync_backup_with_invalid_manifest_hash_format() {
 }
 
 /// Test that concurrent backup updates are prevented by Redis lock
-/// One should succeed, the other should fail with "`update_in_progress`" conflict
+/// One should succeed, the other should fail with a `conflicting_lock` response
 #[tokio::test]
 async fn test_concurrent_sync_backup_prevention() {
     // Create a backup with a sync keypair
