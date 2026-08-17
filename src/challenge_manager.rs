@@ -8,6 +8,7 @@ use serde_json::json;
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 use strum_macros::{Display, EnumString};
+use types::Authorization;
 
 /// Checks authenticity of each challenge for keypair and passkeys during the verification
 /// using tokens signed with AWS KMS. Note that it does not generate challenges or verify
@@ -183,6 +184,16 @@ pub enum ChallengeManagerError {
 pub enum ChallengeType {
     Passkey,
     Keypair,
+}
+
+impl From<&Authorization> for ChallengeType {
+    fn from(value: &Authorization) -> Self {
+        match value {
+            Authorization::Passkey { .. } => Self::Passkey,
+            // NOTE: OIDC Accounts also sign a `Keypair` challenge. The keypair is part of the OIDC nonce.
+            Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => Self::Keypair,
+        }
+    }
 }
 
 /// Represents the specific method that the challenge is used for. It can also include some

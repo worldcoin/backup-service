@@ -177,7 +177,7 @@ async fn test_verify_factor_with_nonexistent_keypair() {
     assert_eq!(response["error"]["code"], "backup_untraceable");
 }
 
-/// Sync factors should not be usable with verify_factor (requires Main scope)
+/// Sync factors should not be usable with `verify_factor` (requires Main scope)
 #[tokio::test]
 #[serial]
 async fn test_verify_factor_rejects_sync_factor() {
@@ -252,7 +252,7 @@ async fn test_verify_factor_with_invalid_attestation_token() {
     assert_eq!(response["error"]["code"], "invalid_attestation_token");
 }
 
-/// A retrieve challenge token should not be accepted by verify_factor (wrong context)
+/// A retrieve challenge token should not be accepted by `verify_factor` (wrong context)
 #[tokio::test]
 #[serial]
 async fn test_verify_factor_rejects_retrieve_challenge_context() {

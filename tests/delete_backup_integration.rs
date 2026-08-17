@@ -7,13 +7,14 @@ use crate::common::{
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::http::StatusCode;
-use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use backup_service::types::Environment;
+use backup_service::environment::Environment;
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
 use std::sync::Arc;
+use types::FactorScope;
 
 /// Helper function to get a delete backup challenge
 async fn get_delete_backup_challenge() -> serde_json::Value {
@@ -33,7 +34,7 @@ async fn get_delete_backup_challenge() -> serde_json::Value {
 async fn verify_backup_deleted(backup_id: &str) {
     let s3_client = common::get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let metadata_key = format!("{}/metadata", backup_id);
+    let metadata_key = format!("{backup_id}/metadata");
 
     let metadata_result = s3_client
         .get_object()
@@ -51,7 +52,7 @@ async fn verify_backup_deleted(backup_id: &str) {
         _ => panic!("Expected NoSuchKey error"),
     }
 
-    let backup_key = format!("{}/backup", backup_id);
+    let backup_key = format!("{backup_id}/backup");
     let backup_result = s3_client
         .get_object()
         .bucket(bucket_name)

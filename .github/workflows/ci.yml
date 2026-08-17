@@ -38,7 +38,10 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-features
+        run: cargo clippy --workspace --all-targets --all-features
+
+      - name: Run clippy (no default features)
+        run: cargo clippy -p backup-service-types --all-targets --no-default-features
 
   build-release:
     name: Build Release
@@ -93,7 +96,7 @@ jobs:
         run: curl -s http://localhost:4566/_localstack/health | jq -e '.services.s3 == "running"'
 
       - name: Run tests
-        run: cargo test -- --nocapture
+        run: cargo test --workspace -- --nocapture
 
       - name: Clean up
         run: docker compose down

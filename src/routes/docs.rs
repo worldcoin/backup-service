@@ -1,4 +1,4 @@
-use crate::types::Environment;
+use crate::environment::Environment;
 use aide::{axum::ApiRouter, openapi::OpenApi, scalar::Scalar};
 use axum::http::StatusCode;
 use axum::{response::IntoResponse, routing::get, Extension, Json};

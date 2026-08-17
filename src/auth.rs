@@ -7,30 +7,27 @@ use webauthn_rs::prelude::{
     RegisterPublicKeyCredential, WebauthnError,
 };
 
+use crate::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
 use crate::backup_storage::BackupManagerError;
 use crate::challenge_manager::ChallengeManagerError;
+use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
 use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
 use crate::redis_cache::RedisCacheError;
-use crate::types::backup_metadata::{Factor, OidcAccountKind};
-use crate::types::OidcToken;
 use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
 use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
     factor_lookup::{
-        factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FactorToLookup,
+        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup,
         FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
     },
     redis_cache::RedisCacheManager,
-    types::{
-        backup_metadata::{BackupMetadata, FactorKind},
-        Authorization, Environment,
-    },
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use types::{Authorization, FactorScope, OidcToken};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {

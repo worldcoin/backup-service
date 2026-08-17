@@ -1,83 +1,79 @@
+use crate::attestation_gateway::AttestationGateway;
+use crate::environment::Environment;
 use crate::middleware::validate_content_length;
-use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
-use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
-use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
-use crate::routes::reset_challenge_keypair::ResetChallengeKeypairRequest;
-use crate::routes::retrieve_challenge_keypair::RetrieveChallengeKeypairRequest;
-use crate::routes::retrieve_metadata_challenge_keypair::RetrieveMetadataChallengeKeypairRequest;
-use crate::routes::sync_challenge_keypair::SyncChallengeKeypairRequest;
-use crate::routes::verify_factor_challenge_keypair::VerifyFactorChallengeKeypairRequest;
-use crate::types::Environment;
-use crate::{
-    attestation_gateway::AttestationGateway,
-    routes::add_sync_factor_challenge_keypair::AddSyncFactorChallengeKeypairRequest,
-};
 use aide::axum::routing::post_with;
 use aide::axum::{
     routing::{get, post},
     ApiRouter,
 };
 use axum::{extract::DefaultBodyLimit, middleware};
+use types::endpoints::{
+    AddFactorChallengeRequest, AddFactorRequest, AddSyncFactorChallengeKeypairRequest,
+    AddSyncFactorRequest, BackupStatusRequest, CreateBackupRequest, CreateChallengeKeypairRequest,
+    CreateChallengePasskeyRequest, DeleteBackupChallengeKeypairRequest, DeleteBackupRequest,
+    DeleteFactorChallengeKeypairRequest, DeleteFactorRequest, Endpoint,
+    ResetChallengeKeypairRequest, ResetRequest, RetrieveBackupFromChallengeRequest,
+    RetrieveChallengeKeypairRequest, RetrieveMetadataChallengeKeypairRequest,
+    RetrieveMetadataRequest, SyncBackupRequest, SyncChallengeKeypairRequest,
+    VerifyFactorChallengeKeypairRequest, VerifyFactorRequest, HEALTH_PATH, READY_PATH,
+    RETRIEVE_CHALLENGE_PASSKEY_PATH, VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH,
+};
 
 mod add_factor;
 mod add_factor_challenge;
 mod add_sync_factor;
-mod add_sync_factor_challenge_keypair;
 mod backup_status;
+mod challenge_contexts;
 mod create_backup;
-mod create_challenge_keypair;
 mod create_challenge_passkey;
 mod delete_backup;
-mod delete_backup_challenge_keypair;
 mod delete_factor;
-mod delete_factor_challenge_keypair;
 mod docs;
 mod health;
 mod keypair_challenge;
 mod ready;
 mod reset;
-mod reset_challenge_keypair;
-mod retrieve_challenge_keypair;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
 mod retrieve_metadata;
-mod retrieve_metadata_challenge_keypair;
 mod sync_backup;
-mod sync_challenge_keypair;
 mod verify_factor;
-mod verify_factor_challenge_keypair;
 mod verify_factor_challenge_passkey;
 
+/// Builds the router. Paths come from [`types::endpoints`]
 pub fn handler(environment: Environment) -> ApiRouter {
-    let v1_routes = ApiRouter::new()
+    ApiRouter::new()
+        .merge(docs::handler())
+        .api_route(HEALTH_PATH, get(health::handler))
+        .api_route(READY_PATH, get(ready::handler))
         // Public
-        .api_route("/backup/status", post(backup_status::handler))
+        .api_route(BackupStatusRequest::PATH, post(backup_status::handler))
         // Create new backup
         .api_route(
-            "/create/challenge/passkey",
+            CreateChallengePasskeyRequest::PATH,
             post(create_challenge_passkey::handler),
         )
         .api_route(
-            "/create/challenge/keypair",
+            CreateChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<CreateChallengeKeypairRequest>),
         )
         .api_route(
-            "/create",
+            CreateBackupRequest::PATH,
             post(create_backup::handler)
                 .route_layer(middleware::from_fn(validate_content_length))
                 .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Recovery
         .api_route(
-            "/retrieve/challenge/passkey",
+            RETRIEVE_CHALLENGE_PASSKEY_PATH,
             post(retrieve_challenge_passkey::handler),
         )
         .api_route(
-            "/retrieve/challenge/keypair",
+            RetrieveChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
         )
         .api_route(
-            "/retrieve/from-challenge",
+            RetrieveBackupFromChallengeRequest::PATH,
             post_with(
                 retrieve_from_challenge::handler,
                 retrieve_from_challenge::docs,
@@ -86,71 +82,70 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         // Verify factor (authenticate a main factor without retrieving the backup)
         .api_route(
-            "/verify-factor/challenge/passkey",
+            VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH,
             post(verify_factor_challenge_passkey::handler),
         )
         .api_route(
-            "/verify-factor/challenge/keypair",
+            VerifyFactorChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<VerifyFactorChallengeKeypairRequest>),
         )
         .api_route(
-            "/verify-factor",
+            VerifyFactorRequest::PATH,
             post_with(verify_factor::handler, verify_factor::docs)
                 .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         // Add new factor for future sync after recovery
         .api_route(
-            "/add-sync-factor/challenge/keypair",
+            AddSyncFactorChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<AddSyncFactorChallengeKeypairRequest>),
         )
-        .api_route("/add-sync-factor", post(add_sync_factor::handler))
+        .api_route(AddSyncFactorRequest::PATH, post(add_sync_factor::handler))
         // Add factor to the backup - new OIDC account, new passkey, etc.
-        .api_route("/add-factor/challenge", post(add_factor_challenge::handler))
-        .api_route("/add-factor", post(add_factor::handler))
+        .api_route(
+            AddFactorChallengeRequest::PATH,
+            post(add_factor_challenge::handler),
+        )
+        .api_route(AddFactorRequest::PATH, post(add_factor::handler))
         // Backup sync
         .api_route(
-            "/sync/challenge/keypair",
+            SyncChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<SyncChallengeKeypairRequest>),
         )
         .api_route(
-            "/sync",
+            SyncBackupRequest::PATH,
             post(sync_backup::handler)
                 .route_layer(middleware::from_fn(validate_content_length))
                 .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
         // Metadata retrieval
         .api_route(
-            "/retrieve-metadata/challenge/keypair",
+            RetrieveMetadataChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<RetrieveMetadataChallengeKeypairRequest>),
         )
-        .api_route("/retrieve-metadata", post(retrieve_metadata::handler))
+        .api_route(
+            RetrieveMetadataRequest::PATH,
+            post(retrieve_metadata::handler),
+        )
         // Delete factor
         .api_route(
-            "/delete-factor/challenge/keypair",
+            DeleteFactorChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<DeleteFactorChallengeKeypairRequest>),
         )
         .api_route(
-            "/delete-factor",
+            DeleteFactorRequest::PATH,
             post_with(delete_factor::handler, delete_factor::docs)
                 .route_layer(middleware::from_fn(AttestationGateway::validator)),
         )
         // Delete backup
         .api_route(
-            "/delete-backup/challenge/keypair",
+            DeleteBackupChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<DeleteBackupChallengeKeypairRequest>),
         )
-        .api_route("/delete-backup", post(delete_backup::handler))
+        .api_route(DeleteBackupRequest::PATH, post(delete_backup::handler))
         // Reset backup (when all factors are lost)
         .api_route(
-            "/reset/challenge/keypair",
+            ResetChallengeKeypairRequest::PATH,
             post(keypair_challenge::handler::<ResetChallengeKeypairRequest>),
         )
-        .api_route("/reset", post(reset::handler));
-
-    // Compose the final router: keep docs & health at root, nest business logic under /v1
-    ApiRouter::new()
-        .merge(docs::handler())
-        .api_route("/health", get(health::handler))
-        .api_route("/ready", get(ready::handler))
-        .nest("/v1", v1_routes)
+        .api_route(ResetRequest::PATH, post(reset::handler))
 }

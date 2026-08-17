@@ -10,10 +10,9 @@ use crate::common::{
 };
 use axum::http::StatusCode;
 use axum::response::Response;
+use backup_service::backup_metadata::{Factor, OidcAccountKind};
 use backup_service::backup_storage::{BackupStorage, MAX_MAIN_FACTORS_PER_BACKUP};
-use backup_service::types::backup_metadata::{Factor, OidcAccountKind};
-use backup_service::types::encryption_key::BackupEncryptionKey;
-use backup_service::types::Environment;
+use backup_service::environment::Environment;
 use backup_service_test_utils::get_mock_passkey_client;
 use backup_service_test_utils::get_passkey_assertion;
 use backup_service_test_utils::MockOidcProvider;
@@ -29,6 +28,7 @@ use p256::SecretKey;
 use serde_json::{json, Value};
 use serial_test::serial;
 use sha2::{Digest, Sha256};
+use types::BackupEncryptionKey;
 
 /// Sets up a test environment with OIDC server, mock passkey client and a backup
 async fn setup_test_environment() -> (MockOidcServer, Environment, String, MockPasskeyClient) {

@@ -3,45 +3,17 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::FactorScope;
-use crate::normalize_hex_32;
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use crate::redis_cache::RedisCacheManager;
-use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncBackupRequest {
-    authorization: Authorization,
-    challenge_token: String,
-    /// The hex-encoded representation of the current manifest hash of the backup.
-    ///
-    /// This is the hash of the backup manifest file which all backups should include internally.
-    ///
-    /// When a client performs backup updates (i.e. this /sync), it declares it's updating the backup from
-    /// the current state. This ensures that any updates to the backup performed client-side are performed on the latest state of the backup.
-    ///
-    /// In particular this prevents accidental data loss, where a client may lose a file from the backup and not be aware it should
-    /// be included. If the client is not operating on the latest state of the backup, it needs to fetch the current backup and perform updates from there.
-    ///
-    /// More details on <https://github.com/toolsforhumanity/docs/tree/main/world-app/backup>
-    #[serde(deserialize_with = "normalize_hex_32")]
-    current_manifest_hash: String,
-    /// The hex-encoded representation of the new manifest hash of the backup. This is the state post-update.
-    #[serde(deserialize_with = "normalize_hex_32")]
-    new_manifest_hash: String,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncBackupResponse {
-    pub backup_id: String,
-}
+use types::{
+    ErrorCode, FactorScope, SyncBackupRequest, SyncBackupResponse, MULTIPART_BACKUP_FIELD,
+    MULTIPART_PAYLOAD_FIELD,
+};
 
 const SYNC_BACKUP_LOCK_KEY: &str = "sync_backup_lock:";
 const SYNC_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
@@ -58,30 +30,34 @@ pub async fn handler(
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
     let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
-    let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::debug!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_payload_field",
-            "Missing payload field in multipart data",
-        )
-    })?;
+    let request = multipart_fields
+        .get(MULTIPART_PAYLOAD_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing payload field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingPayloadField,
+                "Missing payload field in multipart data",
+            )
+        })?;
     let request: SyncBackupRequest = serde_json::from_slice(request).map_err(|err| {
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
+        ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.remove("backup").ok_or_else(|| {
-        tracing::debug!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_backup_field",
-            "Missing backup field in multipart data",
-        )
-    })?;
+    let backup = multipart_fields
+        .remove(MULTIPART_BACKUP_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing backup field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingBackupField,
+                "Missing backup field in multipart data",
+            )
+        })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
         tracing::debug!(message = "Empty backup file");
         return Err(ErrorResponse::bad_request(
-            "empty_backup_file",
+            ErrorCode::EmptyBackupFile,
             "Empty backup file",
         ));
     }

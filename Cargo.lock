@@ -787,6 +787,7 @@ dependencies = [
  "axum",
  "axum-prometheus",
  "backup-service-test-utils",
+ "backup-service-types",
  "base64 0.22.1",
  "bytes",
  "chrono",
@@ -840,6 +841,18 @@ dependencies = [
  "sha2",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "backup-service-types"
+version = "0.9.5"
+dependencies = [
+ "hex",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "strum_macros 0.27.1",
 ]
 
 [[package]]

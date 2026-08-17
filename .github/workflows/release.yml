@@ -27,7 +27,7 @@ jobs:
       - name: Get new version
         id: version
         run: |
-          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.workspace_members[0]' | cut -d '#' -f2)
+          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "backup-service") | .version')
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
       - name: Check latest published version
         id: latest_version

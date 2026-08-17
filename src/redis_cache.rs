@@ -1,10 +1,11 @@
-use crate::types::{Environment, OidcProvider};
+use crate::environment::Environment;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, Script, SetExpiry, SetOptions};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+use types::OidcProvider;
 
 /// The `RedisCacheManager` introduces a simple and generic cache layer on top of `Redis`.
 ///

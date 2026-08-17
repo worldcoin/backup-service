@@ -7,7 +7,7 @@ use crate::common::{
 };
 use axum::body::{Body, Bytes};
 use axum::http::StatusCode;
-use backup_service::types::Environment;
+use backup_service::environment::Environment;
 use backup_service_test_utils::{
     get_mock_passkey_client, make_credential_from_passkey_challenge, MockOidcProvider,
     MockOidcServer,
@@ -776,7 +776,7 @@ async fn test_create_backup_with_incorrectly_signed_sync_factor() {
     );
 }
 
-/// Test that duplicate backup_account_id is rejected
+/// Test that duplicate `backup_account_id` is rejected
 #[tokio::test]
 async fn test_create_backup_with_duplicate_backup_account_id() {
     let mut passkey_client = get_mock_passkey_client();
@@ -962,7 +962,7 @@ async fn test_create_backup_with_invalid_backup_account_id() {
     );
 }
 
-/// Test that concurrent requests to create backups with the same backup_account_id don't cause race conditions
+/// Test that concurrent requests to create backups with the same `backup_account_id` don't cause race conditions
 #[tokio::test]
 async fn test_no_race_conditions_on_concurrent_backup_account_id() {
     use futures::future::join_all;
@@ -1038,8 +1038,7 @@ async fn test_no_race_conditions_on_concurrent_backup_account_id() {
 
     assert_eq!(
         success_count, 1,
-        "Expected exactly 1 successful request, got {}",
-        success_count
+        "Expected exactly 1 successful request, got {success_count}"
     );
     assert_eq!(
         error_count,
@@ -1062,7 +1061,7 @@ async fn test_create_backup_with_malformed_multipart_data() {
         .method("POST")
         .header(
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         )
         .header("Content-Length", body_bytes.len())
         .body(Body::from(body_bytes.to_vec()))

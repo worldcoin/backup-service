@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager};
+use crate::error::ErrorResponse;
 use crate::factor_lookup::FactorLookup;
 use crate::redis_cache::RedisCacheManager;
-use crate::types::ErrorResponse;
-use crate::validate_backup_account_id;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
@@ -13,19 +12,8 @@ use base64::Engine;
 use k256::ecdsa::signature::Verifier;
 use k256::ecdsa::{Signature, VerifyingKey};
 use k256::EncodedPoint;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ResetRequest {
-    #[serde(deserialize_with = "validate_backup_account_id")]
-    backup_account_id: String,
-    /// Base64-encoded DER signature
-    signature: String,
-    challenge_token: String,
-}
+use types::{ErrorCode, ResetRequest};
 
 /// Request to reset the entire backup using the `backup_account_id` keypair.
 ///
@@ -55,7 +43,7 @@ pub async fn handler(
     };
     if challenge_context != expected_context {
         return Err(ErrorResponse::bad_request(
-            "invalid_challenge_context",
+            ErrorCode::InvalidChallengeContext,
             "Challenge token was not created for reset operation or backup_account_id mismatch.",
         ));
     }
@@ -119,7 +107,7 @@ fn verify_backup_account_signature(
         .strip_prefix("backup_account_")
         .ok_or_else(|| {
             ErrorResponse::bad_request(
-                "invalid_backup_account_id",
+                ErrorCode::InvalidBackupAccountId,
                 "backup_account_id must start with 'backup_account_' prefix.",
             )
         })?;
@@ -127,14 +115,14 @@ fn verify_backup_account_signature(
     // Decode the hex to get compressed SEC1 bytes (33 bytes)
     let compressed_bytes = hex::decode(compressed_hex).map_err(|_| {
         ErrorResponse::bad_request(
-            "invalid_backup_account_id",
+            ErrorCode::InvalidBackupAccountId,
             "backup_account_id contains invalid hex encoding.",
         )
     })?;
 
     if compressed_bytes.len() != 33 {
         return Err(ErrorResponse::bad_request(
-            "invalid_backup_account_id",
+            ErrorCode::InvalidBackupAccountId,
             "backup_account_id must contain exactly 33 bytes of compressed public key data.",
         ));
     }
@@ -142,27 +130,30 @@ fn verify_backup_account_signature(
     // Parse the compressed SEC1 public key
     let encoded_point = EncodedPoint::from_bytes(&compressed_bytes).map_err(|_| {
         ErrorResponse::bad_request(
-            "invalid_backup_account_id",
+            ErrorCode::InvalidBackupAccountId,
             "Failed to parse compressed public key from backup_account_id.",
         )
     })?;
 
     let verifying_key = VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| {
         ErrorResponse::bad_request(
-            "invalid_backup_account_id",
+            ErrorCode::InvalidBackupAccountId,
             "Failed to create verifying key from backup_account_id.",
         )
     })?;
 
     // Decode the base64 signature
     let signature_bytes = STANDARD.decode(signature_base64).map_err(|_| {
-        ErrorResponse::bad_request("invalid_signature", "Signature must be valid base64.")
+        ErrorResponse::bad_request(
+            ErrorCode::InvalidSignature,
+            "Signature must be valid base64.",
+        )
     })?;
 
     // Parse DER signature
     let signature = Signature::from_der(&signature_bytes).map_err(|_| {
         ErrorResponse::bad_request(
-            "invalid_signature",
+            ErrorCode::InvalidSignature,
             "Failed to parse signature as DER format.",
         )
     })?;
@@ -170,7 +161,7 @@ fn verify_backup_account_signature(
     // Verify the signature
     verifying_key.verify(message, &signature).map_err(|_| {
         ErrorResponse::bad_request(
-            "signature_verification_error",
+            ErrorCode::SignatureVerificationError,
             "Signature verification failed.",
         )
     })?;

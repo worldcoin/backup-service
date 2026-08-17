@@ -1,57 +1,26 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
+use crate::backup_metadata::BackupMetadata;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    factor_lookup_mutate_lock_id, FactorLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
     FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
 use crate::redis_cache::RedisCacheManager;
-use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
-use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
-use crate::{normalize_hex_32, validate_backup_account_id};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use types::{
+    CreateBackupRequest, CreateBackupResponse, ErrorCode, FactorScope, MULTIPART_BACKUP_FIELD,
+    MULTIPART_PAYLOAD_FIELD,
+};
 
 const CREATE_BACKUP_LOCK_KEY: &str = "crate_backup_lock:";
 const CREATE_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBackupRequest {
-    /// `Main` factor that will be used to manage the backup.
-    authorization: Authorization,
-    challenge_token: String,
-    initial_encryption_key: BackupEncryptionKey,
-    /// First `Sync` factor that will be registered for this backup.
-    initial_sync_factor: Authorization,
-    initial_sync_challenge_token: String,
-    /// Provider ID from Turnkey. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
-    ///
-    /// To avoid confusion, this is NOT the Turnkey account ID, it is specifically the provider ID.
-    /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
-    turnkey_provider_id: Option<String>,
-    /// The initial manifest hash of the backup.
-    #[serde(deserialize_with = "normalize_hex_32")]
-    manifest_hash: String,
-    /// The unique identifier for the backup account (derived deterministically by the client).
-    #[serde(deserialize_with = "validate_backup_account_id")]
-    backup_account_id: String,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBackupResponse {
-    /// DEPRECATED. Please use `backup_metadata.id` instead.
-    backup_id: String,
-    /// The current state of the backup metadata for the newly created backup.
-    backup_metadata: ExportedBackupMetadata,
-}
 
 #[allow(clippy::too_many_lines)]
 pub async fn handler(
@@ -65,30 +34,34 @@ pub async fn handler(
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
     let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
-    let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::debug!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_payload_field",
-            "Missing payload field in multipart data",
-        )
-    })?;
+    let request = multipart_fields
+        .get(MULTIPART_PAYLOAD_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing payload field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingPayloadField,
+                "Missing payload field in multipart data",
+            )
+        })?;
     let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
+        ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.remove("backup").ok_or_else(|| {
-        tracing::debug!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_backup_field",
-            "Missing backup field in multipart data",
-        )
-    })?;
+    let backup = multipart_fields
+        .remove(MULTIPART_BACKUP_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing backup field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingBackupField,
+                "Missing backup field in multipart data",
+            )
+        })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
         tracing::debug!(message = "Empty backup file");
         return Err(ErrorResponse::bad_request(
-            "empty_backup_file",
+            ErrorCode::EmptyBackupFile,
             "Empty backup file",
         ));
     }
@@ -140,7 +113,7 @@ pub async fn handler(
             backup_account_id = request.backup_account_id
         );
         return Err(ErrorResponse::conflict(
-            "backup_account_id_already_exists",
+            ErrorCode::BackupAccountIdAlreadyExists,
             "Backup ID already exists. Please `/sync` instead.",
         ));
     }
