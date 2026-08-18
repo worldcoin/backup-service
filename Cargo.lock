@@ -797,6 +797,7 @@ dependencies = [
  "http-body-util",
  "josekit",
  "k256",
+ "metrics",
  "mockito",
  "openidconnect",
  "p256 0.13.2",

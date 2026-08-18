@@ -1,18 +1,19 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
+use crate::backup_account::{validate_backup_account_id, verify_backup_account_signature};
 use crate::backup_storage::BackupStorage;
-use crate::challenge_manager::ChallengeContext;
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
     FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
-use crate::redis_cache::RedisCacheManager;
+use crate::normalize_hex_32;
+use crate::redis_cache::{RedisCacheError, RedisCacheManager};
 use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
 use crate::types::encryption_key::BackupEncryptionKey;
 use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
-use crate::{normalize_hex_32, validate_backup_account_id};
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use schemars::JsonSchema;
@@ -20,6 +21,9 @@ use serde::{Deserialize, Serialize};
 
 const CREATE_BACKUP_LOCK_KEY: &str = "crate_backup_lock:";
 const CREATE_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
+
+// TODO: Metric relevant for progressive roll out, can be removed after full release.
+const BACKUP_ACCOUNT_PROOF_METRIC: &str = "backup_account_proof_total";
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -40,8 +44,17 @@ pub struct CreateBackupRequest {
     #[serde(deserialize_with = "normalize_hex_32")]
     manifest_hash: String,
     /// The unique identifier for the backup account (derived deterministically by the client).
+    ///
+    /// This is the derived as the public key of the `break_glass` user. Ownership must be proven with
+    /// `backup_account_challenge_token` and `backup_account_signature`.
     #[serde(deserialize_with = "validate_backup_account_id")]
     backup_account_id: String,
+    /// Token for the challenge issued alongside the factor challenge, bound to
+    /// `backup_account_id`.
+    backup_account_challenge_token: Option<String>,
+    /// Base64-encoded DER `secp256k1` signature over the challenge that
+    /// `backup_account_challenge_token` carries, made with the `backup_account_id` secret key.
+    backup_account_signature: Option<String>,
 }
 
 #[derive(Debug, JsonSchema, Serialize)]
@@ -53,12 +66,76 @@ pub struct CreateBackupResponse {
     backup_metadata: ExportedBackupMetadata,
 }
 
+/// Verifies ownership over the provided `backup_account_id`.
+///
+/// Returns the challenge token to consume once the create commits.
+async fn verify_backup_account_proof(
+    environment: Environment,
+    challenge_manager: &ChallengeManager,
+    request: &CreateBackupRequest,
+) -> Result<Option<String>, ErrorResponse> {
+    let (token, signature) = match (
+        request.backup_account_challenge_token.as_deref(),
+        request.backup_account_signature.as_deref(),
+    ) {
+        (Some(token), Some(signature)) => (token, signature),
+        (None, None) => {
+            metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "missing").increment(1);
+            if environment.enforce_backup_account_proof() {
+                return Err(ErrorResponse::bad_request(
+                    "missing_backup_account_proof",
+                    "backupAccountChallengeToken and backupAccountSignature are required.",
+                ));
+            }
+            return Ok(None);
+        }
+        _ => {
+            return Err(ErrorResponse::bad_request(
+                "incomplete_backup_account_proof",
+                "backupAccountChallengeToken and backupAccountSignature must be sent together.",
+            ));
+        }
+    };
+
+    let (challenge, challenge_context) = challenge_manager
+        .extract_token_payload(ChallengeType::Keypair, token.to_string())
+        .await
+        .map_err(|err| {
+            metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "invalid").increment(1);
+            ErrorResponse::from(err)
+        })?;
+
+    let expected_context = ChallengeContext::CreateBackupAccount {
+        backup_account_id: request.backup_account_id.clone(),
+    };
+    if challenge_context != expected_context {
+        metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "invalid").increment(1);
+        return Err(ErrorResponse::bad_request(
+            "invalid_challenge_context",
+            "Challenge token was not created to authorize this backup_account_id.",
+        ));
+    }
+
+    verify_backup_account_signature(&request.backup_account_id, signature, &challenge)
+        .inspect_err(|err| {
+            metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "invalid").increment(1);
+            tracing::warn!(
+                message = "Rejected create with an invalid backup account proof",
+                backup_account_id = request.backup_account_id,
+                error_code = err.code()
+            );
+        })?;
+
+    Ok(Some(token.to_string()))
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     mut multipart: Multipart,
 ) -> Result<Json<CreateBackupResponse>, ErrorResponse> {
@@ -99,7 +176,11 @@ pub async fn handler(
         ));
     }
 
-    // Step 2: Verify the main authentication factor
+    // Step 2: Verify the proof over the backup account ID
+    let backup_account_proof_token =
+        verify_backup_account_proof(environment, &challenge_manager, &request).await?;
+
+    // Step 3: Verify the main authentication factor
     // This validates the primary factor used to authenticate the user creating the backup
 
     let validation_result = auth_handler
@@ -115,7 +196,7 @@ pub async fn handler(
     let backup_factor = validation_result.factor;
     let factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Step 3: Verify the initial sync factor
+    // Step 4: Verify the initial sync factor
     // This validates the sync factor (EC keypair) that will be used for cross-device synchronization
     let sync_validation_result = auth_handler
         .validate_factor_registration(
@@ -130,7 +211,7 @@ pub async fn handler(
     let initial_sync_factor = sync_validation_result.factor;
     let initial_sync_factor_to_lookup = sync_validation_result.factor_to_lookup;
 
-    // Step 4: Ensure the backup account ID is unique
+    // Step 5: Ensure the backup account ID is unique
     if backup_storage
         .does_backup_exist(&request.backup_account_id)
         .await?
@@ -152,7 +233,22 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 5: Initialize backup metadata
+    // Step 6: Consume the backupAccountId challenge token
+    if let Some(token) = backup_account_proof_token {
+        if let Err(err) = redis_cache_manager.use_challenge_token(token).await {
+            let result = if matches!(err, RedisCacheError::AlreadyUsed) {
+                "replayed"
+            } else {
+                "not_consumed"
+            };
+            metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => result).increment(1);
+            let _ = lock_guard.release().await;
+            return Err(err.into());
+        }
+        metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "ok").increment(1);
+    }
+
+    // Step 7: Initialize backup metadata
     let backup_metadata = BackupMetadata {
         id: request.backup_account_id,
         factors: vec![backup_factor],
@@ -178,7 +274,7 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 6: Link credential ID and sync factor public key to backup ID for lookup during recovery
+    // Step 8: Link credential ID and sync factor public key to backup ID for lookup during recovery
     // and sync. This should happen before the backup storage is updated, because
     // it might fail with a duplicate key error.
     factor_lookup
@@ -196,10 +292,10 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 7: Save the backup to S3
+    // Step 9: Save the backup to S3
     let result = backup_storage.create(backup, &backup_metadata).await;
 
-    // Step 7.1: On failure, roll back lookups while still holding mutate locks, then release.
+    // Step 9.1: On failure, roll back lookups while still holding mutate locks, then release.
     if let Err(e) = result {
         if let Err(del_err) = factor_lookup
             .delete(FactorScope::Main, &factor_to_lookup)

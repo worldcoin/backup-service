@@ -2,6 +2,7 @@
 #![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 pub mod attestation_gateway;
 pub mod auth;
+pub mod backup_account;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod factor_lookup;
@@ -69,30 +70,6 @@ where
         return Err(de::Error::custom("Expected 32 bytes"));
     }
     Ok(s.to_lowercase())
-}
-
-/// Deserializes a provided backup account ID and verifies it has the correct format.
-///
-/// # Errors
-/// Returns an error if the provided value is not valid.
-pub fn validate_backup_account_id<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    if !s.starts_with("backup_account_") {
-        return Err(de::Error::custom(
-            "Invalid backup account ID. Missing expected prefix.",
-        ));
-    }
-    let bytes = hex::decode(s.trim_start_matches("backup_account_")).map_err(de::Error::custom)?;
-    // 33 bytes because we expect a SEC.1 compressed public key
-    if bytes.len() != 33 {
-        return Err(de::Error::custom(
-            "Invalid backup account ID. Expected 33 bytes after the prefix.",
-        ));
-    }
-    Ok(s)
 }
 
 #[cfg(test)]

@@ -198,6 +198,10 @@ pub enum ChallengeContext {
     /// Signed by first factor of a new backup when creating it.
     #[serde(rename_all = "camelCase")]
     Create {},
+    /// Signed by the private key corresponding to the `backup_account_id` when creating a backup.
+    /// Proves the caller owns the backup account ID it is claiming
+    #[serde(rename_all = "camelCase")]
+    CreateBackupAccount { backup_account_id: String },
     /// Signed by the factor that's used to recover the backup.
     #[serde(rename_all = "camelCase")]
     Retrieve {},
