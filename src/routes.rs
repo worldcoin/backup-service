@@ -1,5 +1,4 @@
 use crate::middleware::validate_content_length;
-use crate::routes::create_challenge_keypair::CreateChallengeKeypairRequest;
 use crate::routes::delete_backup_challenge_keypair::DeleteBackupChallengeKeypairRequest;
 use crate::routes::delete_factor_challenge_keypair::DeleteFactorChallengeKeypairRequest;
 use crate::routes::reset_challenge_keypair::ResetChallengeKeypairRequest;
@@ -59,7 +58,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             "/create/challenge/keypair",
-            post(keypair_challenge::handler::<CreateChallengeKeypairRequest>),
+            post(create_challenge_keypair::handler),
         )
         .api_route(
             "/create",
