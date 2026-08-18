@@ -119,11 +119,11 @@ impl RedisCacheManager {
             if string.byte(data, 1) == 1 then
                 return {1, \"\"}
             end
-            
+
             -- Update the token data while preserving existing TTL
             local updated_data = string.char(1) .. string.sub(data, 2)
             redis.call('SET', key, updated_data, 'KEEPTTL')
-            
+
             return {2, updated_data}
         ",
         );
@@ -588,7 +588,7 @@ mod tests {
     #[tokio::test]
     async fn test_stale_lock_guard_cannot_delete_newer_lock_on_release() {
         let environment = Environment::development(None);
-        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
             .await
             .unwrap();
 
@@ -624,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn test_stale_lock_guard_cannot_delete_newer_lock_on_drop() {
         let environment = Environment::development(None);
-        let cache = RedisCacheManager::new(environment, Duration::from_secs(60))
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
             .await
             .unwrap();
 
