@@ -350,8 +350,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_verify_backup_account_proof_allows_missing_proof_in_production_by_default() {
-        std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
+        // get_kms_jwe() reloads .env.example, which would repopulate this as an explicit "false"
+        // if it were removed beforehand — that would leave the flag's internal default
+        // (env_bool(..., false)) unexercised. Remove it after, so the check below runs against a
+        // genuinely unset variable.
         let challenge_manager = ChallengeManager::new(Duration::from_secs(60), get_kms_jwe().await);
+        std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
 
         let result = verify_backup_account_proof(
             Environment::Production,
