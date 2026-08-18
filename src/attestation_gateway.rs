@@ -19,8 +19,8 @@ use std::{
 use tokio::{sync::RwLock, time::Instant};
 use types::ErrorCode;
 
-const TTL: Duration = Duration::from_secs(60 * 60); // 1h
-const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
+const TTL: Duration = Duration::from_hours(1);
+const STALE_AFTER: Duration = Duration::from_mins(1);
 pub use types::endpoints::ATTESTATION_TOKEN_HEADER as ATTESTATION_GATEWAY_HEADER;
 
 #[derive(Debug, thiserror::Error)]
@@ -521,7 +521,7 @@ mod tests {
         payload.set_issued_at(&SystemTime::now());
         payload.set_issuer("attestation.worldcoin.org");
 
-        let expires_at = expires_at.unwrap_or_else(|| SystemTime::now() + Duration::from_secs(300));
+        let expires_at = expires_at.unwrap_or_else(|| SystemTime::now() + Duration::from_mins(5));
         payload.set_expires_at(&expires_at);
 
         payload
