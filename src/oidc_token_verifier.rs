@@ -14,8 +14,8 @@ use tokio::sync::RwLock;
 use tokio::time::Instant;
 use types::OidcToken;
 
-const TTL: Duration = Duration::from_secs(60 * 60); // 1h
-const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
+const TTL: Duration = Duration::from_hours(1);
+const STALE_AFTER: Duration = Duration::from_mins(1);
 
 type JwkCacheEntry = (Arc<CoreJsonWebKeySet>, Instant);
 type JwkCache = Arc<RwLock<HashMap<JsonWebKeySetUrl, JwkCacheEntry>>>;

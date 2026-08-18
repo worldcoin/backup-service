@@ -142,15 +142,13 @@ impl Environment {
     /// TTL for all challenge tokens
     #[must_use]
     pub fn challenge_token_ttl(&self) -> std::time::Duration {
-        // 15 minutes
-        std::time::Duration::from_secs(15 * 60)
+        std::time::Duration::from_mins(15)
     }
 
     /// Default TTL for the `DynamoDB` cache layer
     #[must_use]
     pub fn cache_default_ttl(&self) -> std::time::Duration {
-        // 15 minutes
-        std::time::Duration::from_secs(15 * 60)
+        std::time::Duration::from_mins(15)
     }
 
     /// Configuration to generate passkeys

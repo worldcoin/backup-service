@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_extract_challenge_token() {
         let kms_jwe = get_kms_jwe().await;
-        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
+        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), kms_jwe);
 
         let challenge_token = challenge_manager
             .create_challenge_token(
@@ -322,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_extract_challenge_token_with_invalid_challenge_type() {
         let kms_jwe = get_kms_jwe().await;
-        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
+        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), kms_jwe);
 
         let challenge_token = challenge_manager
             .create_challenge_token(
@@ -344,7 +344,7 @@ mod tests {
     #[tokio::test]
     async fn test_extract_challenge_token_with_invalid_payload() {
         let kms_jwe = get_kms_jwe().await;
-        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), kms_jwe);
+        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), kms_jwe);
 
         let mut challenge_token = challenge_manager
             .create_challenge_token(
