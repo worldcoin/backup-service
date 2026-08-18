@@ -354,7 +354,7 @@ mod tests {
         // if it were removed beforehand — that would leave the flag's internal default
         // (env_bool(..., false)) unexercised. Remove it after, so the check below runs against a
         // genuinely unset variable.
-        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), get_kms_jwe().await);
+        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), get_kms_jwe().await);
         std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
 
         let result = verify_backup_account_proof(
@@ -375,7 +375,7 @@ mod tests {
     #[serial_test::serial]
     async fn test_verify_backup_account_proof_rejects_missing_proof_in_production_when_enforced() {
         std::env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "true");
-        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), get_kms_jwe().await);
+        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), get_kms_jwe().await);
 
         let result = verify_backup_account_proof(
             Environment::Production,
