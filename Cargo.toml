@@ -57,13 +57,12 @@ aide = { version = "0.14.2", features = [
   "axum-multipart",
   "macros",
 ] }
-
-anyhow = "1.0.103"
-aws-config = "1.8.15"
 types = { workspace = true, features = ["openapi"] }
-aws-sdk-dynamodb = "1.110.0"
-aws-sdk-kms = "1.104.0"
-aws-sdk-s3 = "1.127.0"
+anyhow = "1.0.103"
+aws-config = "1.10.1"
+aws-sdk-dynamodb = "1.121.0"
+aws-sdk-kms = "1.115.0"
+aws-sdk-s3 = "1.142.0"
 axum = { version = "0.8", features = ["macros", "multipart"] }
 axum-prometheus = "0.8"
 base64 = { workspace = true }

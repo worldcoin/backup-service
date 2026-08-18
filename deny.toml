@@ -11,6 +11,7 @@ ignore = [
     { id = "RUSTSEC-2026-0098", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
     { id = "RUSTSEC-2026-0099", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
     { id = "RUSTSEC-2026-0104", reason = "`rustls-webpki` 0.101.7 via AWS SDK rustls 0.21.x; no fix in the 0.101.x range, requires upstream AWS SDK to bump rustls" },
+    { id = "RUSTSEC-2026-0258", reason = "`h2` potentiaal ddos; requires upstream AWS SDK updates" },
 ]
 
 [licenses]
