@@ -292,3 +292,99 @@ pub async fn handler(
         backup_metadata: backup_metadata.exported(),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kms_jwe::{KmsJwe, KmsKey};
+    use std::time::Duration;
+    use types::{Authorization, BackupEncryptionKey};
+
+    async fn get_kms_jwe() -> KmsJwe {
+        dotenvy::from_filename(".env.example").unwrap();
+        let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest())
+            .await
+            .into_builder()
+            .endpoint_url("http://localhost:4566")
+            .build();
+        let kms_client = aws_sdk_kms::Client::new(&aws_config);
+        KmsJwe::new(
+            KmsKey {
+                id: "01926dd6-f510-7227-9b63-da8e18607615".to_string(),
+                arn: "arn:aws:kms:us-east-1:000000000000:key/01926dd6-f510-7227-9b63-da8e18607615"
+                    .to_string(),
+            },
+            kms_client,
+        )
+    }
+
+    /// A request carrying no backup account proof. Every other field is irrelevant to
+    /// `verify_backup_account_proof`, which returns before looking at them.
+    fn request_without_proof() -> CreateBackupRequest {
+        CreateBackupRequest {
+            authorization: Authorization::EcKeypair {
+                public_key: String::new(),
+                signature: String::new(),
+            },
+            challenge_token: String::new(),
+            initial_encryption_key: BackupEncryptionKey::Prf {
+                encrypted_key: String::new(),
+            },
+            initial_sync_factor: Authorization::EcKeypair {
+                public_key: String::new(),
+                signature: String::new(),
+            },
+            initial_sync_challenge_token: String::new(),
+            turnkey_provider_id: None,
+            manifest_hash: String::new(),
+            backup_account_id: format!("backup_account_{}", "00".repeat(33)),
+            backup_account_challenge_token: None,
+            backup_account_signature: None,
+        }
+    }
+
+    /// The rollout flag is a real kill switch on the request path, not just on the
+    /// `Environment::enforce_backup_account_proof` accessor: this drives `verify_backup_account_proof`
+    /// itself, which is what the `/create` handler calls, with `Environment::Production` under both
+    /// states of `ENFORCE_BACKUP_ACCOUNT_PROOF`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_verify_backup_account_proof_allows_missing_proof_in_production_by_default() {
+        std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
+        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), get_kms_jwe().await);
+
+        let result = verify_backup_account_proof(
+            Environment::Production,
+            &challenge_manager,
+            &request_without_proof(),
+        )
+        .await;
+
+        assert!(
+            result.unwrap().is_none(),
+            "a proof-less create must be allowed in Production while the flag is unset, or \
+             existing clients break the moment this ships"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_verify_backup_account_proof_rejects_missing_proof_in_production_when_enforced() {
+        std::env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "true");
+        let challenge_manager = ChallengeManager::new(Duration::from_secs(60), get_kms_jwe().await);
+
+        let result = verify_backup_account_proof(
+            Environment::Production,
+            &challenge_manager,
+            &request_without_proof(),
+        )
+        .await;
+
+        std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
+
+        assert_eq!(
+            result.unwrap_err().code(),
+            &ErrorCode::MissingBackupAccountProof
+        );
+    }
+}
