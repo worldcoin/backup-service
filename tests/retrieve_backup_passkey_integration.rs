@@ -215,7 +215,7 @@ async fn test_retrieve_backup_with_nonexistent_credential() {
     assert_eq!(create_response.status(), StatusCode::OK);
 
     // For the second client, register a credential but do not create a backup
-    let challenge_response = get_passkey_challenge().await;
+    let challenge_response = get_passkey_challenge(None).await;
     make_credential_from_passkey_challenge(&mut passkey_client_2, &challenge_response).await;
 
     // Get a retrieve challenge
