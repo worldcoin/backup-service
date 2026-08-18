@@ -11,8 +11,8 @@ use backup_service::attestation_gateway::{
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
+use backup_service::environment::Environment;
 use backup_service::kms_jwe::KmsJwe;
-use backup_service::types::Environment;
 use backup_service_test_utils::{
     make_credential_from_passkey_challenge, MockOidcProvider, MockOidcServer, MockPasskeyClient,
 };
@@ -37,7 +37,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 /// Generic retry helper for S3 operations with exponential backoff.
-/// Executes the provided future up to max_attempts times, with exponential backoff on failure.
+/// Executes the provided future up to `max_attempts` times, with exponential backoff on failure.
 async fn retry_with_backoff<T, E, F, Fut>(
     operation_name: &str,
     resource_id: &str,
@@ -253,7 +253,7 @@ pub async fn send_post_request_with_multipart(
         .method("POST")
         .header(
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         )
         .header("Content-Length", body_bytes.len())
         .body(Body::from(body_bytes))
@@ -503,7 +503,7 @@ pub async fn create_test_backup(
     (credential, create_response)
 }
 
-/// Create a test backup with an EC keypair. Returns the keypair (public_key, secret_key) and the create response.
+/// Create a test backup with an EC keypair. Returns the keypair (`public_key`, `secret_key`) and the create response.
 pub async fn create_test_backup_with_keypair(
     backup_data: &[u8],
 ) -> ((String, SecretKey), Response) {
@@ -553,7 +553,7 @@ pub async fn create_test_backup_with_keypair(
 
 /// Create a test backup with an EC keypair, returning the sync factor's secret key as well.
 /// Returns:
-/// - The main keypair (public_key, secret_key)
+/// - The main keypair (`public_key`, `secret_key`)
 /// - The create response
 /// - The sync factor's secret key
 pub async fn create_test_backup_with_sync_keypair(
@@ -709,7 +709,7 @@ pub fn sign_keypair_challenge(secret_key: &SecretKey, challenge: &str) -> String
 pub async fn verify_s3_backup_exists(backup_id: &str, expected_content: &[u8]) -> Vec<u8> {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let backup_key = format!("{}/backup", backup_id);
+    let backup_key = format!("{backup_id}/backup");
 
     let operation = || async {
         let result = s3_client
@@ -731,16 +731,16 @@ pub async fn verify_s3_backup_exists(backup_id: &str, expected_content: &[u8]) -
 
     retry_with_backoff("S3 backup", backup_id, operation)
         .await
-        .unwrap_or_else(|e| panic!("Failed to get S3 backup: {}", e))
+        .unwrap_or_else(|e| panic!("Failed to get S3 backup: {e}"))
 }
 
 /// Checks that a backup metadata file with the given ID exists in S3.
-/// Returns the metadata as a serde_json::Value.
+/// Returns the metadata as a `serde_json::Value`.
 /// Includes retry logic to handle S3 eventual consistency.
 pub async fn verify_s3_metadata_exists(backup_id: &str) -> serde_json::Value {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let metadata_key = format!("{}/metadata", backup_id);
+    let metadata_key = format!("{backup_id}/metadata");
 
     let operation = || async {
         let result = s3_client
@@ -761,7 +761,7 @@ pub async fn verify_s3_metadata_exists(backup_id: &str) -> serde_json::Value {
 
     retry_with_backoff("S3 metadata", backup_id, operation)
         .await
-        .unwrap_or_else(|e| panic!("Failed to get S3 metadata: {}", e))
+        .unwrap_or_else(|e| panic!("Failed to get S3 metadata: {e}"))
 }
 
 pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> (Jwk, String) {

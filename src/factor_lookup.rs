@@ -1,11 +1,9 @@
-use crate::types::Environment;
+use crate::environment::Environment;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
 use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
-use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{str::FromStr, sync::Arc};
-use strum_macros::{Display, EnumString};
+use std::sync::Arc;
+use types::FactorScope;
 
 /// Redis lock prefix for coordinating `FactorLookup` insert/delete with metadata writes.
 ///
@@ -33,42 +31,6 @@ pub fn factor_lookup_mutate_lock_id(factor: &FactorToLookup) -> String {
 pub struct FactorLookup {
     environment: Environment,
     dynamodb_client: Arc<aws_sdk_dynamodb::Client>,
-}
-
-/// Some factors are used as main factors for recovery, while others are used for just syncing.
-/// This enum is used to distinguish between the two types of factors and only query the specific
-/// type of factor.
-#[derive(Debug, Clone, Copy, Display, EnumString, PartialEq, Eq, JsonSchema)]
-#[strum(serialize_all = "UPPERCASE")]
-#[serde(rename_all = "UPPERCASE")] // for `JsonSchema` serialization
-pub enum FactorScope {
-    /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the backup
-    /// or add new factors.
-    Main,
-    /// Sync factors (e.g. EC keypairs stored on enclaves) are used to update the backup with
-    /// new data, view metadata and delete factors. Sync factors cannot be used to recover the backup
-    /// or add new factors.
-    Sync,
-}
-
-// Serde serialization implementation for `FactorScope` (to use strum serialization)
-impl Serialize for FactorScope {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for FactorScope {
-    fn deserialize<D>(deserializer: D) -> Result<FactorScope, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        FactorScope::from_str(&s).map_err(<D::Error as serde::de::Error>::custom)
-    }
 }
 
 impl FactorLookup {

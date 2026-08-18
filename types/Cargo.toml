@@ -1,0 +1,23 @@
+[package]
+name = "backup-service-types"
+description = "Wire types and endpoint definitions for the backup service HTTP API."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+openapi = ["dep:schemars"] # Derives `schemars::JsonSchema` on every type (for API)
+
+[dependencies]
+hex = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+
+[lints]
+workspace = true

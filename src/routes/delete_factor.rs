@@ -3,37 +3,13 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::{BackupStorage, DeletionResult};
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::{FactorLookup, FactorScope};
-use crate::types::backup_metadata::ExportedBackupMetadata;
-use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
+use crate::factor_lookup::FactorLookup;
 use aide::transform::TransformOperation;
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteFactorRequest {
-    /// The authorization for the request (from a `Sync` factor).
-    authorization: Authorization,
-    /// The challenge token that will be authenticated against the factor to delete.
-    challenge_token: String,
-    /// The ID of the factor to delete.
-    factor_id: String,
-    /// Key that should be deleted from encryption key list in the metadata as part of this request
-    encryption_key: Option<BackupEncryptionKey>,
-    /// The scope of the factor to delete.
-    scope: FactorScope,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteFactorResponse {
-    backup_deleted: bool,
-    backup_metadata: Option<ExportedBackupMetadata>,
-}
+use types::{DeleteFactorRequest, DeleteFactorResponse, ErrorCode, FactorScope};
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
     op.description(
@@ -62,7 +38,7 @@ pub async fn handler(
     // Step 1.1 Validate there is no encryption key if deleting a `Sync` factor
     if request.scope == FactorScope::Sync && encryption_key.is_some() {
         return Err(ErrorResponse::bad_request(
-            "encryption_key_not_allowed",
+            ErrorCode::EncryptionKeyNotAllowed,
             "Removing an encryption key is not allowed when removing sync factors",
         ));
     }
@@ -95,7 +71,7 @@ pub async fn handler(
 
         let Some(factor_to_delete) = factor_to_delete else {
             tracing::info!(message = "Factor not found in backup metadata");
-            return Err(ErrorResponse::bad_request("factor_not_found", "Factor not found in backup"));
+            return Err(ErrorResponse::bad_request(ErrorCode::FactorNotFound, "Factor not found in backup"));
         };
 
         // Step 4: Delete the factor from the backup storage

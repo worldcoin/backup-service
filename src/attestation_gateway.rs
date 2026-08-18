@@ -1,4 +1,5 @@
-use crate::types::{Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use axum::{
     body::{to_bytes, Body},
     extract::OriginalUri,
@@ -16,10 +17,11 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{sync::RwLock, time::Instant};
+use types::ErrorCode;
 
 const TTL: Duration = Duration::from_secs(60 * 60); // 1h
 const STALE_AFTER: Duration = Duration::from_secs(60); // 1min
-pub static ATTESTATION_GATEWAY_HEADER: &str = "attestation-token"; // consistency with other services which World App uses
+pub use types::endpoints::ATTESTATION_TOKEN_HEADER as ATTESTATION_GATEWAY_HEADER;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationGatewayError {
@@ -351,11 +353,11 @@ impl AttestationGateway {
         let body_bytes = to_bytes(body, 1_048_576) // 1MB limit. Actual body size limit enforcement is done earlier by the WAF.
             .await
             .map_err(|_| {
-                ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+                ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Body payload is invalid")
             })?;
 
         let body_str = String::from_utf8(body_bytes.to_vec()).map_err(|_| {
-            ErrorResponse::bad_request("invalid_payload", "Body payload is invalid")
+            ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Body payload is invalid")
         })?;
 
         // Verify the attestation token header and all relevant claims
@@ -363,12 +365,15 @@ impl AttestationGateway {
             None => {
                 tracing::warn!("Attestation gateway token where expected is invalid or missing.");
                 Some(ErrorResponse::bad_request(
-                    "invalid_attestation_token_header",
+                    ErrorCode::InvalidAttestationTokenHeader,
                     "Attestation token header is invalid or not present.",
                 ))
             }
             Some(attestation_token) => {
-                // Use [`OriginalUri`] to account for nested routes (e.g. `/v1`)
+                // `OriginalUri` is set by axum's router on every request, nested or not — it's
+                // inserted unconditionally before any `.nest()` strips a prefix — so this
+                // branch always runs in practice. The `parts.uri.path()` fallback only matters
+                // if this ever ran outside axum's router entirely.
                 let path_uri = parts.extensions.get::<OriginalUri>().map_or_else(
                     || parts.uri.path().to_string(),
                     |original| original.0.path().to_string(),
@@ -423,7 +428,7 @@ fn inform_attestation_failure(response: &mut Response<Body>, error: &ErrorRespon
     let value = HeaderValue::from_str(error.message())
         .ok()
         .unwrap_or_else(|| {
-            HeaderValue::from_str(error.code())
+            HeaderValue::from_str(error.code().as_str())
                 .ok()
                 .unwrap_or(HeaderValue::from_static("generic-failure"))
         });
@@ -1046,30 +1051,33 @@ mod tests {
     }
 
     /// The routes guarded by `.route_layer(AttestationGateway::validator)` in
-    /// `crate::routes::handler`, each mounted under `.nest("/v1", …)`. Keep in sync with
-    /// that router so this regression test covers every attestation-gated endpoint.
+    /// `crate::routes::handler`. Keep in sync with that router so this regression test covers
+    /// every attestation-gated endpoint. Paths are relative to `/v1` for readability; each is
+    /// actually registered at the full `/v1{route}` path (see `flat_validator_app`).
     const ATTESTATION_GATED_ROUTES: [&str; 3] = [
         "/retrieve/from-challenge",
         "/verify-factor",
         "/delete-factor",
     ];
 
-    /// Mirrors production routing: the attestation-gated business routes live in an inner
-    /// router mounted with `.nest("/v1", …)` (see `crate::routes::handler`). axum strips
-    /// the `/v1` nest prefix *before* the inner router runs, so `parts.uri.path()` seen by
-    /// the `validator` middleware is e.g. `/retrieve/from-challenge`, NOT
-    /// `/v1/retrieve/from-challenge`. The existing `validator_app` helper mounts routes
-    /// flat, so it never exercises this stripping — which is why the mismatch was invisible
-    /// to the current tests.
-    fn nested_v1_validator_app(gateway: AttestationGateway) -> axum::Router {
-        let mut v1 = axum::Router::new();
+    /// Mirrors production routing: `crate::routes::handler` registers every attestation-gated
+    /// route at its full `/v1/...` path, with no `.nest()` wrapping it. Axum's router sets
+    /// `OriginalUri` unconditionally regardless of nesting (see the comment in `validator`
+    /// above), so this doesn't change which branch the middleware takes — it keeps this test's
+    /// topology honest instead of exercising a shape production doesn't use. Routes here still
+    /// answer with a stub handler (like `validator_app` above), so this stays a focused test of
+    /// the middleware and doesn't need the rest of the app's dependencies wired up.
+    fn flat_validator_app(gateway: AttestationGateway) -> axum::Router {
+        let mut router = axum::Router::new();
         for route in ATTESTATION_GATED_ROUTES {
-            v1 = v1.route(route, axum::routing::post(|| async { "ok" }));
+            router = router.route(
+                &format!("/v1{route}"),
+                axum::routing::post(|| async { "ok" }),
+            );
         }
-        let v1 = v1.route_layer(axum::middleware::from_fn(AttestationGateway::validator));
 
-        axum::Router::new()
-            .nest("/v1", v1)
+        router
+            .route_layer(axum::middleware::from_fn(AttestationGateway::validator))
             .layer(Extension(Arc::new(gateway)))
     }
 
@@ -1082,9 +1090,10 @@ mod tests {
             .unwrap()
     }
 
-    /// Ensure full nested paths are used when computing request hashes
+    /// Ensures the full `/v1/...` path is used when computing request hashes against the real,
+    /// flat router — not a nest-stripped path from a topology production no longer uses.
     #[tokio::test]
-    async fn test_nested_v1_prefix_hashes_full_path_for_real_clients() {
+    async fn test_flat_routing_hashes_full_path_for_real_clients() {
         let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
         key_pair.set_key_id(Some("test-key-id"));
 
@@ -1102,7 +1111,7 @@ mod tests {
             let client_token =
                 generate_test_token(&key_pair, client_hash, true, "pass".to_string(), None);
 
-            let response = nested_v1_validator_app(gateway_with_key(&key_pair, true))
+            let response = flat_validator_app(gateway_with_key(&key_pair, true))
                 .oneshot(post_request_with_token(&full_path, &client_token))
                 .await
                 .unwrap();
@@ -1110,8 +1119,8 @@ mod tests {
             assert_eq!(response.status(), axum::http::StatusCode::OK);
             assert_eq!(header_str(&response, "attestation-failure"), None);
 
-            // (2) A token whose `jti` is computed over the nest-STRIPPED path (the old,
-            //     buggy expectation) must now be rejected.
+            // (2) A token whose `jti` is computed over the `/v1`-stripped path (what a nested
+            //     topology would have seen) must still be rejected.
             let stripped_hash =
                 AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
                     path_uri: route.to_string(),
@@ -1122,7 +1131,7 @@ mod tests {
             let stripped_token =
                 generate_test_token(&key_pair, stripped_hash, true, "pass".to_string(), None);
 
-            let response = nested_v1_validator_app(gateway_with_key(&key_pair, true))
+            let response = flat_validator_app(gateway_with_key(&key_pair, true))
                 .oneshot(post_request_with_token(&full_path, &stripped_token))
                 .await
                 .unwrap();

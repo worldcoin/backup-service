@@ -3,13 +3,13 @@
 //!
 //! Reference: <https://docs.toolsforhumanity.com/world-app/backup/advanced#disaster-recovery-via-/v1/reset>
 
-use crate::types::ErrorResponse;
+use crate::error::ErrorResponse;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use k256::ecdsa::signature::Verifier;
 use k256::ecdsa::{Signature, VerifyingKey};
 use k256::EncodedPoint;
-use serde::{de, Deserialize, Deserializer};
+use types::ErrorCode;
 
 pub const BACKUP_ACCOUNT_ID_PREFIX: &str = "backup_account_";
 
@@ -30,7 +30,7 @@ pub enum BackupAccountIdError {
 
 impl From<BackupAccountIdError> for ErrorResponse {
     fn from(err: BackupAccountIdError) -> Self {
-        ErrorResponse::bad_request("invalid_backup_account_id", &err.to_string())
+        ErrorResponse::bad_request(ErrorCode::InvalidBackupAccountId, &err.to_string())
     }
 }
 
@@ -93,39 +93,27 @@ pub fn verify_backup_account_signature(
     let verifying_key = parse_backup_account_id(backup_account_id)?;
 
     let signature_bytes = STANDARD.decode(signature_base64).map_err(|_| {
-        ErrorResponse::bad_request("invalid_signature", "Signature must be valid base64.")
+        ErrorResponse::bad_request(
+            ErrorCode::InvalidSignature,
+            "Signature must be valid base64.",
+        )
     })?;
 
     let signature = Signature::from_der(&signature_bytes).map_err(|_| {
         ErrorResponse::bad_request(
-            "invalid_signature",
+            ErrorCode::InvalidSignature,
             "Failed to parse signature as DER format.",
         )
     })?;
 
     verifying_key.verify(message, &signature).map_err(|_| {
         ErrorResponse::bad_request(
-            "signature_verification_error",
+            ErrorCode::SignatureVerificationError,
             "Signature verification failed.",
         )
     })?;
 
     Ok(())
-}
-
-/// Deserializes a `backup_account_id` and verifies it is well formed.
-///
-/// See [`check_backup_account_id_format`] for why this stops short of checking the curve.
-///
-/// # Errors
-/// Returns an error if the provided value is not a well-formed backup account ID.
-pub fn validate_backup_account_id<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let id = String::deserialize(deserializer)?;
-    check_backup_account_id_format(&id).map_err(de::Error::custom)?;
-    Ok(id)
 }
 
 #[cfg(test)]
@@ -179,7 +167,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err().code(),
-            "signature_verification_error",
+            &ErrorCode::SignatureVerificationError,
             "a signature over other bytes must not verify"
         );
     }
@@ -195,7 +183,10 @@ mod tests {
             &sign(&signing_key, message),
             message,
         );
-        assert_eq!(result.unwrap_err().code(), "signature_verification_error");
+        assert_eq!(
+            result.unwrap_err().code(),
+            &ErrorCode::SignatureVerificationError
+        );
     }
 
     #[test]
@@ -203,11 +194,11 @@ mod tests {
         let (_, backup_account_id) = generate_backup_account();
 
         let result = verify_backup_account_signature(&backup_account_id, "not base64!", b"test");
-        assert_eq!(result.unwrap_err().code(), "invalid_signature");
+        assert_eq!(result.unwrap_err().code(), &ErrorCode::InvalidSignature);
 
         // Valid base64, but not a DER signature.
         let result = verify_backup_account_signature(&backup_account_id, "dGVzdA==", b"test");
-        assert_eq!(result.unwrap_err().code(), "invalid_signature");
+        assert_eq!(result.unwrap_err().code(), &ErrorCode::InvalidSignature);
     }
 
     #[test]
@@ -230,25 +221,23 @@ mod tests {
         );
     }
 
-    /// An off-curve ID has to survive deserialization so that clients already in the field keep
-    /// working on paths that never touch the key. It still cannot pass a signature check.
+    /// An off-curve ID passes the wire-level format check that `types` applies, so that clients
+    /// already in the field keep working on paths that never touch the key. It still cannot pass a
+    /// signature check, which is the only place ownership is decided.
     #[test]
-    fn test_validate_backup_account_id_accepts_off_curve_key() {
+    fn test_off_curve_id_is_well_formed_but_unusable() {
         let id = format!("{BACKUP_ACCOUNT_ID_PREFIX}03{}", hex::encode([0u8; 32]));
+
+        assert!(check_backup_account_id_format(&id).is_ok());
         assert_eq!(
             parse_backup_account_id(&id).unwrap_err(),
-            BackupAccountIdError::InvalidPublicKey,
-            "sanity check: this ID is genuinely off-curve"
+            BackupAccountIdError::InvalidPublicKey
         );
-
-        let parsed: RequiredIdWrapper =
-            serde_json::from_value(serde_json::json!({ "id": id.clone() })).unwrap();
-        assert_eq!(parsed.id, id);
-
-        let signature_result = verify_backup_account_signature(&id, "dGVzdA==", b"test");
         assert_eq!(
-            signature_result.unwrap_err().code(),
-            "invalid_backup_account_id"
+            verify_backup_account_signature(&id, "dGVzdA==", b"test")
+                .unwrap_err()
+                .code(),
+            &ErrorCode::InvalidBackupAccountId
         );
     }
 
@@ -262,20 +251,5 @@ mod tests {
             parse_backup_account_id(&id).unwrap_err(),
             BackupAccountIdError::InvalidPublicKey
         );
-    }
-
-    #[derive(Deserialize)]
-    struct RequiredIdWrapper {
-        #[serde(deserialize_with = "validate_backup_account_id")]
-        id: String,
-    }
-
-    #[test]
-    fn test_validate_backup_account_id_accepts_real_key() {
-        let (_, backup_account_id) = generate_backup_account();
-        let json = serde_json::json!({ "id": backup_account_id });
-
-        let parsed: RequiredIdWrapper = serde_json::from_value(json).unwrap();
-        assert_eq!(parsed.id, backup_account_id);
     }
 }

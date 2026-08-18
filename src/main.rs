@@ -3,12 +3,12 @@ use backup_service::attestation_gateway::AttestationGateway;
 use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
+use backup_service::environment::Environment;
 use backup_service::factor_lookup::FactorLookup;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service::oidc_token_verifier::OidcTokenVerifier;
 use backup_service::redis_cache::RedisCacheManager;
 use backup_service::server;
-use backup_service::types::Environment;
 use dotenvy::dotenv;
 use std::sync::Arc;
 

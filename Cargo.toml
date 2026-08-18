@@ -1,19 +1,24 @@
 [workspace]
-members = [".", "test-utils"]
+members = [".", "test-utils", "types"]
 
 [workspace.package]
 version = "0.9.5"
 license = "MIT"
+edition = "2021"
 
 [workspace.dependencies]
+types = { package = "backup-service-types", path = "types" }
 base64 = "0.22.1"
 chrono = { version = "0.4.44", features = ["serde"] }
 hex = "0.4.3"
 openidconnect = "4.0.1"
 rand = "0.8.6"
+schemars = "0.8.21"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.8"
+strum = "0.27.2"
+strum_macros = "0.27.1"
 uuid = { version = "1.23.0", features = ["v4", "serde"] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
 k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std"] }
@@ -21,13 +26,26 @@ k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std
 # dev workspace dependencies
 mockito = "1.7.2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+dead_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+must_use_candidate = "allow"
+default_trait_access = "allow"
+
 
 [package]
 name = "backup-service"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 license.workspace = true
 publish = false
+
+[lints]
+workspace = true
 
 
 [dependencies]
@@ -42,6 +60,7 @@ aide = { version = "0.14.2", features = [
 
 anyhow = "1.0.103"
 aws-config = "1.8.15"
+types = { workspace = true, features = ["openapi"] }
 aws-sdk-dynamodb = "1.110.0"
 aws-sdk-kms = "1.104.0"
 aws-sdk-s3 = "1.127.0"
@@ -63,12 +82,12 @@ rand = { workspace = true }
 redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-schemars = "0.8.21"
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-strum = "0.27.2"
-strum_macros = "0.27.1"
+strum = { workspace = true }
+strum_macros = { workspace = true }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["full"] }
 tower-http = { version = "0.6.2", features = [

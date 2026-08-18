@@ -1,26 +1,15 @@
 use std::sync::Arc;
 
-use crate::backup_account::{validate_backup_account_id, verify_backup_account_signature};
+use crate::backup_account::verify_backup_account_signature;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager};
+use crate::error::ErrorResponse;
 use crate::factor_lookup::FactorLookup;
 use crate::redis_cache::RedisCacheManager;
-use crate::types::ErrorResponse;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ResetRequest {
-    #[serde(deserialize_with = "validate_backup_account_id")]
-    backup_account_id: String,
-    /// Base64-encoded DER signature
-    signature: String,
-    challenge_token: String,
-}
+use types::{ErrorCode, ResetRequest};
 
 /// Request to reset the entire backup using the `backup_account_id` keypair.
 ///
@@ -50,7 +39,7 @@ pub async fn handler(
     };
     if challenge_context != expected_context {
         return Err(ErrorResponse::bad_request(
-            "invalid_challenge_context",
+            ErrorCode::InvalidChallengeContext,
             "Challenge token was not created for reset operation or backup_account_id mismatch.",
         ));
     }

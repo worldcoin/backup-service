@@ -54,7 +54,7 @@ async fn test_create_challenge() {
     );
     assert_eq!(
         response["challenge"]["publicKey"]["timeout"].as_u64(),
-        Some(300000)
+        Some(300_000)
     );
     assert_eq!(
         response["challenge"]["publicKey"]["authenticatorSelection"]["residentKey"].as_str(),

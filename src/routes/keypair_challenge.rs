@@ -1,21 +1,13 @@
 use std::sync::Arc;
 
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
-use crate::types::ErrorResponse;
+use crate::error::ErrorResponse;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
-use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChallengeKeypairResponse {
-    challenge: String,
-    token: String,
-}
+use types::ChallengeKeypairResponse;
 
 /// Request to retrieve a challenge for keypair authentication / registration.
 ///

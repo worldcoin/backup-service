@@ -1,70 +1,30 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
-use crate::backup_account::{validate_backup_account_id, verify_backup_account_signature};
+use crate::backup_account::verify_backup_account_signature;
+use crate::backup_metadata::BackupMetadata;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorScope, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+    factor_lookup_mutate_lock_id, FactorLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
     FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
-use crate::normalize_hex_32;
 use crate::redis_cache::{RedisCacheError, RedisCacheManager};
-use crate::types::backup_metadata::{BackupMetadata, ExportedBackupMetadata};
-use crate::types::encryption_key::BackupEncryptionKey;
-use crate::types::{Authorization, Environment, ErrorResponse};
 use crate::utils::extract_fields_from_multipart;
 use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use types::{
+    CreateBackupRequest, CreateBackupResponse, ErrorCode, FactorScope, MULTIPART_BACKUP_FIELD,
+    MULTIPART_PAYLOAD_FIELD,
+};
 
 const CREATE_BACKUP_LOCK_KEY: &str = "crate_backup_lock:";
 const CREATE_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
 
 // TODO: Metric relevant for progressive roll out, can be removed after full release.
 const BACKUP_ACCOUNT_PROOF_METRIC: &str = "backup_account_proof_total";
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBackupRequest {
-    /// `Main` factor that will be used to manage the backup.
-    authorization: Authorization,
-    challenge_token: String,
-    initial_encryption_key: BackupEncryptionKey,
-    /// First `Sync` factor that will be registered for this backup.
-    initial_sync_factor: Authorization,
-    initial_sync_challenge_token: String,
-    /// Provider ID from Turnkey. Only applicable if `initial_sync_factor` is `Authorization::OidcAccount`.
-    ///
-    /// To avoid confusion, this is NOT the Turnkey account ID, it is specifically the provider ID.
-    /// <https://docs.turnkey.com/api-reference/activities/create-oauth-providers>.
-    turnkey_provider_id: Option<String>,
-    /// The initial manifest hash of the backup.
-    #[serde(deserialize_with = "normalize_hex_32")]
-    manifest_hash: String,
-    /// The unique identifier for the backup account (derived deterministically by the client).
-    ///
-    /// This is the derived as the public key of the `break_glass` user. Ownership must be proven with
-    /// `backup_account_challenge_token` and `backup_account_signature`.
-    #[serde(deserialize_with = "validate_backup_account_id")]
-    backup_account_id: String,
-    /// Token for the challenge issued alongside the factor challenge, bound to
-    /// `backup_account_id`.
-    backup_account_challenge_token: Option<String>,
-    /// Base64-encoded DER `secp256k1` signature over the challenge that
-    /// `backup_account_challenge_token` carries, made with the `backup_account_id` secret key.
-    backup_account_signature: Option<String>,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBackupResponse {
-    /// DEPRECATED. Please use `backup_metadata.id` instead.
-    backup_id: String,
-    /// The current state of the backup metadata for the newly created backup.
-    backup_metadata: ExportedBackupMetadata,
-}
 
 /// Verifies ownership over the provided `backup_account_id`.
 ///
@@ -83,7 +43,7 @@ async fn verify_backup_account_proof(
             metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "missing").increment(1);
             if environment.enforce_backup_account_proof() {
                 return Err(ErrorResponse::bad_request(
-                    "missing_backup_account_proof",
+                    ErrorCode::MissingBackupAccountProof,
                     "backupAccountChallengeToken and backupAccountSignature are required.",
                 ));
             }
@@ -91,7 +51,7 @@ async fn verify_backup_account_proof(
         }
         _ => {
             return Err(ErrorResponse::bad_request(
-                "incomplete_backup_account_proof",
+                ErrorCode::IncompleteBackupAccountProof,
                 "backupAccountChallengeToken and backupAccountSignature must be sent together.",
             ));
         }
@@ -110,7 +70,7 @@ async fn verify_backup_account_proof(
     if challenge_context != (ChallengeContext::CreateBackupAccount {}) {
         metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "invalid").increment(1);
         return Err(ErrorResponse::bad_request(
-            "invalid_challenge_context",
+            ErrorCode::InvalidChallengeContext,
             "Challenge token was not created to authorize a backup account.",
         ));
     }
@@ -121,7 +81,7 @@ async fn verify_backup_account_proof(
             tracing::warn!(
                 message = "Rejected create with an invalid backup account proof",
                 backup_account_id = request.backup_account_id,
-                error_code = err.code()
+                error_code = %err.code()
             );
         })?;
 
@@ -141,30 +101,34 @@ pub async fn handler(
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
     let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
-    let request = multipart_fields.get("payload").ok_or_else(|| {
-        tracing::debug!(message = "Missing payload field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_payload_field",
-            "Missing payload field in multipart data",
-        )
-    })?;
+    let request = multipart_fields
+        .get(MULTIPART_PAYLOAD_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing payload field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingPayloadField,
+                "Missing payload field in multipart data",
+            )
+        })?;
     let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
         tracing::debug!(message = "Failed to deserialize payload", error = ?err);
-        ErrorResponse::bad_request("invalid_payload", "Failed to deserialize payload")
+        ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Failed to deserialize payload")
     })?;
-    let backup = multipart_fields.remove("backup").ok_or_else(|| {
-        tracing::debug!(message = "Missing backup field in multipart data");
-        ErrorResponse::bad_request(
-            "missing_backup_field",
-            "Missing backup field in multipart data",
-        )
-    })?;
+    let backup = multipart_fields
+        .remove(MULTIPART_BACKUP_FIELD)
+        .ok_or_else(|| {
+            tracing::debug!(message = "Missing backup field in multipart data");
+            ErrorResponse::bad_request(
+                ErrorCode::MissingBackupField,
+                "Missing backup field in multipart data",
+            )
+        })?;
 
     // Step 1.1: Validate the backup file size
     if backup.is_empty() {
         tracing::debug!(message = "Empty backup file");
         return Err(ErrorResponse::bad_request(
-            "empty_backup_file",
+            ErrorCode::EmptyBackupFile,
             "Empty backup file",
         ));
     }
@@ -175,7 +139,8 @@ pub async fn handler(
         ));
     }
 
-    // Step 2: Verify the proof over the backup account ID
+    // Step 2: Verify ownership of the requested backup account ID, before spending any work on
+    // the factors. Returns the token to burn once the create commits.
     let backup_account_proof_token =
         verify_backup_account_proof(environment, &challenge_manager, &request).await?;
 
@@ -220,7 +185,7 @@ pub async fn handler(
             backup_account_id = request.backup_account_id
         );
         return Err(ErrorResponse::conflict(
-            "backup_account_id_already_exists",
+            ErrorCode::BackupAccountIdAlreadyExists,
             "Backup ID already exists. Please `/sync` instead.",
         ));
     }
@@ -232,7 +197,9 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 6: Consume the backupAccountId challenge token
+    // Step 6: Burn the Backup Account challenge token. Done inside the create lock so the same
+    // proof cannot be spent twice concurrently, and before any mutation: a create that fails past
+    // this point needs a fresh challenge.
     if let Some(token) = backup_account_proof_token {
         if let Err(err) = redis_cache_manager.use_challenge_token(token).await {
             let result = if matches!(err, RedisCacheError::AlreadyUsed) {

@@ -1,37 +1,11 @@
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
-use crate::types::ErrorResponse;
+use crate::error::ErrorResponse;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum NewFactor {
-    #[serde(rename_all = "camelCase")]
-    OidcAccount { oidc_token: String },
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AddFactorChallengeRequest {
-    new_factor: NewFactor,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddFactorChallengeResponse {
-    // Challenge for the existing factor
-    existing_factor_challenge: String,
-    existing_factor_token: String,
-
-    // Challenge for the new factor
-    new_factor_challenge: String,
-    new_factor_token: String,
-}
+use types::{AddFactorChallengeRequest, AddFactorChallengeResponse, NewFactor};
 
 /// Request to get challenges for adding a new factor.
 ///

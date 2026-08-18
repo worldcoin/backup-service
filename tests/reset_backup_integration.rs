@@ -9,8 +9,8 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use backup_service::factor_lookup::{FactorLookup, FactorScope, FactorToLookup};
-use backup_service::types::Environment;
+use backup_service::environment::Environment;
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -19,8 +19,9 @@ use p256::elliptic_curve::rand_core::OsRng;
 use p256::SecretKey;
 use serde_json::json;
 use std::sync::Arc;
+use types::FactorScope;
 
-/// Helper function to derive backup_account_id from a secret key
+/// Helper function to derive `backup_account_id` from a secret key
 fn derive_backup_account_id_from_keypair(secret_key: &k256::SecretKey) -> String {
     BackupAccount::from_secret_key(secret_key.clone()).id
 }
@@ -54,7 +55,7 @@ async fn get_reset_challenge(backup_account_id: &str) -> serde_json::Value {
 async fn verify_backup_deleted(backup_id: &str) {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let metadata_key = format!("{}/metadata", backup_id);
+    let metadata_key = format!("{backup_id}/metadata");
 
     let metadata_result = s3_client
         .get_object()
@@ -71,7 +72,7 @@ async fn verify_backup_deleted(backup_id: &str) {
         _ => panic!("Expected NoSuchKey error"),
     }
 
-    let backup_key = format!("{}/backup", backup_id);
+    let backup_key = format!("{backup_id}/backup");
     let backup_result = s3_client
         .get_object()
         .bucket(bucket_name)
@@ -88,7 +89,7 @@ async fn verify_backup_deleted(backup_id: &str) {
     }
 }
 
-/// Helper function to create a backup with a specific backup_account_id derived from a keypair
+/// Helper function to create a backup with a specific `backup_account_id` derived from a keypair
 async fn create_test_backup_with_backup_account_id(
     backup_account_secret_key: &k256::SecretKey,
     backup_data: &[u8],
@@ -161,7 +162,7 @@ async fn create_test_backup_with_backup_account_id(
     )
 }
 
-/// Happy path - successfully reset a backup using the backup_account_id keypair
+/// Happy path - successfully reset a backup using the `backup_account_id` keypair
 #[tokio::test]
 async fn test_reset_backup_happy_path() {
     // Setup test environment
@@ -292,7 +293,7 @@ async fn test_reset_backup_with_incorrect_signature() {
     verify_s3_metadata_exists(&backup_account_id).await;
 }
 
-/// Failure case - public key doesn't match backup_account_id
+/// Failure case - public key doesn't match `backup_account_id`
 #[tokio::test]
 async fn test_reset_backup_with_mismatched_public_key() {
     // Generate a keypair for the backup_account_id
@@ -444,7 +445,7 @@ async fn test_reset_nonexistent_backup() {
     assert_eq!(reset_response.status(), StatusCode::NOT_FOUND);
 }
 
-/// Failure case - challenge token with wrong backup_account_id
+/// Failure case - challenge token with wrong `backup_account_id`
 #[tokio::test]
 async fn test_reset_backup_with_wrong_backup_account_id_in_token() {
     // Generate two keypairs for two different backup_account_ids

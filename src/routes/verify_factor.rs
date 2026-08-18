@@ -1,27 +1,12 @@
 use crate::auth::AuthHandler;
 use crate::challenge_manager::ChallengeContext;
-use crate::factor_lookup::FactorScope;
+use crate::error::ErrorResponse;
 use crate::headers::CLIENT_VERSION;
-use crate::types::{Authorization, ErrorResponse};
 use aide::transform::TransformOperation;
 use axum::{Extension, Json};
 use http::HeaderMap;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct VerifyFactorRequest {
-    authorization: Authorization,
-    challenge_token: String,
-}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VerifyFactorResponse {
-    backup_id: String,
-}
+use types::{FactorScope, VerifyFactorRequest, VerifyFactorResponse};
 
 pub fn docs(op: TransformOperation) -> TransformOperation {
     op.description(

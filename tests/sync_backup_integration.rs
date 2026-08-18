@@ -260,7 +260,7 @@ async fn test_sync_backup_with_invalid_manifest_hash_format() {
 }
 
 /// Test that concurrent backup updates are prevented by Redis lock
-/// One should succeed, the other should fail with "update_in_progress" conflict
+/// One should succeed, the other should fail with a `conflicting_lock` response
 #[tokio::test]
 async fn test_concurrent_sync_backup_prevention() {
     // Create a backup with a sync keypair
@@ -321,7 +321,7 @@ async fn test_concurrent_sync_backup_prevention() {
                     "currentManifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
                     "newManifestHash": format!("{:0>64}", format!("0{}", i + 2)),
                 }),
-                Bytes::from(format!("UPDATED BACKUP {}", i).into_bytes()),
+                Bytes::from(format!("UPDATED BACKUP {i}").into_bytes()),
                 None,
             )
             .await;
@@ -342,7 +342,7 @@ async fn test_concurrent_sync_backup_prevention() {
                     if error_code == "conflicting_lock" {
                         conflict_count.fetch_add(1, Ordering::SeqCst);
                     } else {
-                        panic!("Unexpected conflict error code: {}", error_code);
+                        panic!("Unexpected conflict error code: {error_code}");
                     }
                 }
                 status => {
@@ -547,6 +547,9 @@ async fn test_sync_backup_with_large_file() {
 /// max length, and an esoteric error gets returned to the user.
 #[tokio::test]
 async fn test_sync_backup_with_extremely_large_file() {
+    const PREFIX: &str = "Request body of ";
+    const SUFFIX: &str = " bytes is too large.";
+
     // Create a backup with a keypair and get the sync factor secret key
     let ((_, _), response, sync_secret_key) =
         create_test_backup_with_sync_keypair(b"INITIAL BACKUP").await;
@@ -605,8 +608,6 @@ async fn test_sync_backup_with_extremely_large_file() {
     assert_eq!(error["code"], json!("content_too_large"));
 
     let message = error["message"].as_str().unwrap();
-    const PREFIX: &str = "Request body of ";
-    const SUFFIX: &str = " bytes is too large.";
     assert!(message.starts_with(PREFIX) && message.ends_with(SUFFIX));
 
     let bytes = &message[PREFIX.len()..message.len() - SUFFIX.len()];

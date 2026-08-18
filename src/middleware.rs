@@ -1,4 +1,5 @@
-use crate::types::{Environment, ErrorResponse};
+use crate::environment::Environment;
+use crate::error::ErrorResponse;
 use axum::{
     body::Body,
     http::{Request, Response},

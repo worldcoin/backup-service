@@ -1,34 +1,19 @@
 use std::sync::Arc;
 
 use crate::challenge_manager::{ChallengeContext, ChallengeManager};
+use crate::error::ErrorResponse;
 use crate::routes::keypair_challenge::mint_challenge;
-use crate::types::ErrorResponse;
 use axum::{Extension, Json};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChallengeKeypairRequest {}
-
-#[derive(Debug, JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChallengeKeypairResponse {
-    /// Base64-encoded challenge for the factor being registered.
-    challenge: String,
-    token: String,
-    /// Base64-encoded challenge to be signed by the Backup Account Key and passed to `/create`.
-    backup_account_challenge: String,
-    /// Token accompanying `backupAccountChallenge`.
-    backup_account_challenge_token: String,
-}
+use types::{CreateChallengeKeypairRequest, CreateChallengeKeypairResponse};
 
 /// Request a challenge for creating a backup with a keypair or OIDC factor.
 ///
-/// Both challenges are minted in one request so that creating a backup does not need an extra round
-/// trip to prove ownership of the backup account ID. The Backup Account challenge is minted even
-/// when the caller is registering the initial sync factor and will not use it; skipping it would
-/// mean taking a `backupAccountId` here purely as a signal, which the proof does not need.
+/// Unlike the other `.../challenge/keypair` endpoints this one does not go through the generic
+/// handler: it also mints the Backup Account challenge, so that creating a backup does not need an
+/// extra round trip to prove ownership of the `backupAccountId`. The Backup Account challenge is
+/// minted even when the caller is registering the initial sync factor and will not use it; the
+/// alternative is taking a `backupAccountId` here purely as a signal, which the proof does not
+/// need — the signature is verified against the public key that the claimed ID is.
 pub async fn handler(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(_request): Json<CreateChallengeKeypairRequest>,
