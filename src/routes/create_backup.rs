@@ -51,7 +51,7 @@ async fn verify_backup_account_proof(
         }
         _ => {
             return Err(ErrorResponse::bad_request(
-                ErrorCode::IncompleteBackupAccountProof,
+                ErrorCode::MissingBackupAccountProof,
                 "backupAccountChallengeToken and backupAccountSignature must be sent together.",
             ));
         }

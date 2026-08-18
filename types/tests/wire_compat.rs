@@ -356,7 +356,6 @@ const ERROR_CODES: &[&str] = &[
     "invalid_attestation_token_header",
     "invalid_authorization_type",
     "invalid_backup_account_id",
-    "incomplete_backup_account_proof",
     "invalid_challenge",
     "invalid_challenge_context",
     "invalid_new_factor_authorization_type",

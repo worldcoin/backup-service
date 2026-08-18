@@ -1357,9 +1357,6 @@ async fn test_create_backup_with_incomplete_backup_account_proof() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            response["error"]["code"], "incomplete_backup_account_proof",
-            "expected an incomplete proof to be rejected on its own terms"
-        );
+        assert_eq!(response["error"]["code"], "missing_backup_account_proof");
     }
 }

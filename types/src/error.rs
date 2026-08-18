@@ -134,8 +134,6 @@ pub enum ErrorCode {
     InvalidBackupAccountId,
     /// The request did not carry the signature proving ownership of the backup account ID.
     MissingBackupAccountProof,
-    /// Only one half of the backup account proof was sent; both parts are required together.
-    IncompleteBackupAccountProof,
     /// The signature is malformed.
     InvalidSignature,
     /// The signature did not verify against the challenge.

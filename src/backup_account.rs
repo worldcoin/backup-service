@@ -80,7 +80,7 @@ pub fn parse_backup_account_id(
 /// # Arguments
 /// - `backup_account_id`: the claimed backup account ID, i.e. the public key.
 /// - `signature_base64`: base64-encoded DER `secp256k1` ECDSA signature.
-/// - `message`: the payload that was signed. Must come from a serve minted challenge.
+/// - `message`: the payload that was signed. Must come from a server-minted challenge.
 ///
 /// # Errors
 /// Returns a bad request `ErrorResponse` if the ID is malformed, the signature cannot be decoded,
