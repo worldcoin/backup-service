@@ -105,14 +105,13 @@ async fn verify_backup_account_proof(
             ErrorResponse::from(err)
         })?;
 
-    let expected_context = ChallengeContext::CreateBackupAccount {
-        backup_account_id: request.backup_account_id.clone(),
-    };
-    if challenge_context != expected_context {
+    // Only the kind is checked: the signature below is verified against the public key that the
+    // claimed backupAccountId is, so it cannot authorize any other account.
+    if challenge_context != (ChallengeContext::CreateBackupAccount {}) {
         metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "invalid").increment(1);
         return Err(ErrorResponse::bad_request(
             "invalid_challenge_context",
-            "Challenge token was not created to authorize this backup_account_id.",
+            "Challenge token was not created to authorize a backup account.",
         ));
     }
 

@@ -29,17 +29,28 @@ pub async fn handler<T: DeserializeOwned + Into<ChallengeContext>>(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<T>,
 ) -> Result<Json<ChallengeKeypairResponse>, ErrorResponse> {
-    // Step 1: Create a new challenge as 32 bytes of random data
+    let (challenge, token) = mint_challenge(&challenge_manager, request.into()).await?;
+
+    Ok(Json(ChallengeKeypairResponse { challenge, token }))
+}
+
+/// Mints a keypair challenge: 32 bytes of random data, plus the JWE token that binds those bytes
+/// to `challenge_context` so the challenge cannot be answered for a different purpose.
+///
+/// Returns the base64-encoded challenge for the client to sign, and the token to send back.
+///
+/// # Errors
+/// Returns an error if the challenge token cannot be created.
+pub async fn mint_challenge(
+    challenge_manager: &ChallengeManager,
+    challenge_context: ChallengeContext,
+) -> Result<(String, String), ErrorResponse> {
     let mut challenge = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut challenge);
 
-    // Step 2: Encrypt the challenge in a JWE to verify later
     let token = challenge_manager
-        .create_challenge_token(ChallengeType::Keypair, &challenge, request.into())
+        .create_challenge_token(ChallengeType::Keypair, &challenge, challenge_context)
         .await?;
 
-    Ok(Json(ChallengeKeypairResponse {
-        challenge: STANDARD.encode(challenge),
-        token,
-    }))
+    Ok((STANDARD.encode(challenge), token))
 }

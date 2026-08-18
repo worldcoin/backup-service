@@ -128,23 +128,6 @@ where
     Ok(id)
 }
 
-/// Same as [`validate_backup_account_id`], for fields where the ID is optional.
-///
-/// # Errors
-/// Returns an error if a value is present but is not a well-formed backup account ID.
-pub fn validate_optional_backup_account_id<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Some(id) = Option::<String>::deserialize(deserializer)? else {
-        return Ok(None);
-    };
-    check_backup_account_id_format(&id).map_err(de::Error::custom)?;
-    Ok(Some(id))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,12 +270,6 @@ mod tests {
         id: String,
     }
 
-    #[derive(Deserialize)]
-    struct OptionalIdWrapper {
-        #[serde(default, deserialize_with = "validate_optional_backup_account_id")]
-        id: Option<String>,
-    }
-
     #[test]
     fn test_validate_backup_account_id_accepts_real_key() {
         let (_, backup_account_id) = generate_backup_account();
@@ -300,26 +277,5 @@ mod tests {
 
         let parsed: RequiredIdWrapper = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.id, backup_account_id);
-    }
-
-    #[test]
-    fn test_validate_optional_backup_account_id() {
-        type Wrapper = OptionalIdWrapper;
-
-        let (_, backup_account_id) = generate_backup_account();
-        let parsed: Wrapper =
-            serde_json::from_value(serde_json::json!({ "id": backup_account_id.clone() })).unwrap();
-        assert_eq!(parsed.id, Some(backup_account_id));
-
-        // Absent and null are both accepted.
-        let parsed: Wrapper = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(parsed.id, None);
-        let parsed: Wrapper = serde_json::from_value(serde_json::json!({ "id": null })).unwrap();
-        assert_eq!(parsed.id, None);
-
-        // A present but malformed ID is still rejected.
-        let result: Result<Wrapper, _> =
-            serde_json::from_value(serde_json::json!({ "id": "backup_account_GGGG" }));
-        assert!(result.is_err());
     }
 }
