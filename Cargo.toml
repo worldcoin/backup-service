@@ -21,7 +21,7 @@ strum = "0.27.2"
 strum_macros = "0.27.1"
 uuid = { version = "1.23.0", features = ["v4", "serde"] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
-k256 = { version = "0.13.4", default-features = false, features = ["ecdsa", "std"] }
+k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 
 # dev workspace dependencies
 mockito = "1.7.2"
