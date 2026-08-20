@@ -345,32 +345,14 @@ mod tests {
 
     /// The rollout flag is a real kill switch on the request path, not just on the
     /// `Environment::enforce_backup_account_proof` accessor: this drives `verify_backup_account_proof`
-    /// itself, which is what the `/create` handler calls, with `Environment::Production` under both
-    /// states of `ENFORCE_BACKUP_ACCOUNT_PROOF`.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn test_verify_backup_account_proof_allows_missing_proof_in_production_by_default() {
-        // get_kms_jwe() reloads .env.example, which would repopulate this as an explicit "false"
-        // if it were removed beforehand — that would leave the flag's internal default
-        // (env_bool(..., false)) unexercised. Remove it after, so the check below runs against a
-        // genuinely unset variable.
-        let challenge_manager = ChallengeManager::new(Duration::from_mins(1), get_kms_jwe().await);
-        std::env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
-
-        let result = verify_backup_account_proof(
-            Environment::Production,
-            &challenge_manager,
-            &request_without_proof(),
-        )
-        .await;
-
-        assert!(
-            result.unwrap().is_none(),
-            "a proof-less create must be allowed in Production while the flag is unset, or \
-             existing clients break the moment this ships"
-        );
-    }
-
+    /// itself, which is what the `/create` handler calls.
+    ///
+    /// This only covers the enforced side. The unset-by-default side is already covered,
+    /// race-free, by `environment::tests::test_enforce_backup_account_proof` — proving it here too
+    /// would mean asserting on the variable being absent, which unrelated non-serial tests
+    /// elsewhere in this binary reload from `.env.example` and could repopulate before this read
+    /// runs. Setting it to `"true"` below has no such hazard: `dotenvy` only fills in variables
+    /// that are absent, so a concurrent reload can't touch it once it's set.
     #[tokio::test]
     #[serial_test::serial]
     async fn test_verify_backup_account_proof_rejects_missing_proof_in_production_when_enforced() {
