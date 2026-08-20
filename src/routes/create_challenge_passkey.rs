@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType};
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
+use crate::routes::keypair_challenge::mint_challenge;
 use axum::{Extension, Json};
 use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse, Platform};
 use uuid::Uuid;
@@ -31,18 +32,26 @@ pub async fn handler(
     };
     let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
 
-    // Step 2: Encrypt the server-side object in a JWE
+    // Step 2: Mint the challenge tokens
     let registration_json = serde_json::to_string(&registration)?;
-    let token = challenge_manager
-        .create_challenge_token(
-            ChallengeType::Passkey,
-            registration_json.as_bytes(),
-            ChallengeContext::Create {},
-        )
-        .await?;
+    let (token, (backup_account_challenge, backup_account_challenge_token)) = tokio::try_join!(
+        async {
+            challenge_manager
+                .create_challenge_token(
+                    ChallengeType::Passkey,
+                    registration_json.as_bytes(),
+                    ChallengeContext::Create {},
+                )
+                .await
+                .map_err(ErrorResponse::from)
+        },
+        mint_challenge(&challenge_manager, ChallengeContext::CreateBackupAccount {}),
+    )?;
 
     Ok(Json(CreateChallengePasskeyResponse {
         challenge: challenge_json,
         token,
+        backup_account_challenge,
+        backup_account_challenge_token,
     }))
 }

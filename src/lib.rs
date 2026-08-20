@@ -1,5 +1,6 @@
 pub mod attestation_gateway;
 pub mod auth;
+pub mod backup_account;
 pub mod backup_metadata;
 pub mod backup_storage;
 pub mod challenge_manager;

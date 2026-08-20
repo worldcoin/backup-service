@@ -37,6 +37,20 @@ def generate_keypair() -> Tuple[ec.EllipticCurvePrivateKey, str]:
     return private_key, public_base64
 
 
+def generate_backup_account() -> Tuple[ec.EllipticCurvePrivateKey, str]:
+    """Generate the Backup Account keypair and the backup_account_id it encodes.
+
+    The backup account key is on secp256k1, not secp256r1: the service verifies both the create
+    proof and `/reset` against the compressed public key embedded in the ID.
+    """
+    private_key = ec.generate_private_key(ec.SECP256K1())
+    compressed_public_key = private_key.public_key().public_bytes(
+        encoding=Encoding.X962,
+        format=PublicFormat.CompressedPoint
+    )
+    return private_key, "backup_account_" + compressed_public_key.hex()
+
+
 def sign_challenge(private_key: ec.EllipticCurvePrivateKey, challenge_base64: str) -> str:
     """Sign a base64-encoded challenge with the private key and return the signature as base64."""
     challenge_bytes = base64.b64decode(challenge_base64)
@@ -62,19 +76,15 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
     print("Generating main EC keypair...")
     main_private_key, main_public_key = generate_keypair()
 
-    # Generate backup_account_id from the main public key (compressed SEC1 format)
-    main_public_key_obj = main_private_key.public_key()
-    compressed_public_key = main_public_key_obj.public_bytes(
-        encoding=Encoding.X962,
-        format=PublicFormat.CompressedPoint
-    )
-    backup_account_id = "backup_account_" + compressed_public_key.hex()
+    print("Generating Backup Account keypair...")
+    backup_account_private_key, backup_account_id = generate_backup_account()
     print(f"Generated backup_account_id: {backup_account_id}")
 
     print("Generating sync factor EC keypair...")
     sync_private_key, sync_public_key = generate_keypair()
 
-    # Get challenge for main keypair
+    # Get challenge for main keypair. The response also carries the Backup Account challenge,
+    # which proves ownership of the backup_account_id, so this needs no extra round trip.
     print("Requesting main challenge...")
     challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={})
     print(f"Challenge status code: {challenge_response.status_code}")
@@ -92,7 +102,13 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
     # Sign challenge with main keypair
     main_signature = sign_challenge(main_private_key, main_challenge)
     print(f"Signed main challenge: {main_signature[:20]}...")
-    
+
+    # Prove ownership of the backup_account_id with the Backup Account Key
+    backup_account_signature = sign_challenge(
+        backup_account_private_key, challenge_data["backupAccountChallenge"]
+    )
+    print(f"Signed backup account challenge: {backup_account_signature[:20]}...")
+
     # Get challenge for sync keypair
     print("Requesting sync factor challenge...")
     sync_challenge_response = requests.post(f"{base_url}/v1/create/challenge/keypair", json={})
@@ -130,6 +146,8 @@ def create_backup(base_url: str, attestation_token: str = None) -> Tuple[Dict[st
         "initialSyncChallengeToken": sync_token,
         "manifestHash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
         "backupAccountId": backup_account_id,
+        "backupAccountChallengeToken": challenge_data["backupAccountChallengeToken"],
+        "backupAccountSignature": backup_account_signature,
     }
     
     # Create multipart form-data

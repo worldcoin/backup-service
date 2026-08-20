@@ -318,6 +318,15 @@ impl Environment {
             || env_bool("DISABLE_ATTESTATION_GATEWAY", false)
         // `DISABLE_ATTESTATION_GATEWAY` is a legacy environment variable
     }
+
+    /// **Roll-out flag**. Enforce verifying signature over the `backup_account_id` on creation.
+    #[must_use]
+    pub fn enforce_backup_account_proof(&self) -> bool {
+        match self {
+            Self::Staging | Self::Development { .. } => true,
+            Self::Production => env_bool("ENFORCE_BACKUP_ACCOUNT_PROOF", false),
+        }
+    }
 }
 
 /// Parses a boolean flag env value.
@@ -389,6 +398,28 @@ mod tests {
     fn test_env_flag_unset_returns_default() {
         assert!(env_bool("BACKUP_SERVICE_UNSET_FLAG", true));
         assert!(!env_bool("BACKUP_SERVICE_UNSET_FLAG", false));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_enforce_backup_account_proof() {
+        env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
+
+        // Staging and development enforce regardless of the flag.
+        for env in [Environment::Staging, Environment::development(None)] {
+            assert!(env.enforce_backup_account_proof());
+            env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "false");
+            assert!(env.enforce_backup_account_proof());
+            env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
+        }
+
+        // Production is observe-only until the flag is set, and the flag is the kill switch.
+        assert!(!Environment::Production.enforce_backup_account_proof());
+        env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "true");
+        assert!(Environment::Production.enforce_backup_account_proof());
+        env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "false");
+        assert!(!Environment::Production.enforce_backup_account_proof());
+        env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
     }
 
     #[test]

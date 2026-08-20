@@ -25,6 +25,7 @@ mod add_sync_factor;
 mod backup_status;
 mod challenge_contexts;
 mod create_backup;
+mod create_challenge_keypair;
 mod create_challenge_passkey;
 mod delete_backup;
 mod delete_factor;
@@ -55,7 +56,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(
             CreateChallengeKeypairRequest::PATH,
-            post(keypair_challenge::handler::<CreateChallengeKeypairRequest>),
+            post(create_challenge_keypair::handler),
         )
         .api_route(
             CreateBackupRequest::PATH,

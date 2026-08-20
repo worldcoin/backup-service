@@ -11,7 +11,7 @@ on S3. The service also uses DynamoDB for mapping between factors and backups, a
 
 A typical backup lifecycle:
 
-1. **Creation** (`/create`): Client creates a backup with an authentication factor (passkey, OIDC, or keypair) and a sync factor (EC keypair)
+1. **Creation** (`/create`): Client creates a backup with an authentication factor (passkey, OIDC, or keypair) and a sync factor (EC keypair). The client also signs a challenge with its break-glass key to prove it owns the `backup_account_id` it is claiming.
 2. **Retrieval** (`/retrieve/from-challenge`): Client retrieves backup using an authentication factor
 3. **Add sync factor** (`/add-sync-factor`): Client adds new sync factor after performing recovery.
 4. **Sync** (`/sync`): Client updates backup content using a sync factor

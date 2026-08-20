@@ -245,6 +245,11 @@ pub struct CreateChallengePasskeyResponse {
     pub challenge: serde_json::Value,
     /// Opaque token echoed back on the follow-up request. Single use.
     pub token: String,
+    /// Base64-encoded 32 random bytes to sign with the Backup Account Key, proving ownership of
+    /// the `backup_account_id` claimed on `POST /v1/create`.
+    pub backup_account_challenge: String,
+    /// Opaque token accompanying `backup_account_challenge`. Single use.
+    pub backup_account_challenge_token: String,
 }
 
 /// Request body of `POST /v1/create/challenge/keypair`.
@@ -257,8 +262,28 @@ pub struct CreateChallengePasskeyResponse {
 pub struct CreateChallengeKeypairRequest {}
 
 impl Endpoint for CreateChallengeKeypairRequest {
-    type Response = ChallengeKeypairResponse;
+    type Response = CreateChallengeKeypairResponse;
     const PATH: &'static str = "/v1/create/challenge/keypair";
+}
+
+/// Response body of `POST /v1/create/challenge/keypair`.
+///
+/// Unlike the other `.../challenge/keypair` endpoints, this one also mints the Backup Account
+/// challenge, so that creating a backup does not need an extra round trip to prove ownership of
+/// the `backup_account_id`. Callers fetching a challenge for the initial sync factor ignore it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChallengeKeypairResponse {
+    /// Base64-encoded 32 random bytes to sign with the keypair.
+    pub challenge: String,
+    /// Opaque token echoed back on the follow-up request. Single use.
+    pub token: String,
+    /// Base64-encoded 32 random bytes to sign with the Backup Account Key, proving ownership of
+    /// the `backup_account_id` claimed on `POST /v1/create`.
+    pub backup_account_challenge: String,
+    /// Opaque token accompanying `backup_account_challenge`. Single use.
+    pub backup_account_challenge_token: String,
 }
 
 /// The JSON payload of `POST /v1/create`, sent in the multipart `payload` field.
@@ -286,8 +311,16 @@ pub struct CreateBackupRequest {
     #[serde(deserialize_with = "crate::normalize_hex_32")]
     pub manifest_hash: String,
     /// The unique identifier for the backup account, derived deterministically by the client.
+    ///
+    /// This is the Backup Account public key. Ownership is proven with
+    /// `backup_account_challenge_token` and `backup_account_signature`.
     #[serde(deserialize_with = "crate::validate_backup_account_id")]
     pub backup_account_id: String,
+    /// Token from the Backup Account challenge issued alongside the factor challenge.
+    pub backup_account_challenge_token: Option<String>,
+    /// Base64-encoded DER `secp256k1` signature over the Backup Account challenge, made with the
+    /// secret key of `backup_account_id`.
+    pub backup_account_signature: Option<String>,
 }
 
 impl Endpoint for CreateBackupRequest {

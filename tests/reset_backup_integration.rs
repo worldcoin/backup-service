@@ -1,8 +1,9 @@
 mod common;
 
 use crate::common::{
-    generate_keypair, get_test_s3_client, send_post_request, send_post_request_with_multipart,
-    sign_keypair_challenge, verify_s3_metadata_exists,
+    generate_keypair, get_keypair_challenge, get_test_s3_client, send_post_request,
+    send_post_request_with_multipart, sign_keypair_challenge, verify_s3_metadata_exists,
+    BackupAccount,
 };
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
@@ -22,22 +23,13 @@ use types::FactorScope;
 
 /// Helper function to derive `backup_account_id` from a secret key
 fn derive_backup_account_id_from_keypair(secret_key: &k256::SecretKey) -> String {
-    let signing_key = k256::ecdsa::SigningKey::from(secret_key);
-    let verifying_key = k256::ecdsa::VerifyingKey::from(&signing_key);
-    let compressed_point = verifying_key.to_encoded_point(true);
-    let compressed_bytes = compressed_point.as_bytes();
-    format!("backup_account_{}", hex::encode(compressed_bytes))
+    BackupAccount::from_secret_key(secret_key.clone()).id
 }
 
 /// Signs a challenge using a backup key keypair. This differs from sync factors as it uses
 /// the `secp256k1` curve.
 fn sign_challenge_with_backup_key(secret_key: &k256::SecretKey, challenge: &str) -> String {
-    use k256::ecdsa::signature::Signer;
-    let signing_key = k256::ecdsa::SigningKey::from(secret_key.clone());
-    let challenge = STANDARD.decode(challenge).unwrap();
-    let signature: k256::ecdsa::Signature = signing_key.sign(&challenge);
-    let signature_der = signature.to_der();
-    STANDARD.encode(signature_der)
+    BackupAccount::from_secret_key(secret_key.clone()).sign(challenge)
 }
 
 /// Helper function to get a reset challenge
@@ -103,18 +95,12 @@ async fn create_test_backup_with_backup_account_id(
     backup_data: &[u8],
 ) -> (String, SecretKey, SecretKey) {
     // Derive backup_account_id from the provided secret key
-    let backup_account_id = derive_backup_account_id_from_keypair(backup_account_secret_key);
+    let backup_account = BackupAccount::from_secret_key(backup_account_secret_key.clone());
+    let backup_account_id = backup_account.id.clone();
 
-    // Get a challenge for creating the backup
-    let challenge_response = send_post_request("/v1/create/challenge/keypair", json!({})).await;
-    assert_eq!(challenge_response.status(), StatusCode::OK);
-    let challenge_body = challenge_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let challenge_response: serde_json::Value = serde_json::from_slice(&challenge_body).unwrap();
+    // Get a challenge for creating the backup, which also carries the Backup Account challenge
+    let challenge_response = get_keypair_challenge().await;
+    let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Generate a main factor keypair for the backup
     let main_factor_keypair = generate_keypair();
@@ -130,16 +116,7 @@ async fn create_test_backup_with_backup_account_id(
         STANDARD.encode(sync_factor_signing_key.verifying_key().to_sec1_bytes());
 
     // Get another create challenge for the sync factor
-    let sync_challenge_response =
-        send_post_request("/v1/create/challenge/keypair", json!({})).await;
-    assert_eq!(sync_challenge_response.status(), StatusCode::OK);
-    let sync_challenge_body = sync_challenge_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let sync_challenge: serde_json::Value = serde_json::from_slice(&sync_challenge_body).unwrap();
+    let sync_challenge = get_keypair_challenge().await;
 
     let sync_signature = sign_keypair_challenge(
         &sync_factor_secret_key,
@@ -169,6 +146,8 @@ async fn create_test_backup_with_backup_account_id(
             "initialSyncChallengeToken": sync_challenge["token"],
             "manifestHash": hex::encode([1u8; 32]),
             "backupAccountId": backup_account_id,
+            "backupAccountChallengeToken": proof_token,
+            "backupAccountSignature": proof_signature,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
