@@ -49,14 +49,17 @@ pub async fn handler(
     let (new_factor_type, new_factor_challenge_value, new_factor_token) = match &request.new_factor
     {
         NewFactor::PasskeyRegistration { platform } => {
+            // `start_passkey_registration` sets `residentKey: discouraged` with no
+            // authenticator-attachment constraint, so registration can succeed on a
+            // non-discoverable credential (e.g. a security key). Recovery only ever runs a
+            // discoverable-only authentication ceremony (no `allowCredentials`), which would
+            // leave such a factor impossible to select. webauthn-rs 0.5.2's only non-attested
+            // helper that requires a resident/discoverable credential is this Android-named
+            // one; the WebAuthn options it produces (platform attachment + resident key
+            // required + user verification required) are exactly what we need on iOS too, and
+            // Apple platforms honor them the same way — it's just not named for that.
             let (challenge, registration) = match platform {
-                Platform::Ios => environment.webauthn_config().start_passkey_registration(
-                    Uuid::new_v4(),
-                    "World App",
-                    "World App",
-                    None,
-                )?,
-                Platform::Android => environment
+                Platform::Ios | Platform::Android => environment
                     .webauthn_config()
                     .start_google_passkey_in_google_password_manager_only_registration(
                         Uuid::new_v4(),
