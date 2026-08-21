@@ -474,8 +474,14 @@ pub async fn handler(
         };
         // Factor is in metadata — ensure lookup still maps here (a concurrent inserter may have
         // rolled back the shared row after we adopted it).
-        let ensure_result =
-            ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await;
+        let ensure_result = ensure_main_factor_lookup(
+            &backup_storage,
+            &factor_lookup,
+            &factor_to_lookup,
+            &backup_id,
+            &new_factor_kind,
+        )
+        .await;
         let _ = factor_lock.release().await;
         ensure_result?;
         return Ok(Json(AddFactorResponse {
@@ -539,7 +545,16 @@ pub async fn handler(
     // Successful writer always verifies lookup: a concurrent request that inserted the row may
     // still roll it back around our metadata commit.
     let ensure_result = if updated_metadata_result.is_ok() {
-        Some(ensure_main_factor_lookup(&factor_lookup, &factor_to_lookup, &backup_id).await)
+        Some(
+            ensure_main_factor_lookup(
+                &backup_storage,
+                &factor_lookup,
+                &factor_to_lookup,
+                &backup_id,
+                &new_factor_kind,
+            )
+            .await,
+        )
     } else {
         None
     };
@@ -560,6 +575,9 @@ pub async fn handler(
 
 /// After a lookup rollback delete (or ambiguous delete error), restore the row if metadata now
 /// contains the factor — covering concurrent successful writers and lost delete ACKs.
+///
+/// Retries a few times so a transient `DynamoDB` failure does not permanently orphan a factor that
+/// another request successfully wrote.
 async fn heal_main_factor_lookup_if_present(
     backup_storage: &BackupStorage,
     factor_lookup: &FactorLookup,
@@ -567,23 +585,95 @@ async fn heal_main_factor_lookup_if_present(
     backup_id: &str,
     new_factor_kind: &FactorKind,
 ) {
-    let needs_heal = match backup_storage.get_metadata_by_backup_id(backup_id).await {
-        Ok(Some((metadata, _))) => metadata.factors.iter().any(|f| f.kind == *new_factor_kind),
-        Ok(None) => false,
-        Err(err) => {
-            tracing::error!(
-                message = "Failed to re-read metadata after lookup rollback; cannot heal",
-                error = ?err,
-                factor_pk = factor_to_lookup.primary_key(),
-            );
-            false
-        }
-    };
+    const MAX_ATTEMPTS: u32 = 3;
+    // Once we have observed the factor in metadata, prefer Dynamo insert retries over abandoning
+    // heal when a later S3 re-read fails transiently.
+    let mut confirmed_factor_present = false;
+    // After ConditionalCheckFailed + consistent miss, retry insert without another S3 read.
+    let mut retry_insert_without_metadata = false;
 
-    if !needs_heal {
-        return;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let needs_heal = if retry_insert_without_metadata {
+            retry_insert_without_metadata = false;
+            true
+        } else {
+            match backup_storage.get_metadata_by_backup_id(backup_id).await {
+                Ok(Some((metadata, _))) => {
+                    let present = metadata.factors.iter().any(|f| f.kind == *new_factor_kind);
+                    if present {
+                        confirmed_factor_present = true;
+                    }
+                    present
+                }
+                Ok(None) => false,
+                Err(err) => {
+                    tracing::error!(
+                        message =
+                            "Failed to re-read metadata after lookup rollback; will retry heal",
+                        error = ?err,
+                        factor_pk = factor_to_lookup.primary_key(),
+                        attempt,
+                    );
+                    if confirmed_factor_present {
+                        true
+                    } else if attempt == MAX_ATTEMPTS {
+                        return;
+                    } else {
+                        continue;
+                    }
+                }
+            }
+        };
+
+        if !needs_heal {
+            return;
+        }
+
+        match attempt_heal_lookup_insert(factor_lookup, factor_to_lookup, backup_id, attempt).await
+        {
+            HealInsertOutcome::Done | HealInsertOutcome::WrongOwner => return,
+            HealInsertOutcome::RowVanished => {
+                // Retry insert without requiring another S3 metadata read (that read can fail
+                // and wrongly abandon heal).
+                confirmed_factor_present = true;
+                match attempt_heal_lookup_insert(
+                    factor_lookup,
+                    factor_to_lookup,
+                    backup_id,
+                    attempt,
+                )
+                .await
+                {
+                    HealInsertOutcome::Done | HealInsertOutcome::WrongOwner => return,
+                    HealInsertOutcome::RowVanished | HealInsertOutcome::Failed => {
+                        retry_insert_without_metadata = true;
+                    }
+                }
+            }
+            HealInsertOutcome::Failed => {}
+        }
     }
 
+    tracing::error!(
+        message = "Exhausted FactorLookup heal retries; factor may be untraceable until repaired",
+        factor_pk = factor_to_lookup.primary_key(),
+        backup_id,
+    );
+}
+
+enum HealInsertOutcome {
+    Done,
+    WrongOwner,
+    RowVanished,
+    Failed,
+}
+
+async fn attempt_heal_lookup_insert(
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+    attempt: u32,
+) -> HealInsertOutcome {
     match factor_lookup
         .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
         .await
@@ -592,7 +682,9 @@ async fn heal_main_factor_lookup_if_present(
             tracing::info!(
                 message = "Healed FactorLookup after concurrent factor write during rollback",
                 factor_pk = factor_to_lookup.primary_key(),
+                attempt,
             );
+            HealInsertOutcome::Done
         }
         Err(FactorLookupError::DynamoDbPutError(ref sdk_err))
             if matches!(
@@ -601,40 +693,36 @@ async fn heal_main_factor_lookup_if_present(
                     if inner.err().is_conditional_check_failed_exception()
             ) =>
         {
-            // Confirm the existing row maps to this backup — ConditionalCheckFailed alone can mean
-            // another backup now owns the factor identity.
             match factor_lookup
                 .lookup_consistent(FactorScope::Main, factor_to_lookup)
                 .await
             {
-                Ok(Some(existing)) if existing == backup_id => {}
+                Ok(Some(existing)) if existing == backup_id => HealInsertOutcome::Done,
                 Ok(Some(other_backup_id)) => {
                     tracing::error!(
-                        message = "Heal skipped: FactorLookup maps factor to a different backup",
+                        message = "Heal aborted: FactorLookup maps factor to a different backup",
                         factor_pk = factor_to_lookup.primary_key(),
                         expected_backup_id = backup_id,
                         actual_backup_id = other_backup_id.as_str(),
                     );
+                    HealInsertOutcome::WrongOwner
                 }
                 Ok(None) => {
-                    // Row vanished between ConditionalCheckFailed and read — retry once.
-                    if let Err(err) = factor_lookup
-                        .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
-                        .await
-                    {
-                        tracing::error!(
-                            message = "Failed to heal FactorLookup after row disappeared during reconcile",
-                            error = ?err,
-                            factor_pk = factor_to_lookup.primary_key(),
-                        );
-                    }
+                    tracing::warn!(
+                        message = "FactorLookup row missing after ConditionalCheckFailed during heal; retrying insert without metadata re-read",
+                        factor_pk = factor_to_lookup.primary_key(),
+                        attempt,
+                    );
+                    HealInsertOutcome::RowVanished
                 }
                 Err(err) => {
                     tracing::error!(
                         message = "Failed consistent FactorLookup read during heal reconcile",
                         error = ?err,
                         factor_pk = factor_to_lookup.primary_key(),
+                        attempt,
                     );
+                    HealInsertOutcome::Failed
                 }
             }
         }
@@ -643,7 +731,9 @@ async fn heal_main_factor_lookup_if_present(
                 message = "Failed to heal FactorLookup after concurrent factor write during rollback",
                 error = ?err,
                 factor_pk = factor_to_lookup.primary_key(),
+                attempt,
             );
+            HealInsertOutcome::Failed
         }
     }
 }
@@ -652,11 +742,37 @@ async fn heal_main_factor_lookup_if_present(
 ///
 /// Closes the race where another request inserted the lookup, we adopted it, wrote metadata, and
 /// that other request then deleted the row during its `NotInserted` rollback.
+///
+/// Re-reads metadata first so a concurrent `/delete-factor` (or backup delete) does not cause us to
+/// resurrect a stale lookup for a factor that is no longer present. Metadata reads are retried; if
+/// they remain unavailable we still attempt the lookup insert so a transient S3 error does not
+/// abandon repair after a successful factor write.
 async fn ensure_main_factor_lookup(
+    backup_storage: &BackupStorage,
     factor_lookup: &FactorLookup,
     factor_to_lookup: &FactorToLookup,
     backup_id: &str,
+    new_factor_kind: &FactorKind,
 ) -> Result<(), ErrorResponse> {
+    let factor_pk = factor_to_lookup.primary_key();
+    match factor_present_in_metadata_with_retry(
+        backup_storage,
+        backup_id,
+        new_factor_kind,
+        &factor_pk,
+    )
+    .await
+    {
+        FactorPresence::Absent => {
+            tracing::info!(
+                message = "Skipping FactorLookup ensure; factor or backup no longer in metadata",
+                factor_pk = factor_pk.as_str(),
+            );
+            return Ok(());
+        }
+        FactorPresence::Present | FactorPresence::Unknown => {}
+    }
+
     match factor_lookup
         .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
         .await
@@ -664,7 +780,7 @@ async fn ensure_main_factor_lookup(
         Ok(()) => {
             tracing::info!(
                 message = "Restored FactorLookup after successful factor write",
-                factor_pk = factor_to_lookup.primary_key(),
+                factor_pk = factor_pk.as_str(),
             );
             Ok(())
         }
@@ -686,6 +802,25 @@ async fn ensure_main_factor_lookup(
                 )),
                 None => {
                     // Row disappeared between ConditionalCheckFailed and read (rollback race).
+                    // Re-check metadata so we do not resurrect after a concurrent delete.
+                    match factor_present_in_metadata_with_retry(
+                        backup_storage,
+                        backup_id,
+                        new_factor_kind,
+                        &factor_pk,
+                    )
+                    .await
+                    {
+                        FactorPresence::Absent => {
+                            tracing::info!(
+                                message = "Skipping FactorLookup ensure retry; factor no longer in metadata",
+                                factor_pk = factor_pk.as_str(),
+                            );
+                            return Ok(());
+                        }
+                        FactorPresence::Present | FactorPresence::Unknown => {}
+                    }
+
                     match factor_lookup
                         .insert(FactorScope::Main, factor_to_lookup, backup_id.to_string())
                         .await
@@ -706,7 +841,7 @@ async fn ensure_main_factor_lookup(
                                 _ => {
                                     tracing::error!(
                                         message = "Failed to ensure FactorLookup after successful factor write",
-                                        factor_pk = factor_to_lookup.primary_key(),
+                                        factor_pk = factor_pk.as_str(),
                                     );
                                     Err(ErrorResponse::internal_server_error())
                                 }
@@ -719,6 +854,51 @@ async fn ensure_main_factor_lookup(
         }
         Err(err) => Err(err.into()),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactorPresence {
+    Present,
+    Absent,
+    /// Metadata could not be read after retries; prefer attempting lookup repair.
+    Unknown,
+}
+
+async fn factor_present_in_metadata_with_retry(
+    backup_storage: &BackupStorage,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+    factor_pk: &str,
+) -> FactorPresence {
+    const MAX_ATTEMPTS: u32 = 3;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match backup_storage.get_metadata_by_backup_id(backup_id).await {
+            Ok(None) => return FactorPresence::Absent,
+            Ok(Some((metadata, _))) => {
+                return if metadata.factors.iter().any(|f| f.kind == *new_factor_kind) {
+                    FactorPresence::Present
+                } else {
+                    FactorPresence::Absent
+                };
+            }
+            Err(err) => {
+                tracing::warn!(
+                    message = "Failed to re-read metadata before FactorLookup ensure; retrying",
+                    error = ?err,
+                    factor_pk,
+                    attempt,
+                );
+            }
+        }
+    }
+
+    tracing::error!(
+        message = "Exhausted metadata re-read retries before FactorLookup ensure; attempting repair anyway",
+        factor_pk,
+        backup_id,
+    );
+    FactorPresence::Unknown
 }
 
 /// Returns the stored main-factor id for `kind`, if present.
