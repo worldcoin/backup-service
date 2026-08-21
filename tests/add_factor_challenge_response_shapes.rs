@@ -1,3 +1,6 @@
+//! Response-shape checks for `/v1/add-factor/challenge` only (not the full add-factor
+//! completion flow, which lives in `add_factor_integration.rs`).
+
 mod common;
 
 use crate::common::send_post_request;
@@ -5,7 +8,7 @@ use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
-async fn test_add_factor_challenge_shapes() {
+async fn test_add_factor_challenge_response_shapes() {
     // OIDC new-factor returns string challenges
     let oidc_resp = send_post_request(
         "/v1/add-factor/challenge",
