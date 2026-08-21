@@ -4,32 +4,22 @@ use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::routes::keypair_challenge::mint_challenge;
+use crate::webauthn::start_resident_passkey_registration;
 use axum::{Extension, Json};
-use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse, Platform};
-use uuid::Uuid;
+use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse};
 
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     request: Json<CreateChallengePasskeyRequest>,
 ) -> Result<Json<CreateChallengePasskeyResponse>, ErrorResponse> {
-    // Step 1: Create a new challenge using WebAuthn implementation
-    let (challenge, registration) = match request.platform {
-        Platform::Ios => environment.webauthn_config().start_passkey_registration(
-            Uuid::new_v4(),
-            &request.name,
-            &request.display_name,
-            None,
-        )?,
-        Platform::Android => environment
-            .webauthn_config()
-            .start_google_passkey_in_google_password_manager_only_registration(
-                Uuid::new_v4(),
-                &request.name,
-                &request.display_name,
-                None,
-            )?,
-    };
+    // Step 1: Create a new challenge using WebAuthn implementation. `request.platform` no
+    // longer selects a different ceremony — see `start_resident_passkey_registration`.
+    let (challenge, registration) = start_resident_passkey_registration(
+        &environment.webauthn_config(),
+        &request.name,
+        &request.display_name,
+    )?;
     let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
 
     // Step 2: Mint the challenge tokens
