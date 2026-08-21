@@ -56,14 +56,21 @@ async fn test_create_challenge() {
         response["challenge"]["publicKey"]["timeout"].as_u64(),
         Some(300_000)
     );
+    // Requires a resident/discoverable credential (and, for this platform-attachment-tied
+    // helper, a platform authenticator) so recovery's discoverable-only ceremony can find it.
+    assert_eq!(
+        response["challenge"]["publicKey"]["authenticatorSelection"]["authenticatorAttachment"]
+            .as_str(),
+        Some("platform")
+    );
     assert_eq!(
         response["challenge"]["publicKey"]["authenticatorSelection"]["residentKey"].as_str(),
-        Some("discouraged")
+        Some("required")
     );
     assert_eq!(
         response["challenge"]["publicKey"]["authenticatorSelection"]["requireResidentKey"]
             .as_bool(),
-        Some(false)
+        Some(true)
     );
     assert_eq!(
         response["challenge"]["publicKey"]["authenticatorSelection"]["userVerification"].as_str(),
@@ -74,16 +81,11 @@ async fn test_create_challenge() {
         Some("none")
     );
     assert_eq!(
-        response["challenge"]["publicKey"]["extensions"]["credentialProtectionPolicy"].as_str(),
-        Some("userVerificationRequired")
-    );
-    assert_eq!(
-        response["challenge"]["publicKey"]["extensions"]["enforceCredentialProtectionPolicy"]
-            .as_bool(),
-        Some(false)
-    );
-    assert_eq!(
         response["challenge"]["publicKey"]["extensions"]["uvm"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        response["challenge"]["publicKey"]["extensions"]["credProps"].as_bool(),
         Some(true)
     );
 

@@ -1,16 +1,14 @@
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
+use crate::webauthn::start_resident_passkey_registration;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use types::{
-    AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor, Platform,
-};
-use uuid::Uuid;
+use types::{AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor};
 
 /// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
 /// token. Binding this into the existing-factor token (see
@@ -48,26 +46,14 @@ pub async fn handler(
     // into the existing-factor token (same security property as OIDC token binding).
     let (new_factor_type, new_factor_challenge_value, new_factor_token) = match &request.new_factor
     {
-        NewFactor::PasskeyRegistration { platform } => {
-            // `start_passkey_registration` sets `residentKey: discouraged` with no
-            // authenticator-attachment constraint, so registration can succeed on a
-            // non-discoverable credential (e.g. a security key). Recovery only ever runs a
-            // discoverable-only authentication ceremony (no `allowCredentials`), which would
-            // leave such a factor impossible to select. webauthn-rs 0.5.2's only non-attested
-            // helper that requires a resident/discoverable credential is this Android-named
-            // one; the WebAuthn options it produces (platform attachment + resident key
-            // required + user verification required) are exactly what we need on iOS too, and
-            // Apple platforms honor them the same way — it's just not named for that.
-            let (challenge, registration) = match platform {
-                Platform::Ios | Platform::Android => environment
-                    .webauthn_config()
-                    .start_google_passkey_in_google_password_manager_only_registration(
-                        Uuid::new_v4(),
-                        "World App",
-                        "World App",
-                        None,
-                    )?,
-            };
+        // `platform` no longer selects a different ceremony: both platforms need a
+        // resident/discoverable credential, see `start_resident_passkey_registration`.
+        NewFactor::PasskeyRegistration { platform: _ } => {
+            let (challenge, registration) = start_resident_passkey_registration(
+                &environment.webauthn_config(),
+                "World App",
+                "World App",
+            )?;
             let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
             let registration_json = serde_json::to_string(&registration)?;
             let registration_hash = registration_state_hash(registration_json.as_bytes());
