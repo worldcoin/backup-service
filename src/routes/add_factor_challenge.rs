@@ -82,6 +82,10 @@ pub async fn handler(
             )
         }
         NewFactor::OidcAccount { oidc_token } => {
+            // Proof of possession for an OIDC factor is done via the EC keypair bound into the
+            // OIDC token's nonce, not the token itself — there's no dedicated OIDC challenge
+            // type because verification never happens by "signing via OIDC", only by signing
+            // this raw challenge with that keypair (see `ChallengeType::from(&Authorization)`).
             let mut new_factor_challenge = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut new_factor_challenge);
             let token = challenge_manager
