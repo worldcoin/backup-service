@@ -175,6 +175,57 @@ impl FactorLookup {
         Ok(())
     }
 
+    /// Deletes the factor lookup row only if it currently maps to `backup_id`.
+    ///
+    /// Returns `Ok(true)` when a row was deleted, `Ok(false)` when the condition failed (missing
+    /// row or different owner) so callers do not remove another backup's valid mapping.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbDeleteError` - if the delete request fails for a non-condition reason.
+    pub async fn delete_if_maps_to(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+        backup_id: &str,
+    ) -> Result<bool, FactorLookupError> {
+        match self
+            .dynamodb_client
+            .delete_item()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .key(
+                DocumentAttribute::Pk.to_string(),
+                factor_primary_key(scope, factor),
+            )
+            .condition_expression("#backup_id = :backup_id")
+            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+            .expression_attribute_values(
+                ":backup_id",
+                aws_sdk_dynamodb::types::AttributeValue::S(backup_id.to_string()),
+            )
+            .send()
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    message = "Deleted factor from DynamoDB (owner-conditional)",
+                    pk = factor.primary_key(),
+                    backup_id,
+                );
+                Ok(true)
+            }
+            Err(sdk_err)
+                if matches!(
+                    &sdk_err,
+                    aws_sdk_dynamodb::error::SdkError::ServiceError(inner)
+                        if inner.err().is_conditional_check_failed_exception()
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(sdk_err) => Err(sdk_err.into()),
+        }
+    }
+
     /// Deletes all factors associated with a backup ID from the lookup table.
     ///
     /// # Errors
