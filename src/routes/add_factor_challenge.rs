@@ -12,7 +12,10 @@ use types::{
 };
 use uuid::Uuid;
 
-/// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge token.
+/// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
+/// token. Binding this into the existing-factor token (see
+/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
+/// prevents swapping a different registration ceremony after the old factor has signed.
 pub(crate) fn registration_state_hash(registration_bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(registration_bytes))
 }
