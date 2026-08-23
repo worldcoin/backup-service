@@ -18,11 +18,13 @@ use types::{
 /// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
 /// prevents swapping a different registration ceremony after the old factor has signed.
 ///
-/// KNOWN LIMITATION: this commits to the server-generated ceremony state (the challenge and
-/// policy), not to the credential ID or public key `navigator.credentials.create()` eventually
-/// returns, which is identical regardless of which authenticator completes the registration.
-/// Closing that gap needs the existing factor to sign after the new-factor registration is
-/// validated rather than before, which is a bigger, separately-scoped change. Tracked in
+/// KNOWN LIMITATION: this commits only to the server-generated ceremony state (challenge and
+/// policy). That state is identical regardless of which authenticator later completes the
+/// ceremony, so the existing-factor signature does **not** bind the credential ID or public key
+/// that `navigator.credentials.create()` returns. Closing the gap needs the existing factor to
+/// sign a digest of the completed registration response (after `create()` returns); the server
+/// can then validate the registration and that binding together in the final request — a bigger,
+/// separately-scoped change. Tracked in
 /// <https://github.com/worldcoin/backup-service/issues/253>.
 pub(crate) fn registration_state_hash(registration_bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(registration_bytes))
