@@ -295,8 +295,10 @@ pub async fn handler(
     // Step 2A.1: When the same OIDC ID token + session keypair authorize both sides (same-account
     // metadata-only upgrade), the existing-factor verify above already consumed the nonce — skip a
     // second Redis mark so registration can still verify the new-factor challenge signature.
-    // Compare raw JWT + session key, not full `OidcToken`, so Apple `aud: None` vs explicit default
-    // does not block reuse of the already-consumed nonce.
+    // Compare raw JWT + session key per-provider (not full `OidcToken`), so Apple `aud: None` vs
+    // explicit default does not block reuse of the already-consumed nonce, while still requiring
+    // both sides to be the same provider — a Google and an Apple token must never be treated as
+    // the same session merely because their opaque JWT strings happened to be equal.
     let reuse_same_oidc_session = match (
         &request.existing_factor_authorization,
         &request.new_factor_authorization,
@@ -313,13 +315,19 @@ pub async fn handler(
                 ..
             },
         ) => {
-            let existing_raw = match existing_token {
-                OidcToken::Google { token } | OidcToken::Apple { token, .. } => token.as_str(),
+            let same_raw_token = match (existing_token, new_token) {
+                (OidcToken::Google { token: existing }, OidcToken::Google { token: new }) => {
+                    existing == new
+                }
+                (
+                    OidcToken::Apple {
+                        token: existing, ..
+                    },
+                    OidcToken::Apple { token: new, .. },
+                ) => existing == new,
+                _ => false,
             };
-            let new_raw = match new_token {
-                OidcToken::Google { token } | OidcToken::Apple { token, .. } => token.as_str(),
-            };
-            existing_raw == new_raw && existing_pk == new_pk
+            same_raw_token && existing_pk == new_pk
         }
         _ => false,
     };
