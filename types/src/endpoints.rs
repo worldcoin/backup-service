@@ -547,6 +547,118 @@ impl Endpoint for AddFactorChallengeRequest {
     const PATH: &'static str = "/v1/add-factor/challenge";
 }
 
+/// Challenge to be solved by the new factor: a base64-encoded string for a keypair/OIDC factor,
+/// or `WebAuthn` registration options for a passkey factor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum NewFactorChallenge {
+    /// Base64-encoded raw challenge bytes, for a keypair/OIDC new factor.
+    Keypair(String),
+    /// `WebAuthn` registration ("create credential") options, for a passkey new factor.
+    PasskeyRegistration(Box<PasskeyCreationChallenge>),
+}
+
+/// Mirrors `webauthn-rs`'s `CreationChallengeResponse`: the value passed as the `publicKey`
+/// argument to `navigator.credentials.create()`. Defined locally because `webauthn-rs-proto`
+/// does not derive `JsonSchema`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyCreationChallenge {
+    /// The registration options.
+    pub public_key: PublicKeyCredentialCreationOptions,
+}
+
+/// The `publicKey` options object of a `WebAuthn` credential-creation request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PublicKeyCredentialCreationOptions {
+    /// The relying party.
+    pub rp: RelyingParty,
+    /// The user account being registered.
+    pub user: UserEntity,
+    /// Base64url-encoded registration challenge.
+    pub challenge: String,
+    /// Acceptable public key algorithms, in preference order.
+    pub pub_key_cred_params: Vec<PubKeyCredParam>,
+    /// How long, in milliseconds, the client should wait for the ceremony.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    /// Credentials that must not be allowed to fulfil this registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_credentials: Option<Vec<serde_json::Value>>,
+    /// Constraints on the authenticator that may fulfil this registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authenticator_selection: Option<AuthenticatorSelectionCriteria>,
+    /// UI hints for the client about the expected authenticator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<Vec<String>>,
+    /// Whether an attestation statement is requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<String>,
+    /// `WebAuthn` extension inputs. Left untyped: extensions are open-ended and vary by client.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<serde_json::Value>,
+}
+
+/// Identifies the relying party (the service) in a registration request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RelyingParty {
+    /// Human-readable relying party name.
+    pub name: String,
+    /// Relying party ID (typically the domain).
+    pub id: String,
+}
+
+/// Identifies the user account being registered.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct UserEntity {
+    /// Base64url-encoded user handle.
+    pub id: String,
+    /// Account name.
+    pub name: String,
+    /// Human-readable display name.
+    pub display_name: String,
+}
+
+/// One acceptable public key algorithm for the new credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PubKeyCredParam {
+    /// Always `"public-key"` per the `WebAuthn` spec.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// COSE algorithm identifier (e.g. -7 for ES256).
+    pub alg: i64,
+}
+
+/// Constraints on which authenticator may fulfil a registration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticatorSelectionCriteria {
+    /// Restricts to a platform or cross-platform authenticator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authenticator_attachment: Option<String>,
+    /// Whether the resulting credential must be resident/discoverable: `"required"`,
+    /// `"preferred"` or `"discouraged"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resident_key: Option<String>,
+    /// Legacy boolean form of `resident_key`, kept for older clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_resident_key: Option<bool>,
+    /// Whether user verification is required, preferred or discouraged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_verification: Option<String>,
+}
+
 /// Response body of `POST /v1/add-factor/challenge`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
@@ -556,9 +668,8 @@ pub struct AddFactorChallengeResponse {
     pub existing_factor_challenge: String,
     /// Token for the existing factor's challenge.
     pub existing_factor_token: String,
-    /// Challenge to be solved by the new factor. A base64-encoded string for a keypair/OIDC
-    /// factor, or a structured `WebAuthn` registration challenge object for a passkey factor.
-    pub new_factor_challenge: serde_json::Value,
+    /// Challenge to be solved by the new factor.
+    pub new_factor_challenge: NewFactorChallenge,
     /// Token for the new factor's challenge.
     pub new_factor_token: String,
 }

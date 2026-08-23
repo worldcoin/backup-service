@@ -8,7 +8,10 @@ use base64::Engine;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use types::{AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor};
+use types::{
+    AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor,
+    NewFactorChallenge,
+};
 
 /// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
 /// token. Binding this into the existing-factor token (see
@@ -54,7 +57,9 @@ pub async fn handler(
                 "World App",
                 "World App",
             )?;
-            let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
+            let challenge_json: NewFactorChallenge = NewFactorChallenge::PasskeyRegistration(
+                Box::new(serde_json::from_value(serde_json::to_value(&challenge)?)?),
+            );
             let registration_json = serde_json::to_string(&registration)?;
             let registration_hash = registration_state_hash(registration_json.as_bytes());
             let token = challenge_manager
@@ -88,7 +93,7 @@ pub async fn handler(
                 NewFactorType::OidcAccount {
                     oidc_token: oidc_token.clone(),
                 },
-                serde_json::Value::String(STANDARD.encode(new_factor_challenge)),
+                NewFactorChallenge::Keypair(STANDARD.encode(new_factor_challenge)),
                 token,
             )
         }
