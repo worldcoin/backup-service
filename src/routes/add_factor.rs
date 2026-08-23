@@ -18,6 +18,7 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Duration;
+use rand::Rng;
 use types::{
     AddFactorRequest, AddFactorResponse, Authorization, BackupEncryptionKey, ErrorCode,
     FactorScope, OidcToken,
@@ -573,6 +574,15 @@ pub async fn handler(
     }))
 }
 
+/// Exponential backoff with jitter between the bounded metadata-read retries below, so a batch
+/// of concurrent requests hitting a transient S3 blip don't all retry in lockstep. `attempt` is
+/// the 1-based attempt number that just failed.
+async fn retry_backoff(attempt: u32) {
+    let base_ms = 25u64 << attempt.min(4);
+    let jitter_ms = rand::thread_rng().gen_range(0..base_ms);
+    tokio::time::sleep(std::time::Duration::from_millis(base_ms + jitter_ms)).await;
+}
+
 /// After a lookup rollback delete (or ambiguous delete error), restore the row if metadata now
 /// contains the factor — covering concurrent successful writers and lost delete ACKs.
 ///
@@ -619,6 +629,7 @@ async fn heal_main_factor_lookup_if_present(
                     } else if attempt == MAX_ATTEMPTS {
                         return;
                     } else {
+                        retry_backoff(attempt).await;
                         continue;
                     }
                 }
@@ -889,6 +900,9 @@ async fn factor_present_in_metadata_with_retry(
                     factor_pk,
                     attempt,
                 );
+                if attempt < MAX_ATTEMPTS {
+                    retry_backoff(attempt).await;
+                }
             }
         }
     }
