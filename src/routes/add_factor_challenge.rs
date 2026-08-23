@@ -20,7 +20,7 @@ use types::{
 ///
 /// KNOWN LIMITATION: this commits only to the server-generated ceremony state (challenge and
 /// policy). That state is identical regardless of which authenticator later completes the
-/// ceremony, so the existing-factor signature does **not** bind the credential ID or public key
+/// ceremony, so the existing-factor signature does not bind the credential ID or public key
 /// that `navigator.credentials.create()` returns. Closing the gap needs the existing factor to
 /// sign a digest of the completed registration response (after `create()` returns); the server
 /// can then validate the registration and that binding together in the final request — a bigger,
