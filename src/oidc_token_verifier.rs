@@ -155,18 +155,24 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Step 6: Track the nonce to prevent replays (unless already consumed in this request).
-        if consume_nonce {
-            let nonce = claims
-                .nonce()
-                .ok_or(OidcTokenVerifierError::MissingNonce)?
-                .secret();
-
-            self.redis_cache_manager
-                .use_oidc_nonce(nonce, &token.into())
-                .await?;
-        } else if claims.nonce().is_none() {
-            return Err(OidcTokenVerifierError::MissingNonce);
+        // Step 6: Track the nonce to prevent replays. When the caller already consumed it
+        // earlier in this same request (`consume_nonce=false`), don't just trust that
+        // assumption — attempt the same NX-guarded mark and require it to report the nonce as
+        // already used, so a bug in the caller's reuse heuristic can't leave a nonce unconsumed
+        // and replayable.
+        let nonce = claims
+            .nonce()
+            .ok_or(OidcTokenVerifierError::MissingNonce)?
+            .secret();
+        match self
+            .redis_cache_manager
+            .use_oidc_nonce(nonce, &token.into())
+            .await
+        {
+            Ok(()) if consume_nonce => {}
+            Ok(()) => return Err(OidcTokenVerifierError::NonceReuseAssumptionViolated),
+            Err(RedisCacheError::AlreadyUsed) if !consume_nonce => {}
+            Err(err) => return Err(err.into()),
         }
 
         Ok(claims.clone())
@@ -215,6 +221,10 @@ pub enum OidcTokenVerifierError {
     RedisCacheError(#[from] RedisCacheError),
     #[error("The aud provided is not valid")]
     InvalidAud,
+    /// `verify_token` was called with `consume_nonce=false` (the caller believes this nonce was
+    /// already marked used earlier in the same request) but it was not actually marked used.
+    #[error("Nonce was not already consumed as the caller's reuse assumption expected")]
+    NonceReuseAssumptionViolated,
 }
 
 /// If issued at is in the future or too far in the past, the token is invalid
