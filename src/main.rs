@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     // Before any awaited startup work: as PID 1 an unhandled SIGTERM is discarded, so a pod
     // deleted mid-startup would otherwise live on until it is SIGKILLed.
     backup_service::shutdown::install_signal_handlers()?;
+    backup_service::shutdown::arm_watchdog();
 
     tracing::info!("...Starting backup service");
 

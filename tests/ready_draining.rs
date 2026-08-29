@@ -10,11 +10,8 @@ use crate::common::get_test_router;
 
 mod common;
 
-async fn get_ready(app: axum::Router) -> StatusCode {
-    let request = Request::builder()
-        .uri("/ready")
-        .body(String::new())
-        .unwrap();
+async fn get(app: axum::Router, path: &str) -> StatusCode {
+    let request = Request::builder().uri(path).body(String::new()).unwrap();
     app.oneshot(request).await.unwrap().status()
 }
 
@@ -26,10 +23,11 @@ async fn ready_reports_service_unavailable_once_draining() {
     shutdown::install_signal_handlers().unwrap();
     let app = get_test_router(None, None).await;
 
-    assert_eq!(get_ready(app.clone()).await, StatusCode::OK);
+    assert_eq!(get(app.clone(), "/ready").await, StatusCode::OK);
 
     let pid = std::process::id().to_string();
-    Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    let killed = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    assert!(killed.success(), "could not signal the test process");
     tokio::time::timeout(Duration::from_secs(5), async {
         while !shutdown::is_draining() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -39,8 +37,13 @@ async fn ready_reports_service_unavailable_once_draining() {
     .expect("the signal handler must start the drain");
 
     assert_eq!(
-        get_ready(app).await,
+        get(app.clone(), "/ready").await,
         StatusCode::SERVICE_UNAVAILABLE,
         "a draining instance must be taken out of the load balancer's rotation"
+    );
+    assert_eq!(
+        get(app, "/health").await,
+        StatusCode::OK,
+        "liveness must not restart a pod that is already draining"
     );
 }

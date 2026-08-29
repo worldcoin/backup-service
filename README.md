@@ -35,8 +35,7 @@ pod that is already leaving. Both deadlines run from the signal, and the process
 second one passes however far startup or a request got. Two deployment settings match those
 numbers:
 
-- `terminationGracePeriodSeconds` must be at least 45, or the process is `SIGKILL`ed mid-request.
-  The container runs the binary as PID 1, which discards `SIGTERM` unless a handler is installed.
+- `terminationGracePeriodSeconds` must be at least 45, or the pod is `SIGKILL`ed mid-request.
 - Whatever removes the instance from rotation must act within the 10 second drain. Deleting the
   pod from its `Service` endpoints does; a balancer that health-checks `/ready` itself only does
   if `periodSeconds` times `failureThreshold` is under 10 seconds, which the Kubernetes defaults

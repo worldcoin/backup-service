@@ -13,9 +13,8 @@ use tokio::time::Instant;
 /// removes the instance from rotation; see the shutdown section of the README.
 const DRAIN_DELAY: Duration = Duration::from_secs(10);
 
-/// Budget for in-flight requests once the listeners have closed. It matches the request timeout in
-/// [`crate::server`], so shutdown never cuts off a request the server itself still considers valid.
-const IN_FLIGHT_GRACE: Duration = Duration::from_secs(30);
+/// Budget for in-flight requests once the listeners have closed.
+const IN_FLIGHT_GRACE: Duration = crate::server::REQUEST_TIMEOUT;
 
 /// Set together: the flag wakes the waiters, the instant anchors every deadline to the signal.
 static DRAIN: OnceLock<watch::Sender<bool>> = OnceLock::new();
@@ -26,7 +25,6 @@ fn drain() -> &'static watch::Sender<bool> {
 }
 
 /// Whether shutdown has started, in which case readiness must report failure.
-#[must_use]
 pub fn is_draining() -> bool {
     *drain().borrow()
 }
@@ -39,8 +37,7 @@ fn begin() {
     }
 }
 
-/// Installs the `SIGTERM`/`SIGINT` handlers that start draining, and the watchdog that bounds the
-/// whole shutdown. The watchdog covers startup too, which the server's own drain cannot reach.
+/// Installs the `SIGTERM`/`SIGINT` handlers that start draining.
 ///
 /// # Errors
 /// Fails if the signal handlers cannot be registered.
@@ -54,12 +51,19 @@ pub fn install_signal_handlers() -> std::io::Result<()> {
             _ = interrupt.recv() => {}
         }
         begin();
-        deadline().await;
-        tracing::error!(message = "shutdown deadline hit, exiting with work still in flight");
-        std::process::exit(0);
     });
 
     Ok(())
+}
+
+/// Exits once the shutdown budget is spent, wherever it was spent: startup, serving, or a request
+/// that outlived its timeout. Inert until a signal arrives; only the binary should arm it.
+pub fn arm_watchdog() {
+    tokio::spawn(async {
+        deadline().await;
+        tracing::error!(message = "shutdown deadline hit, exiting with work still in flight");
+        std::process::exit(1);
+    });
 }
 
 async fn began_at() -> Instant {
