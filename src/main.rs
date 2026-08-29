@@ -32,6 +32,10 @@ async fn main() -> anyhow::Result<()> {
         builder.init();
     }
 
+    // Before any awaited startup work: as PID 1 an unhandled SIGTERM is discarded, so a pod
+    // deleted mid-startup would otherwise live on until it is SIGKILLed.
+    backup_service::shutdown::install_signal_handlers()?;
+
     tracing::info!("...Starting backup service");
 
     let environment = Environment::from_env();

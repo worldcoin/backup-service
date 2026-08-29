@@ -11,12 +11,13 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
 /// How long `/ready` reports failure before the listeners stop accepting, so the load balancer
-/// takes this instance out of rotation before its socket closes.
-const DRAIN_DELAY: Duration = Duration::from_secs(5);
+/// takes this instance out of rotation before its socket closes. It must outlast the deployment's
+/// readiness probe period times its unhealthy threshold; see the shutdown section of the README.
+const DRAIN_DELAY: Duration = Duration::from_secs(10);
 
 /// Budget for in-flight requests once the listeners have closed. Together with [`DRAIN_DELAY`] it
 /// must stay under the orchestrator's termination grace period (30s by default on Kubernetes).
-const IN_FLIGHT_GRACE: Duration = Duration::from_secs(20);
+const IN_FLIGHT_GRACE: Duration = Duration::from_secs(15);
 
 static DRAIN: OnceLock<watch::Sender<bool>> = OnceLock::new();
 

@@ -36,8 +36,8 @@ pub async fn handler(
         backup_storage.is_ready()
     );
 
-    // Check if any of the services are not ready
-    if !redis_ready || !factor_lookup_ready || !backup_storage_ready {
+    // Check draining again: shutdown may have started while the checks above were in flight.
+    if shutdown::is_draining() || !redis_ready || !factor_lookup_ready || !backup_storage_ready {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 

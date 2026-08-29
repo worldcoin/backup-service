@@ -172,8 +172,6 @@ pub async fn start(
     tracing::info!("✅ Backup service started on http://{addr}");
     tracing::info!("📊 Metrics available on http://{metrics_addr}/metrics");
 
-    shutdown::install_signal_handlers()?;
-
     let servers = async {
         tokio::join!(
             axum::serve(listener, router.into_make_service())
