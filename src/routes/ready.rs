@@ -24,7 +24,6 @@ pub async fn handler(
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
 ) -> Result<Json<ReadyResponse>, StatusCode> {
-    // Fail readiness before touching dependencies so the load balancer drains this instance.
     if shutdown::is_draining() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
