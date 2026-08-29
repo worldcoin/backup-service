@@ -5,6 +5,7 @@ use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::redis_cache::RedisCacheManager;
 use crate::routes;
+use crate::shutdown;
 use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
@@ -171,11 +172,27 @@ pub async fn start(
     tracing::info!("✅ Backup service started on http://{addr}");
     tracing::info!("📊 Metrics available on http://{metrics_addr}/metrics");
 
-    let (api_result, metrics_result) = tokio::join!(
-        axum::serve(listener, router.into_make_service()),
-        axum::serve(metrics_listener, metrics_router.into_make_service()),
-    );
-    api_result.map_err(anyhow::Error::from)?;
-    metrics_result.map_err(anyhow::Error::from)?;
+    shutdown::install_signal_handlers()?;
+
+    let servers = async {
+        tokio::join!(
+            axum::serve(listener, router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+            axum::serve(metrics_listener, metrics_router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+        )
+    };
+
+    tokio::select! {
+        (api_result, metrics_result) = servers => {
+            api_result.map_err(anyhow::Error::from)?;
+            metrics_result.map_err(anyhow::Error::from)?;
+            tracing::info!(message = "graceful shutdown complete");
+        }
+        () = shutdown::deadline() => {
+            tracing::error!(message = "shutdown deadline exceeded, exiting with requests in flight");
+        }
+    }
+
     Ok(())
 }
