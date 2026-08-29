@@ -39,7 +39,8 @@ fn begin() {
     }
 }
 
-/// Installs the `SIGTERM`/`SIGINT` handlers that start draining.
+/// Installs the `SIGTERM`/`SIGINT` handlers that start draining, and the watchdog that bounds the
+/// whole shutdown. The watchdog covers startup too, which the server's own drain cannot reach.
 ///
 /// # Errors
 /// Fails if the signal handlers cannot be registered.
@@ -53,6 +54,9 @@ pub fn install_signal_handlers() -> std::io::Result<()> {
             _ = interrupt.recv() => {}
         }
         begin();
+        deadline().await;
+        tracing::error!(message = "shutdown deadline hit, exiting with work still in flight");
+        std::process::exit(0);
     });
 
     Ok(())
@@ -72,7 +76,7 @@ pub async fn drained() {
 }
 
 /// Resolves once in-flight requests have used up [`IN_FLIGHT_GRACE`] after the listeners closed.
-pub async fn deadline() {
+async fn deadline() {
     tokio::time::sleep_until(began_at().await + DRAIN_DELAY + IN_FLIGHT_GRACE).await;
 }
 

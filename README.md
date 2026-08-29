@@ -31,8 +31,9 @@ A typical backup lifecycle:
 On `SIGTERM` or `SIGINT` the service drains: `/ready` answers `503` for 10 seconds so the instance
 leaves the load balancer's rotation, then the listeners close and in-flight requests get a further
 30 seconds — the request timeout — to finish. `/health` stays `200` so liveness does not restart a
-pod that is already leaving. Both deadlines run from the signal, so a slow startup cannot extend
-them. Two deployment settings have to match those numbers:
+pod that is already leaving. Both deadlines run from the signal, and the process exits once the
+second one passes however far startup or a request got. Two deployment settings match those
+numbers:
 
 - `terminationGracePeriodSeconds` must be at least 45, or the process is `SIGKILL`ed mid-request.
   The container runs the binary as PID 1, which discards `SIGTERM` unless a handler is installed.
