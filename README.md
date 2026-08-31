@@ -29,13 +29,13 @@ A typical backup lifecycle:
 ### Shutdown
 
 On `SIGTERM` or `SIGINT` the service drains: `/ready` answers `503` for 10 seconds so the instance
-leaves the load balancer's rotation, then the listeners close and in-flight requests get a further
-30 seconds — the request timeout — to finish. `/health` stays `200` so liveness does not restart a
-pod that is already leaving. Both deadlines run from the signal, and the process exits once the
-second one passes however far startup or a request got. Two deployment settings match those
-numbers:
+leaves the load balancer's rotation, then the listeners close and in-flight requests run to
+completion. `/health` stays `200` so liveness does not restart a pod that is already leaving. The
+delay runs from the signal, so a slow startup does not extend it. Two deployment settings match
+those numbers:
 
-- `terminationGracePeriodSeconds` must be at least 45, or the pod is `SIGKILL`ed mid-request.
+- `terminationGracePeriodSeconds` must be at least 45 — the 10 second drain plus the 30 second
+  request timeout — or the pod is `SIGKILL`ed mid-request.
 - Whatever removes the instance from rotation must act within the 10 second drain. Deleting the
   pod from its `Service` endpoints does; a balancer that health-checks `/ready` itself only does
   if `periodSeconds` times `failureThreshold` is under 10 seconds, which the Kubernetes defaults

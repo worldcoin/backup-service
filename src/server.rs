@@ -18,10 +18,7 @@ use tower_http::trace::{MakeSpan, OnResponse};
 use tracing::Span;
 use types::endpoints::{HEALTH_PATH, READY_PATH};
 
-/// How long any single request may run. A drain gives in-flight requests the same budget.
-pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Custom span maker that excludes /health endpoint from logs
+/// Custom span maker that excludes the probe endpoints from logs
 #[derive(Clone)]
 struct ConditionalMakeSpan {}
 
@@ -147,7 +144,7 @@ pub async fn start(
         )
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(30),
         ))
         .layer(prometheus_layer);
 
