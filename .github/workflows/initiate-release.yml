@@ -29,6 +29,8 @@ jobs:
       new_version: ${{ steps.version.outputs.new_version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 https://github.com/actions/checkout/releases/tag/v7.0.0
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
         with:
@@ -81,7 +83,7 @@ jobs:
         run: |
             # Get the latest release tag
             LATEST_TAG=$(gh release list -L 1 | cut -f 3)
-  
+
             # Generate release notes between latest tag and current branch
             NOTES=$(gh api \
               --method POST \
@@ -96,7 +98,7 @@ jobs:
               echo "NOTES value: '$NOTES'"
               exit 1
             fi
-  
+
             echo "release_notes<<DELIM" >> "$GITHUB_OUTPUT"
             echo "$NOTES" >> "$GITHUB_OUTPUT"
             echo "DELIM" >> "$GITHUB_OUTPUT"
@@ -105,7 +107,7 @@ jobs:
         env:
           NEW_VERSION: ${{ steps.version.outputs.new_version }}
           RELEASE_NOTES: ${{ steps.release_notes.outputs.release_notes }}
-        run: |        
+        run: |
             # Check if version already exists in changelog
             if grep -q "## \[$NEW_VERSION\]" CHANGELOG.md; then
                 echo "Version $NEW_VERSION already exists in CHANGELOG.md, skipping update"
@@ -117,10 +119,10 @@ jobs:
             echo "" >> temp_changelog.md
             echo "$RELEASE_NOTES" >> temp_changelog.md
             echo "" >> temp_changelog.md
-            
+
             # Insert the new changelog entry after the header
             awk 'NR==1{print; system("cat temp_changelog.md"); next} 1' CHANGELOG.md > new_changelog.md
-            
+
             mv new_changelog.md CHANGELOG.md
             rm temp_changelog.md
       - name: Get branch name
