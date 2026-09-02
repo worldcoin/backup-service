@@ -10,6 +10,7 @@ permissions:
 jobs:
   release-docker:
     name: Release Docker
+    if: ${{ !github.event.release.prerelease }}
     runs-on:
       group: arc-public-large-amd64-runner
     permissions:
@@ -23,13 +24,8 @@ jobs:
       - name: Checkout released commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 https://github.com/actions/checkout/releases/tag/v7.0.0
         with:
+          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
-
-      - name: Get new version
-        id: version
-        run: |
-          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.workspace_members[0]' | cut -d '#' -f2)
-          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
         id: meta
@@ -38,7 +34,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.new_version }}
+            type=raw,value=${{ github.event.release.tag_name }}
             type=sha
 
       - name: Set up Docker Buildx
