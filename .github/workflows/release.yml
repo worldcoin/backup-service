@@ -6,7 +6,6 @@ on:
       - main
   workflow_dispatch:
 
-# Releases must not overlap: concurrent runs would race on tag creation and on the release PR.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -17,6 +16,7 @@ permissions:
 jobs:
   release:
     name: Create Release
+    if: github.ref == 'refs/heads/main'
     runs-on:
       group: arc-public-large-amd64-runner
     permissions:
@@ -24,6 +24,8 @@ jobs:
     outputs:
       releases_created: ${{ steps.release-plz.outputs.releases_created }}
       version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
 
     steps:
       - name: Checkout code
@@ -44,28 +46,56 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.DEPLOY_BOT_TOKEN }}
 
-      - name: Resolve version to publish
+      - name: Resolve image version and source commit
         id: version
         env:
           RELEASES: ${{ steps.release-plz.outputs.releases }}
+          RELEASES_CREATED: ${{ steps.release-plz.outputs.releases_created }}
         run: |
           set -euo pipefail
-          VERSION=$(jq -r 'first(.[].version) // ""' <<<"${RELEASES:-[]}")
-          if [[ -z "$VERSION" ]]; then
-            # Nothing released this run (e.g. a manual re-run to republish the image).
+
+          if [[ "$RELEASES_CREATED" == "true" ]]; then
+            # release-plz tagged this commit, so build exactly what it released.
+            VERSION=$(jq -er 'first(.[].version)' <<<"$RELEASES")
+            SOURCE_SHA="$GITHUB_SHA"
+          else
+            # Re-run to republish the image for the current release. Build the commit the release tag
+            # points at, never the dispatch SHA: main may have moved on since the release, and
+            # building it would replace a published artifact with different source.
             VERSION=$(cargo metadata --no-deps --format-version 1 \
               | jq -er '.packages[] | select(.name == "backup-service") | .version')
+            if ! SOURCE_SHA=$(git rev-list -n 1 "refs/tags/$VERSION" 2>/dev/null); then
+              echo "::error::No release tag '$VERSION' exists, so there is no published image to rebuild."
+              exit 1
+            fi
           fi
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Resolved version '$VERSION' is not semver; refusing to tag an image with it."
+
+          # Accept the full SemVer grammar, including prereleases, so that `git_release_type = "auto"`
+          # can classify a release-plz prerelease without the image build being rejected here.
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if [[ ! "$VERSION" =~ $SEMVER ]]; then
+            echo "::error::Resolved version '$VERSION' is not valid SemVer."
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # A Docker tag cannot contain '+', so SemVer build metadata has no representable tag.
+          if [[ ! "$VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::Version '$VERSION' is valid SemVer but not a valid Docker tag."
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *-* ]]; then IS_PRERELEASE=true; else IS_PRERELEASE=false; fi
+
+          echo "Building $VERSION from $SOURCE_SHA (prerelease: $IS_PRERELEASE)"
+          {
+            echo "version=$VERSION"
+            echo "source_sha=$SOURCE_SHA"
+            echo "is_prerelease=$IS_PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
 
   docker-build:
     name: Docker Build
     needs: [release]
-    if: needs.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.release.outputs.releases_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on:
       group: arc-public-large-amd64-runner
     permissions:
@@ -76,9 +106,10 @@ jobs:
       artifact-metadata: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout released commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 https://github.com/actions/checkout/releases/tag/v7.0.0
         with:
+          ref: ${{ needs.release.outputs.source_sha }}
           persist-credentials: false
 
       - name: Docker meta
@@ -87,7 +118,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.release.outputs.is_prerelease != 'true' }}
             type=raw,value=${{ needs.release.outputs.version }}
             type=sha
 
@@ -108,7 +139,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: GIT_REV=${{ github.sha }}
+          build-args: GIT_REV=${{ needs.release.outputs.source_sha }}
           cache-from: type=gha
           cache-to: "type=gha,mode=max,ignore-error=true"
           platforms: linux/amd64
