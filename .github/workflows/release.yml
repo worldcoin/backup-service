@@ -63,16 +63,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 https://github.com/actions/checkout/releases/tag/v7.0.0
 
+      # Push a non-release reference first so attestation can run before `latest` /
+      # version tags are advanced. If attestation fails, release tags stay unchanged.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 https://github.com/docker/metadata-action/releases/tag/v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            # set latest tag for default branch
-            type=raw,value=latest
-            type=raw,value=${{ needs.pre-release-checks.outputs.new_version }}
-            type=ref,event=tag
             type=sha
 
       - name: Set up Docker Buildx
@@ -100,11 +98,33 @@ jobs:
 
       - name: Attest
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1 https://github.com/actions/attest-build-provenance/releases/tag/v4.1.1
-        continue-on-error: true # TODO: remove once image attestation is operational
         with:
           push-to-registry: true
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.docker_build.outputs.digest }}
+
+      - name: Docker meta (release tags)
+        id: release_meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 https://github.com/docker/metadata-action/releases/tag/v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.pre-release-checks.outputs.new_version }}
+
+      - name: Promote attested image to release tags
+        env:
+          DIGEST: ${{ steps.docker_build.outputs.digest }}
+          TAGS: ${{ steps.release_meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          SOURCE="ghcr.io/${{ github.repository }}@${DIGEST}"
+          args=()
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            args+=(--tag "$tag")
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
 
   create-github-release:
     needs: [pre-release-checks, docker-build]
