@@ -24,8 +24,7 @@ struct ConditionalMakeSpan {}
 
 impl<B> MakeSpan<B> for ConditionalMakeSpan {
     fn make_span(&mut self, request: &axum::http::Request<B>) -> Span {
-        // No span for the probes: a drain answers /ready with 503 on every deploy, and each
-        // readiness check already logs its own failure.
+        // A drain answers /ready with 503 on every deploy, and each check logs its own failure.
         let path = request.uri().path();
         if path == HEALTH_PATH || path == READY_PATH {
             return Span::none();

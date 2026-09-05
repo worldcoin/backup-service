@@ -28,14 +28,12 @@ pub async fn handler(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // Run all ready checks in parallel
     let (redis_ready, factor_lookup_ready, backup_storage_ready) = tokio::join!(
         redis_cache_manager.is_ready(),
         factor_lookup.is_ready(),
         backup_storage.is_ready()
     );
 
-    // Check if any of the services are not ready
     if !redis_ready || !factor_lookup_ready || !backup_storage_ready {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
