@@ -32,7 +32,6 @@ async fn main() -> anyhow::Result<()> {
         builder.init();
     }
 
-    // Before any awaited startup work, so a pod deleted mid-startup still drains.
     backup_service::shutdown::install_signal_handlers()?;
 
     tracing::info!("...Starting backup service");

@@ -15,8 +15,8 @@ pub struct ReadyResponse {
     status: String,
 }
 
-/// Reports whether this instance should receive traffic: shutdown has not started and the Redis,
-/// S3, `DynamoDB` and KMS configurations all work.
+/// Reports whether this instance should receive traffic: all deps are functional and the instance
+/// is not preparing to shut down.
 ///
 /// Returns 200 when ready, 503 otherwise. Each preflight check logs its own failure.
 pub async fn handler(

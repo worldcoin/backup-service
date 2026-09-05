@@ -128,8 +128,6 @@ async fn get_status(app: axum::Router, path: &str) -> StatusCode {
     app.oneshot(request).await.unwrap().status()
 }
 
-/// Draining is process-wide, so it has to be asserted here rather than in a test of its own: any
-/// later `/ready` call in this binary would see the drain this one starts.
 #[tokio::test]
 async fn test_ready_endpoint() {
     dotenvy::from_filename(".env.example").unwrap();
@@ -153,8 +151,7 @@ async fn test_ready_endpoint() {
     let response_body: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
     assert_eq!(response_body, json!({ "status": "ok" }));
 
-    // A real signal, so this also fails if the handler stops covering the one the orchestrator
-    // sends: the test process dies of SIGTERM instead of draining.
+    // Assert graceful shutdown
     let pid = std::process::id().to_string();
     let killed = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
     assert!(killed.success(), "could not signal the test process");
@@ -168,12 +165,7 @@ async fn test_ready_endpoint() {
 
     assert_eq!(
         get_status(app.clone(), "/ready").await,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "a draining instance must be taken out of the load balancer's rotation"
+        StatusCode::SERVICE_UNAVAILABLE
     );
-    assert_eq!(
-        get_status(app, "/health").await,
-        StatusCode::OK,
-        "liveness must not restart a pod that is already draining"
-    );
+    assert_eq!(get_status(app, "/health").await, StatusCode::OK,);
 }
