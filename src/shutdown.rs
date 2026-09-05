@@ -1,6 +1,5 @@
-//! Graceful shutdown. The binary runs as PID 1 in a `scratch` image, where a signal with no
-//! handler is discarded, so before this module a rolling deploy waited out the whole termination
-//! grace period and then `SIGKILL`ed the process mid-request.
+//! Graceful shutdown. Stops new requests and drains running ones. On `SIGTERM` or `SIGINT` the service
+//! drains: `/ready` answers `503` for 10 seconds so the instance leaves the load balancer's rotation.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -9,11 +8,10 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-/// How long `/ready` reports failure before the listeners stop accepting. It must outlast whatever
-/// takes the instance out of rotation; see the shutdown section of the README.
+/// Reports /ready as 503 for this period, then stops listening.
 const DRAIN_DELAY: Duration = Duration::from_secs(10);
 
-/// When the listeners may close, fixed when the signal arrives so a slow startup cannot push it out.
+/// When the listeners may close.
 static CLOSE_AT: OnceLock<watch::Sender<Option<Instant>>> = OnceLock::new();
 
 fn close_at() -> &'static watch::Sender<Option<Instant>> {
@@ -44,9 +42,8 @@ pub fn install_signal_handlers() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Resolves once the load balancer has had [`DRAIN_DELAY`] to see `/ready` fail, which is when the
-/// listeners may stop accepting new connections.
-pub async fn drained() {
+/// Shuts down after [`DRAIN_DELAY`].
+pub(crate) async fn drained() {
     let mut receiver = close_at().subscribe();
     let _ = receiver.wait_for(Option::is_some).await;
     let deadline = (*close_at().borrow()).unwrap_or_else(Instant::now);

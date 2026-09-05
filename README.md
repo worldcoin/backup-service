@@ -26,21 +26,6 @@ A typical backup lifecycle:
 - **Encrypted Backup Key**: Encryption key for the backup data, encrypted separately for each factor kind. The encrypted key is coming from user's device and is stored in the backup metadata.
 - **Turnkey Shared Passkey Challenge**: A passkey challenge that is a valid [Webauthn Turnkey stamp](https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn) and can be used to add a new factor to backup-service. Allows to add new factor with authorization to Turnkey & backup-service in a single passkey prompt.
 
-### Shutdown
-
-On `SIGTERM` or `SIGINT` the service drains: `/ready` answers `503` for 10 seconds so the instance
-leaves the load balancer's rotation, then the listeners close and in-flight requests run to
-completion. `/health` stays `200` so liveness does not restart a pod that is already leaving. The
-delay runs from the signal, so a slow startup does not extend it. Two deployment settings match
-those numbers:
-
-- `terminationGracePeriodSeconds` must be at least 45 — the 10 second drain plus the 30 second
-  request timeout — or the pod is `SIGKILL`ed mid-request.
-- Whatever removes the instance from rotation must act within the 10 second drain. Deleting the
-  pod from its `Service` endpoints does; a balancer that health-checks `/ready` itself only does
-  if `periodSeconds` times `failureThreshold` is under 10 seconds, which the Kubernetes defaults
-  (10 times 3) are not.
-
 ### Running Locally
 
 To run the service locally with a Localstack S3 service:
