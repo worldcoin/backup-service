@@ -175,14 +175,26 @@ pub async fn start(
     tracing::info!("✅ Backup service started on http://{addr}");
     tracing::info!("📊 Metrics available on http://{metrics_addr}/metrics");
 
-    let (api_result, metrics_result) = tokio::join!(
-        axum::serve(listener, router.into_make_service())
-            .with_graceful_shutdown(shutdown::drained()),
-        axum::serve(metrics_listener, metrics_router.into_make_service())
-            .with_graceful_shutdown(shutdown::drained()),
-    );
-    api_result.map_err(anyhow::Error::from)?;
-    metrics_result.map_err(anyhow::Error::from)?;
-    tracing::info!(message = "graceful shutdown complete");
+    let servers = async {
+        tokio::join!(
+            axum::serve(listener, router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+            axum::serve(metrics_listener, metrics_router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+        )
+    };
+
+    tokio::select! {
+        biased;
+        (api_result, metrics_result) = servers => {
+            api_result.map_err(anyhow::Error::from)?;
+            metrics_result.map_err(anyhow::Error::from)?;
+            tracing::info!(message = "graceful shutdown complete");
+        }
+        () = shutdown::deadline() => {
+            tracing::error!(message = "shutdown deadline hit, terminating in-flight requests");
+        }
+    }
+
     Ok(())
 }

@@ -11,6 +11,9 @@ use tokio::time::Instant;
 /// Reports /ready as 503 for this period, then stops listening.
 const DRAIN_DELAY: Duration = Duration::from_secs(10);
 
+/// Max timeout for full shutdown (incl. in-flight requests)
+const IN_FLIGHT_GRACE: Duration = Duration::from_secs(30);
+
 /// When the listeners may close.
 static CLOSE_AT: OnceLock<watch::Sender<Option<Instant>>> = OnceLock::new();
 
@@ -31,21 +34,36 @@ pub fn install_signal_handlers() -> std::io::Result<()> {
     let mut interrupt = signal(SignalKind::interrupt())?;
 
     tokio::spawn(async move {
-        tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
+        loop {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+            if is_draining() {
+                tracing::warn!(message = "second shutdown signal, exiting now");
+                std::process::exit(1);
+            }
+            tracing::warn!(message = "shutdown started, failing readiness while requests drain");
+            close_at().send_replace(Some(Instant::now() + DRAIN_DELAY));
         }
-        tracing::warn!(message = "shutdown started, failing readiness while requests drain");
-        close_at().send_replace(Some(Instant::now() + DRAIN_DELAY));
     });
 
     Ok(())
 }
 
-/// Shuts down after [`DRAIN_DELAY`].
-pub(crate) async fn drained() {
+async fn close_deadline() -> Instant {
     let mut receiver = close_at().subscribe();
     let _ = receiver.wait_for(Option::is_some).await;
-    let deadline = (*close_at().borrow()).unwrap_or_else(Instant::now);
-    tokio::time::sleep_until(deadline).await;
+    (*close_at().borrow()).unwrap_or_else(Instant::now)
+}
+
+/// Shuts down after [`DRAIN_DELAY`].
+pub(crate) async fn drained() {
+    tokio::time::sleep_until(close_deadline().await).await;
+}
+
+/// Hard stop: requests still running here are severed rather than left to hold the process open
+/// past the orchestrator's grace period.
+pub(crate) async fn deadline() {
+    tokio::time::sleep_until(close_deadline().await + IN_FLIGHT_GRACE).await;
 }
