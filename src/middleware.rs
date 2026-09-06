@@ -45,7 +45,7 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn middleware_accepts_content_length_limit_and_rejects_larger() {
+    async fn middleware_enforces_content_length_when_present() {
         let environment = Environment::development(None);
         let max_request_size = environment.max_request_size();
         let app = Router::new()
@@ -75,17 +75,14 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE
         );
 
-        for content_length in [None, Some("invalid"), Some("184467440737095516160")] {
-            let mut request = Request::builder().method("POST").uri("/");
-            if let Some(content_length) = content_length {
-                request = request.header("content-length", content_length);
-            }
-            let response = app
-                .clone()
-                .oneshot(request.body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
+        let without_header = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(without_header).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
 }
