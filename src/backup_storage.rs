@@ -1,6 +1,6 @@
 use crate::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::environment::Environment;
-use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
@@ -204,8 +204,11 @@ impl BackupStorage {
     /// Updates a backup in S3 by backup ID. Overwrites the existing backup with the new one.
     ///
     /// # Errors
-    /// * If the backup cannot be uploaded to S3, `BackupManagerError::PutObjectError` is returned.
-    /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
+    /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
+    /// * `BackupManagerError::ManifestHashMismatch` - if another writer committed first.
+    /// * `BackupManagerError::ETagNotFound` - if S3 returned an object with no `ETag`.
+    /// * `BackupManagerError::HeadObjectError` / `GetObjectError` / `PutObjectError` - if S3 fails.
+    /// * `BackupManagerError::ByteStreamError` - if the backup cannot be converted to bytes.
     pub async fn update_backup(
         &self,
         backup_id: &str,
@@ -213,7 +216,14 @@ impl BackupStorage {
         current_manifest_hash: String,
         new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
+        // Fetch current backup state to prevent race condition with updates (e.g. deletion while updating).
+        let backup_e_tag = self.backup_object_e_tag(backup_id).await?;
+
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+
+        let Some(backup_e_tag) = backup_e_tag else {
             return Err(BackupManagerError::BackupNotFound);
         };
 
@@ -227,16 +237,29 @@ impl BackupStorage {
 
         metadata.manifest_hash = new_manifest_hash;
 
-        self.put_object()
+        let write = self
+            .put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_backup_key(backup_id))
+            .if_match(backup_e_tag)
             .body(ByteStream::from(backup))
             .send()
-            .await?;
+            .await;
+
+        match write {
+            Ok(_) => {}
+            Err(SdkError::ServiceError(err)) if err.err().code() == Some("NoSuchKey") => {
+                tracing::warn!(
+                    message = "Backup deleted while syncing; not recreating it",
+                    backup_id = %backup_id,
+                );
+                return Err(BackupManagerError::BackupNotFound);
+            }
+            Err(err) => return Err(err.into()),
+        }
 
         // Save the new metadata
-        // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated.
-        // For this case, the client will get an error on the update, and will be able to retry the update. Recovery is also possible from the previous state.
+        // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated. Client can retry the update.
         self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
@@ -246,6 +269,30 @@ impl BackupStorage {
             .await?;
 
         Ok(())
+    }
+
+    /// `ETag` of backup's blob (ciphertext).
+    ///
+    /// # Errors
+    /// * `BackupManagerError::ETagNotFound` - if S3 returned the object without an `ETag`.
+    /// * `BackupManagerError::HeadObjectError` - if the `HeadObject` call itself fails.
+    async fn backup_object_e_tag(
+        &self,
+        backup_id: &str,
+    ) -> Result<Option<String>, BackupManagerError> {
+        let head = self
+            .s3_client
+            .head_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_backup_key(backup_id))
+            .send()
+            .await;
+
+        match head {
+            Ok(head) => head.e_tag.map(Some).ok_or(BackupManagerError::ETagNotFound),
+            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Adds a `Main` factor to the backup metadata in S3.
@@ -691,19 +738,7 @@ impl BackupStorage {
     /// # Errors
     /// Will error if something goes unexpectedly wrong calling the S3 API.
     pub async fn does_backup_exist(&self, backup_id: &str) -> Result<bool, BackupManagerError> {
-        let result = self
-            .s3_client
-            .head_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(true),
-            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(false),
-            Err(err) => Err(err.into()),
-        }
+        Ok(self.backup_object_e_tag(backup_id).await?.is_some())
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -812,7 +847,6 @@ mod tests {
     use super::*;
     use crate::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::environment::Environment;
-    use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
     use chrono::DateTime;
     use rand::rngs::OsRng;
@@ -873,6 +907,64 @@ mod tests {
         let timeout =
             BackupStorage::classify_put_object_error::<()>(SdkError::timeout_error("timed out"));
         assert!(!timeout.should_rollback_lookup());
+    }
+
+    #[tokio::test]
+    async fn update_backup_does_not_overwrite_a_concurrently_deleted_backup() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client.clone());
+
+        let test_backup_id = gen_backup_id();
+        backup_storage
+            .create(
+                vec![1, 2, 3, 4, 5].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let e_tag = backup_storage
+            .backup_object_e_tag(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("backup object should exist");
+
+        s3_client
+            .delete_object()
+            .bucket(environment.s3_bucket())
+            .key(get_backup_key(&test_backup_id))
+            .send()
+            .await
+            .unwrap();
+
+        let result = backup_storage
+            .update_backup(
+                &test_backup_id,
+                vec![6, 7, 8, 9, 10].into(),
+                hex::encode([1u8; 32]),
+                hex::encode([2u8; 32]),
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(BackupManagerError::BackupNotFound)),
+            "expected BackupNotFound, got {result:?}"
+        );
+        assert!(
+            !backup_storage
+                .does_backup_exist(&test_backup_id)
+                .await
+                .unwrap(),
+            "the deleted backup object was recreated by the update"
+        );
     }
 
     #[tokio::test]
