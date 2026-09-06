@@ -19,14 +19,13 @@ pub async fn validate_content_length(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, ErrorResponse> {
-    let content_length = req
+    if let Some(content_length) = req
         .headers()
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
-        .filter(|length| *length > environment.max_request_size());
-
-    if let Some(content_length) = content_length {
+        .filter(|length| *length > environment.max_request_size())
+    {
         tracing::debug!(
             message = "Request Content-Length exceeds maximum allowed size.",
             content_length = content_length,
@@ -46,7 +45,7 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn content_length_limit_is_inclusive() {
+    async fn middleware_accepts_content_length_limit_and_rejects_larger() {
         let environment = Environment::development(None);
         let max_request_size = environment.max_request_size();
         let app = Router::new()
@@ -72,8 +71,21 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            app.oneshot(over_limit).await.unwrap().status(),
+            app.clone().oneshot(over_limit).await.unwrap().status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
+
+        for content_length in [None, Some("invalid"), Some("184467440737095516160")] {
+            let mut request = Request::builder().method("POST").uri("/");
+            if let Some(content_length) = content_length {
+                request = request.header("content-length", content_length);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
     }
 }
