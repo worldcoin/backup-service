@@ -42,47 +42,61 @@ pub async fn validate_content_length(
 mod tests {
     use super::*;
     use axum::{http::StatusCode, middleware, routing::post, Router};
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
+    use types::{ErrorBody, ErrorCode};
 
-    #[tokio::test]
-    async fn middleware_enforces_content_length_when_present() {
+    fn app() -> (Router, usize) {
         let environment = Environment::development(None);
         let max_request_size = environment.max_request_size();
         let app = Router::new()
             .route("/", post(|| async { StatusCode::OK }))
             .route_layer(middleware::from_fn(validate_content_length))
             .layer(Extension(environment));
+        (app, max_request_size)
+    }
 
-        let at_limit = Request::builder()
-            .method("POST")
-            .uri("/")
-            .header("content-length", max_request_size)
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(
-            app.clone().oneshot(at_limit).await.unwrap().status(),
-            StatusCode::OK
-        );
+    fn request(content_length: Option<usize>) -> Request<Body> {
+        let mut request = Request::builder().method("POST").uri("/");
+        if let Some(content_length) = content_length {
+            request = request.header(CONTENT_LENGTH, content_length);
+        }
+        request.body(Body::empty()).unwrap()
+    }
 
-        let over_limit = Request::builder()
-            .method("POST")
-            .uri("/")
-            .header("content-length", max_request_size + 1)
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(
-            app.clone().oneshot(over_limit).await.unwrap().status(),
-            StatusCode::PAYLOAD_TOO_LARGE
-        );
+    #[tokio::test]
+    async fn allows_request_at_content_length_limit() {
+        let (app, max_request_size) = app();
+        let response = app.oneshot(request(Some(max_request_size))).await.unwrap();
 
-        let without_header = Request::builder()
-            .method("POST")
-            .uri("/")
-            .body(Body::empty())
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rejects_request_over_content_length_limit() {
+        let (app, max_request_size) = app();
+        let response = app
+            .oneshot(request(Some(max_request_size + 1)))
+            .await
             .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body.error.code, ErrorCode::ContentTooLarge);
         assert_eq!(
-            app.oneshot(without_header).await.unwrap().status(),
-            StatusCode::OK
+            body.error.message,
+            format!(
+                "Request body of {} bytes is too large.",
+                max_request_size + 1
+            )
         );
+    }
+
+    #[tokio::test]
+    async fn allows_request_without_content_length() {
+        let (app, _) = app();
+        let response = app.oneshot(request(None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
