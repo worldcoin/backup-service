@@ -15,6 +15,7 @@ pub mod oidc_token_verifier;
 pub mod redis_cache;
 pub mod routes;
 pub mod server;
+pub mod shutdown;
 pub mod turnkey_activity;
 pub mod utils;
 pub mod verify_signature;

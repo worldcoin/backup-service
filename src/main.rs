@@ -32,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
         builder.init();
     }
 
+    backup_service::shutdown::install_signal_handlers()?;
+
     tracing::info!("...Starting backup service");
 
     let environment = Environment::from_env();
