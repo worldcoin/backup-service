@@ -2,7 +2,7 @@ use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use axum::{
     body::Body,
-    http::{Request, Response},
+    http::{header::CONTENT_LENGTH, Request, Response},
     middleware::Next,
     Extension,
 };
@@ -19,23 +19,84 @@ pub async fn validate_content_length(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, ErrorResponse> {
-    // Check if Content-Length header exists
-    if let Some(content_length_header) = req.headers().get("content-length") {
-        if let Ok(content_length_str) = content_length_header.to_str() {
-            if let Ok(content_length) = content_length_str.parse::<usize>() {
-                if content_length > environment.max_request_size() {
-                    tracing::debug!(
-                        message = "Request Content-Length exceeds maximum allowed size.",
-                        content_length = content_length,
-                    );
-                    return Err(ErrorResponse::content_too_large(format!(
-                        "Request body of {content_length} bytes is too large.",
-                    )));
-                }
-            }
-        }
+    if let Some(content_length) = req
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|length| *length > environment.max_request_size())
+    {
+        tracing::debug!(
+            message = "Request Content-Length exceeds maximum allowed size.",
+            content_length = content_length,
+        );
+        return Err(ErrorResponse::content_too_large(format!(
+            "Request body of {content_length} bytes is too large.",
+        )));
     }
 
-    // Content-Length is acceptable or not present, proceed with request
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{http::StatusCode, middleware, routing::post, Router};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    use types::{ErrorBody, ErrorCode};
+
+    fn app() -> (Router, usize) {
+        let environment = Environment::development(None);
+        let max_request_size = environment.max_request_size();
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::OK }))
+            .route_layer(middleware::from_fn(validate_content_length))
+            .layer(Extension(environment));
+        (app, max_request_size)
+    }
+
+    fn request(content_length: Option<usize>) -> Request<Body> {
+        let mut request = Request::builder().method("POST").uri("/");
+        if let Some(content_length) = content_length {
+            request = request.header(CONTENT_LENGTH, content_length);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn allows_request_at_content_length_limit() {
+        let (app, max_request_size) = app();
+        let response = app.oneshot(request(Some(max_request_size))).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rejects_request_over_content_length_limit() {
+        let (app, max_request_size) = app();
+        let response = app
+            .oneshot(request(Some(max_request_size + 1)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body.error.code, ErrorCode::ContentTooLarge);
+        assert_eq!(
+            body.error.message,
+            format!(
+                "Request body of {} bytes is too large.",
+                max_request_size + 1
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn allows_request_without_content_length() {
+        let (app, _) = app();
+        let response = app.oneshot(request(None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
