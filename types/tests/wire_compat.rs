@@ -381,6 +381,7 @@ const ERROR_CODES: &[&str] = &[
     "oidc_token_parse_error",
     "oidc_token_verification_error",
     "only_one_encryption_key_per_type_allowed",
+    "passkey_registration_mismatch",
     "signature_verification_error",
     "sync_factor_must_be_keypair",
     "token_expired",
