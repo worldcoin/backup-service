@@ -509,6 +509,23 @@ pub enum NewFactor {
         /// The raw OIDC token of the account being added.
         oidc_token: String,
     },
+    /// A new passkey being registered.
+    #[serde(rename_all = "camelCase")]
+    PasskeyRegistration {
+        /// The platform requesting the passkey registration ceremony.
+        platform: Platform,
+    },
+}
+
+/// The kind of the existing factor that will sign over the new factor being added.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExistingFactorKind {
+    /// A passkey.
+    Passkey,
+    /// An OIDC account.
+    OidcAccount,
 }
 
 /// Request body of `POST /v1/add-factor/challenge`.
@@ -519,6 +536,10 @@ pub struct AddFactorChallengeRequest {
     /// The factor the client intends to add. Bound into the challenge issued for the existing
     /// factor, so the existing factor signs over the new one.
     pub new_factor: NewFactor,
+    /// The kind of the existing factor that will sign the challenge. Optional; defaults to
+    /// `PASSKEY` to preserve existing clients that predate non-passkey existing factors.
+    #[serde(default)]
+    pub existing_factor_kind: Option<ExistingFactorKind>,
 }
 
 impl Endpoint for AddFactorChallengeRequest {
@@ -527,7 +548,7 @@ impl Endpoint for AddFactorChallengeRequest {
 }
 
 /// Response body of `POST /v1/add-factor/challenge`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AddFactorChallengeResponse {
@@ -535,8 +556,9 @@ pub struct AddFactorChallengeResponse {
     pub existing_factor_challenge: String,
     /// Token for the existing factor's challenge.
     pub existing_factor_token: String,
-    /// Challenge to be solved by the new factor.
-    pub new_factor_challenge: String,
+    /// Challenge to be solved by the new factor. A base64-encoded string for a keypair/OIDC
+    /// factor, or a structured `WebAuthn` registration challenge object for a passkey factor.
+    pub new_factor_challenge: serde_json::Value,
     /// Token for the new factor's challenge.
     pub new_factor_token: String,
 }
