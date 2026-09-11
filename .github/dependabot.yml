@@ -5,5 +5,7 @@ updates:
     schedule:
       interval: "monthly"
     assignees:
-      - "aurel-fr"
-      - "paolodamico"
+      - "Alex-Vygodchikov"
+      - "orekav"
+    cooldown:
+      default-days: 14
