@@ -2,7 +2,35 @@
 
 use crate::auth::AuthError;
 use serde_json::Value;
-use webauthn_rs::prelude::PublicKeyCredential;
+use uuid::Uuid;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, PasskeyRegistration, PublicKeyCredential, Webauthn, WebauthnResult,
+};
+
+/// Starts a passkey registration ceremony that requires a resident/discoverable credential.
+///
+/// webauthn-rs 0.5.2's only non-attested helper that requires a resident key is this
+/// Android-named one; the `WebAuthn` options it produces (platform attachment + resident key
+/// required + user verification required) are exactly what we need on every platform, and
+/// other platforms honor them the same way — it's just not named for that. Without a resident
+/// key, a recovery ceremony (which never sends `allowCredentials`) would be unable to select
+/// the resulting credential.
+///
+/// # Errors
+/// Returns a `WebauthnError` if the registration ceremony cannot be started (e.g. invalid RP
+/// configuration).
+pub fn start_resident_passkey_registration(
+    webauthn: &Webauthn,
+    user_name: &str,
+    user_display_name: &str,
+) -> WebauthnResult<(CreationChallengeResponse, PasskeyRegistration)> {
+    webauthn.start_google_passkey_in_google_password_manager_only_registration(
+        Uuid::new_v4(),
+        user_name,
+        user_display_name,
+        None,
+    )
+}
 
 pub trait TryFromValue: Sized {
     /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
