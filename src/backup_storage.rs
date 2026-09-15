@@ -381,12 +381,19 @@ impl BackupStorage {
     /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts (`412`, timeouts,
     /// 5xx) surface as errors — callers may retry; the exact-match pre-check makes retries safe.
     ///
+    /// `expected_factor_kind` must still be present in the metadata this function reads — the key
+    /// is only ever meaningful attached to that factor. Without this check, a concurrent delete of
+    /// that factor between the caller's own presence check and this call would still succeed in
+    /// appending the key, leaving it orphaned with no owning factor (see #265).
+    ///
     /// # Errors
-    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent, a conflicting
-    /// key of the same kind exists, or the put fails.
+    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent,
+    /// `expected_factor_kind` is no longer present, a conflicting key of the same kind exists, or
+    /// the put fails.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
+        expected_factor_kind: &FactorKind,
         encryption_key: BackupEncryptionKey,
     ) -> Result<(), BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
@@ -395,6 +402,14 @@ impl BackupStorage {
         let Some(e_tag) = e_tag else {
             return Err(BackupManagerError::ETagNotFound);
         };
+
+        if !metadata
+            .factors
+            .iter()
+            .any(|factor| &factor.kind == expected_factor_kind)
+        {
+            return Err(BackupManagerError::FactorNotFound);
+        }
 
         if let Some(existing) = metadata
             .keys
@@ -1402,6 +1417,13 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client);
 
         let test_backup_id = gen_backup_id();
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_123".to_string(),
+                masked_email: String::new(),
+            },
+            "provider_123".to_string(),
+        );
         let existing_key = BackupEncryptionKey::Turnkey {
             encrypted_key: "EXISTING_KEY".to_string(),
             turnkey_account_id: "org_123".to_string(),
@@ -1413,7 +1435,7 @@ mod tests {
                 vec![1, 2, 3].into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
-                    factors: vec![],
+                    factors: vec![factor.clone()],
                     sync_factors: vec![],
                     keys: vec![existing_key.clone()],
                     manifest_hash: hex::encode([1u8; 32]),
@@ -1424,7 +1446,7 @@ mod tests {
 
         // Exact same key — idempotent success.
         backup_storage
-            .add_encryption_key_only(&test_backup_id, existing_key.clone())
+            .add_encryption_key_only(&test_backup_id, &factor.kind, existing_key.clone())
             .await
             .unwrap();
 
@@ -1436,7 +1458,7 @@ mod tests {
             turnkey_private_key_id: "key_789".to_string(),
         };
         match backup_storage
-            .add_encryption_key_only(&test_backup_id, mismatched)
+            .add_encryption_key_only(&test_backup_id, &factor.kind, mismatched)
             .await
         {
             Err(BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed) => {}
@@ -1452,6 +1474,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_encryption_key_only_rejects_when_factor_already_deleted() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
+        let backup_storage = BackupStorage::new(environment, s3_client);
+
+        let test_backup_id = gen_backup_id();
+        let other_main_factor = Factor::new_ec_keypair("other_main_factor_pubkey".to_string());
+        // A backup with only the other main factor: the OIDC factor this key would belong to has
+        // already been deleted by a concurrent /delete-factor, as in the #265 race.
+        backup_storage
+            .create(
+                vec![1, 2, 3].into(),
+                &BackupMetadata {
+                    id: test_backup_id.clone(),
+                    factors: vec![other_main_factor],
+                    sync_factors: vec![],
+                    keys: vec![],
+                    manifest_hash: hex::encode([1u8; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let deleted_oidc_factor_kind = FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: "sub_now_deleted".to_string(),
+                masked_email: String::new(),
+            },
+            turnkey_provider_id: "provider_123".to_string(),
+        };
+        let key = BackupEncryptionKey::Turnkey {
+            encrypted_key: "ORPHAN_RISK_KEY".to_string(),
+            turnkey_account_id: "org_123".to_string(),
+            turnkey_user_id: "user_456".to_string(),
+            turnkey_private_key_id: "key_789".to_string(),
+        };
+
+        match backup_storage
+            .add_encryption_key_only(&test_backup_id, &deleted_oidc_factor_kind, key)
+            .await
+        {
+            Err(BackupManagerError::FactorNotFound) => {}
+            other => panic!("Expected FactorNotFound, got {other:?}"),
+        }
+
+        // The key must never have been appended — no orphan left behind.
+        let (metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .expect("metadata");
+        assert!(metadata.keys.is_empty());
+    }
+
+    #[tokio::test]
     async fn add_encryption_key_only_concurrent_same_key_lands_once() {
         dotenvy::from_filename(".env.example").unwrap();
         let environment = Environment::development(None);
@@ -1459,12 +1537,19 @@ mod tests {
         let backup_storage = BackupStorage::new(environment, s3_client);
 
         let test_backup_id = gen_backup_id();
+        let factor = Factor::new_oidc_account(
+            OidcAccountKind::Google {
+                sub: "sub_concurrent".to_string(),
+                masked_email: String::new(),
+            },
+            "provider_123".to_string(),
+        );
         backup_storage
             .create(
                 vec![1, 2, 3].into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
-                    factors: vec![],
+                    factors: vec![factor.clone()],
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
@@ -1483,8 +1568,8 @@ mod tests {
         // Concurrent writers: one succeeds; the other may see 412 / Unknown (retry is idempotent
         // via the exact-match pre-check). We no longer reconcile ambiguous puts to Ok.
         let (a, b) = tokio::join!(
-            backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
-            backup_storage.add_encryption_key_only(&test_backup_id, key.clone()),
+            backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
+            backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
         );
         assert!(
             a.is_ok() || b.is_ok(),
