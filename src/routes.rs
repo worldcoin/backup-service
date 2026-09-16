@@ -102,6 +102,13 @@ pub fn handler(environment: Environment) -> ApiRouter {
         )
         .api_route(AddSyncFactorRequest::PATH, post(add_sync_factor::handler))
         // Add factor to the backup - new OIDC account, new passkey, etc.
+        //
+        // Deliberately not behind `AttestationGateway::validator` (unlike retrieve-from-challenge,
+        // verify-factor and delete-factor): the shipped clients do not attest these two routes, so
+        // gating them is a client-coordinated rollout in its own right. The add-factor
+        // authorization does not rely on attestation — the existing factor's signature is bound to
+        // the exact new-factor material (see `factor_binding`) — so gating remains an optional
+        // hardening of the unauthenticated pre-verification work, not part of that fix.
         .api_route(
             AddFactorChallengeRequest::PATH,
             post(add_factor_challenge::handler),

@@ -116,6 +116,11 @@ pub enum ErrorCode {
     /// The passkey registration being completed does not match the one the existing factor
     /// authorized (bound by its registration-state hash).
     PasskeyRegistrationMismatch,
+    /// The existing factor's authorization does not commit to the new factor actually submitted.
+    /// It must sign `existing_factor_challenge || SHA256(tag || new_factor_material)`, where the
+    /// material covers the new credential or token together with the request's `label`,
+    /// `turnkeyProviderId`, and `encryptedBackupKey`.
+    ExistingFactorMaterialBindingMismatch,
 
     // SECTION: Encryption keys
     /// The encryption key was not found on the backup.
@@ -149,6 +154,9 @@ pub enum ErrorCode {
     WebauthnInvalidPayload,
     /// PRF results were supplied where they are not permitted.
     WebauthnPrfResultsNotAllowed,
+    /// The registered passkey is not an ES256 (P-256) credential, the only kind that can be
+    /// added as a factor.
+    UnsupportedPasskeyAlgorithm,
 
     // SECTION: OIDC
     /// The OIDC token could not be parsed, or is missing a required claim.

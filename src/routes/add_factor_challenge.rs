@@ -1,24 +1,16 @@
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
+use crate::factor_binding::registration_state_hash;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use types::{
     AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor, Platform,
 };
 use uuid::Uuid;
-
-/// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
-/// token. Binding this into the existing-factor token (see
-/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
-/// prevents swapping a different registration ceremony after the old factor has signed.
-pub(crate) fn registration_state_hash(registration_bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(registration_bytes))
-}
 
 /// Request to get challenges for adding a new factor.
 ///

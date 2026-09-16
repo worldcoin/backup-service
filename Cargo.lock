@@ -837,6 +837,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "ciborium",
  "dotenvy",
  "futures",
  "hex",
@@ -876,6 +877,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "coset",
  "hex",
  "mockito",
  "openidconnect",
@@ -886,6 +888,7 @@ dependencies = [
  "rsa",
  "serde_json",
  "sha2 0.10.8",
+ "tokio",
  "url",
  "uuid",
 ]
