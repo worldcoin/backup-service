@@ -1,18 +1,23 @@
 use std::sync::Arc;
 
-use crate::auth::{AuthError, AuthHandler};
+use crate::auth::{AuthError, AuthHandler, DecryptedChallengeToken, NewFactorMaterialParts};
 use crate::backup_metadata::{BackupMetadata, FactorKind};
 use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
-use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
+use crate::challenge_manager::{ChallengeContext, ChallengeManager, NewFactorType};
 use crate::error::ErrorResponse;
+use crate::factor_binding::{
+    existing_factor_signed_payload, registration_state_hash, NewFactorMaterial,
+    NewFactorMaterialKind, EXISTING_FACTOR_CHALLENGE_LEN,
+};
 use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
     FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
-use crate::redis_cache::RedisCacheManager;
+use crate::redis_cache::{BurnKey, RedisCacheManager};
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
+use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -32,10 +37,77 @@ const EXPECTED_TURNKEY_ACTIVITY_TYPE: &str = "ACTIVITY_TYPE_CREATE_API_KEYS_V2";
 
 const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 
+/// Outcome of the existing-factor ↔ new-factor material binding check. A `mismatch` is either an
+/// attempt at the authenticator/field-swap attack the check exists for, or a client building the
+/// signed payload wrong; `legacy_rejected` is a client still signing the bare challenge. Both must
+/// be visible on their own rather than folded into generic 400s.
+const ADD_FACTOR_BINDING_METRIC: &str = "add_factor_binding_check_total";
+
+fn authorization_kind_label(authorization: &Authorization) -> &'static str {
+    match authorization {
+        Authorization::Passkey { .. } => "passkey",
+        Authorization::OidcAccount { .. } => "oidc",
+        Authorization::EcKeypair { .. } => "ec_keypair",
+    }
+}
+
+fn record_binding_outcome(
+    result: &'static str,
+    existing_kind: &'static str,
+    new_kind: &'static str,
+) {
+    metrics::counter!(
+        ADD_FACTOR_BINDING_METRIC,
+        "result" => result,
+        "existing_kind" => existing_kind,
+        "new_kind" => new_kind,
+    )
+    .increment(1);
+}
+
+/// The existing factor's authorization does not cover the new-factor material actually submitted.
+/// `legacy_shape` means it verifiably covered the bare challenge instead — an outdated client, not
+/// a swapped request — which is tracked separately so the cutover can be watched.
+fn binding_mismatch(
+    backup_id: &str,
+    existing_kind: &'static str,
+    new_kind: &'static str,
+    legacy_shape: bool,
+) -> ErrorResponse {
+    record_binding_outcome(
+        if legacy_shape {
+            "legacy_rejected"
+        } else {
+            "mismatch"
+        },
+        existing_kind,
+        new_kind,
+    );
+    tracing::warn!(
+        message = "Existing-factor authorization does not match the submitted new-factor material",
+        backup_id = backup_id,
+        existing_kind = existing_kind,
+        new_kind = new_kind,
+        legacy_shape = legacy_shape,
+    );
+    let message = if legacy_shape {
+        "The existing factor signed only the challenge; it must sign existing_factor_challenge || SHA256(tag || new_factor_material)"
+    } else {
+        "The existing factor's authorization does not match the submitted new factor"
+    };
+    ErrorResponse::bad_request(ErrorCode::ExistingFactorMaterialBindingMismatch, message)
+}
+
 /// Adds a new factor to an existing backup.
 ///
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
-/// and the new factor (to prove ownership of the new factor).
+/// and the new factor (to prove ownership of the new factor). The existing factor's authorization is
+/// bound to the new factor's material: it signs `existing_factor_challenge || SHA256(tag ||
+/// new_factor_material)` (see `factor_binding`), so a relay cannot swap the credential, token, label,
+/// Turnkey provider id or encrypted backup key after the user approved the operation.
+///
+/// Nothing is consumed (no Redis write) until both factors have been verified and the factor mutate
+/// lock is held, so a rejection anywhere before that costs the user nothing.
 ///
 /// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
 /// as a Main Factor for add-factor.
@@ -48,258 +120,89 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    // Step 1: Check authorization for the existing factor and get the backup ID
-    let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
-        Authorization::Passkey { credential, .. } => {
-            // Step 1A.1: Validate the format of data: turnkey activity, passkey assertion object
+    let existing_kind = authorization_kind_label(&request.existing_factor_authorization);
+    let new_kind = authorization_kind_label(&request.new_factor_authorization);
 
-            // Turnkey activity is required for passkeys
-            let Some(turnkey_activity) = &request.existing_factor_turnkey_activity else {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::MissingTurnkeyActivity,
-                    "Turnkey activity is missing",
-                ));
-            };
-            // Parse credential per the WebAuthn spec
-            let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
-
-            // Step 1A.2: Retrieve the potential backup using credential ID in the passkey.
-            // At this point, the user has not verified that they correctly signed the challenge.
-            let provided_credential_id = user_provided_credential.get_credential_id();
-            let backup_id = factor_lookup
-                .lookup(
-                    FactorScope::Main,
-                    &FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(provided_credential_id)),
-                )
-                .await?;
-            let Some(backup_id) = backup_id else {
-                return Err(AuthError::BackupUntraceable.into());
-            };
-            let backup = backup_storage.get_by_backup_id(&backup_id).await?;
-            let Some(backup) = backup else {
-                return Err(AuthError::BackupMissing.into());
-            };
-
-            // Step 1A.3: Verify the signature of the passkey assertion object using the public key
-            // from backup metadata as a reference. It should sign the Turnkey activity.
-            let reference_passkey = backup
-                .metadata
-                .factors
-                .iter()
-                .find_map(|factor| {
-                    if let FactorKind::Passkey {
-                        webauthn_credential,
-                        ..
-                    } = &factor.kind
-                    {
-                        if webauthn_credential.cred_id() == provided_credential_id {
-                            Some(webauthn_credential)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| AuthError::BackupUntraceable)?;
-
-            verify_turnkey_activity_webauthn_stamp(
-                reference_passkey.get_public_key(),
-                turnkey_activity,
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.authenticator_data),
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.client_data_json),
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.signature),
-            )?;
-
-            // Step 1A.4: Verify the Turnkey activity is valid and matches what we know about the user.
-
-            // If the user already has a Turnkey account registered, we expect the Turnkey activity to contain the same account ID.
-            let expected_turnkey_account_id = backup.metadata.keys.iter().find_map(|key| {
-                if let BackupEncryptionKey::Turnkey {
-                    turnkey_account_id, ..
-                } = key
-                {
-                    Some(turnkey_account_id.clone())
-                } else {
-                    None
-                }
-            });
-
-            verify_turnkey_activity_parameters(
-                turnkey_activity,
-                expected_turnkey_account_id,
-                EXPECTED_TURNKEY_ACTIVITY_TYPE,
-                TURNKEY_ACTIVITY_TTL,
-            )?;
-
-            // Step 1A.5: Verify that Turnkey activity includes backup-service challenge.
-            // This challenge should also be of correct type.
-            let turnkey_activity_json: serde_json::Value = serde_json::from_str(turnkey_activity)
-                .map_err(|err| {
-                tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
-                ErrorResponse::bad_request(
-                    ErrorCode::InvalidTurnkeyActivity,
-                    "Provided Turnkey activity is invalid",
-                )
-            })?;
-
-            let backup_service_challenge = turnkey_activity_json["metadata"]["challenge"]
-                .as_str()
-                .ok_or_else(|| {
-                    tracing::info!(
-                        message =
-                            "Failed to get the backup-service challenge from Turnkey activity"
-                    );
-                    ErrorResponse::bad_request(
-                        ErrorCode::InvalidTurnkeyActivity,
-                        "Turnkey activity is missing server challenge",
-                    )
-                })?;
-            let (trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(
-                    ChallengeType::Passkey,
-                    request.existing_factor_challenge_token.clone(),
-                )
-                .await?;
-
-            // This is the most important piece, it binds the user's passkey signature to the challenge we provided originally in `/add-factor/challenge`
-            if STANDARD.encode(trusted_challenge) != backup_service_challenge {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallenge,
-                    "Challenge mismatch with Turnkey activity",
-                ));
-            }
-
-            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallengeContext,
-                    "Challenge context mismatch",
-                ));
-            };
-            // We do not need to check signature here, because whole activity is signed and verified
-            // in the previous steps.
-
-            // Step 1A.6: Track the used challenge to prevent replay attacks
-            redis_cache_manager
-                .use_challenge_token(request.existing_factor_challenge_token.clone())
-                .await?;
-
-            // Step 1A.7: Return the backup ID and the new factor type
-            (backup_id, new_factor_type)
-        }
-        Authorization::OidcAccount { .. } => {
-            // Step 1B.1: Authenticate the existing OIDC factor and bind to the expected new-factor
-            // descriptor, so the OIDC factor signs over the exact new factor being added.
-            let (_trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(
-                    (&request.existing_factor_authorization).into(),
-                    request.existing_factor_challenge_token.clone(),
-                )
-                .await?;
-
-            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallengeContext,
-                    "Challenge context mismatch",
-                ));
-            };
-
-            // `AuthHandler::verify` authenticates the existing OIDC factor and marks its challenge
-            // token as used.
-            let (verified_backup_id, _metadata) = auth_handler
-                .clone()
-                .verify(
-                    &request.existing_factor_authorization,
-                    FactorScope::Main,
-                    ChallengeContext::AddFactor {
-                        new_factor_type: new_factor_type.clone(),
-                    },
-                    request.existing_factor_challenge_token.clone(),
-                )
-                .await?;
-
-            (verified_backup_id, new_factor_type)
-        }
-        Authorization::EcKeypair { .. } => {
-            return Err(ErrorResponse::bad_request(
-                ErrorCode::NotSupported,
-                "EC keypair is not supported as an existing main factor for add-factor",
-            ));
-        }
-    };
-
-    // Step 2: Enforce the binding between the new-factor descriptor the existing factor
-    // authorized and the new-factor authorization actually provided.
-    match (&expected_new_factor, &request.new_factor_authorization) {
-        (
-            NewFactorType::OidcAccount {
-                oidc_token: expected_oidc_token,
-            },
-            Authorization::OidcAccount { oidc_token, .. },
-        ) => {
-            let raw_oidc_token = match oidc_token {
-                OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
-            };
-            if raw_oidc_token != expected_oidc_token {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::OidcTokenMismatch,
-                    "OIDC Token mismatch",
-                ));
-            }
-        }
-        (
-            NewFactorType::PasskeyRegistration {
-                registration_hash: expected_hash,
-            },
-            Authorization::Passkey { .. },
-        ) => {
-            // Existing factor authorized this exact WebAuthn registration state (hash bound in
-            // its challenge context). Reject swapped new-factor challenge tokens.
-            let (registration_payload, new_factor_context) = challenge_manager
-                .extract_token_payload(
-                    ChallengeType::Passkey,
-                    request.new_factor_challenge_token.clone(),
-                )
-                .await?;
-            if !matches!(
-                new_factor_context,
-                ChallengeContext::AddFactorByNewFactor {}
-            ) {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallengeContext,
-                    "Challenge context mismatch",
-                ));
-            }
-            let actual_hash =
-                super::add_factor_challenge::registration_state_hash(&registration_payload);
-            if actual_hash != *expected_hash {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::PasskeyRegistrationMismatch,
-                    "Passkey registration does not match the one authorized by the existing factor",
-                ));
-            }
-        }
-        (_, Authorization::EcKeypair { .. }) => {
-            return Err(ErrorResponse::bad_request(
-                ErrorCode::NotSupported,
-                "EC keypair is not supported as a main factor for add-factor",
-            ));
-        }
-        _ => {
-            return Err(ErrorResponse::bad_request(
-                ErrorCode::InvalidNewFactorType,
-                "Invalid new factor type",
-            ));
-        }
+    // Step 1: Reject unsupported factor kinds and decrypt both challenge tokens. Decryption only
+    // proves we issued the tokens and they have not expired; nothing is consumed yet.
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::EcKeypair { .. }
+    ) {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::NotSupported,
+            "EC keypair is not supported as an existing main factor for add-factor",
+        ));
+    }
+    if matches!(
+        request.new_factor_authorization,
+        Authorization::EcKeypair { .. }
+    ) {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::NotSupported,
+            "EC keypair is not supported as a main factor for add-factor",
+        ));
+    }
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::Passkey { .. }
+    ) && request.existing_factor_turnkey_activity.is_none()
+    {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::MissingTurnkeyActivity,
+            "Turnkey activity is missing",
+        ));
     }
 
-    // Step 2A.1: When the same OIDC ID token + session keypair authorize both sides (same-account
-    // metadata-only upgrade), the existing-factor verify above already consumed the nonce — skip a
-    // second Redis mark so registration can still verify the new-factor challenge signature.
-    // Compare raw JWT + session key per-provider (not full `OidcToken`), so Apple `aud: None` vs
-    // explicit default does not block reuse of the already-consumed nonce, while still requiring
-    // both sides to be the same provider — a Google and an Apple token must never be treated as
-    // the same session merely because their opaque JWT strings happened to be equal.
+    let (existing_challenge, existing_context) = challenge_manager
+        .extract_token_payload(
+            (&request.existing_factor_authorization).into(),
+            request.existing_factor_challenge_token.clone(),
+        )
+        .await?;
+    let ChallengeContext::AddFactor {
+        new_factor_type: expected_new_factor,
+    } = existing_context
+    else {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::InvalidChallengeContext,
+            "Challenge context mismatch",
+        ));
+    };
+    // The 64-byte signed payload is only distinguishable from the bare 32-byte challenges the same
+    // session keypair signs elsewhere because the challenge length is fixed; enforce it here rather
+    // than trust that `/add-factor/challenge` never changes.
+    let existing_challenge: [u8; EXISTING_FACTOR_CHALLENGE_LEN] =
+        existing_challenge.as_slice().try_into().map_err(|_| {
+            tracing::error!(
+                message = "Existing-factor challenge token carries a payload of unexpected length",
+                payload_len = existing_challenge.len(),
+            );
+            ErrorResponse::bad_request(
+                ErrorCode::InvalidChallenge,
+                "Existing-factor challenge has an unexpected length",
+            )
+        })?;
+
+    let (new_challenge_payload, new_context) = challenge_manager
+        .extract_token_payload(
+            (&request.new_factor_authorization).into(),
+            request.new_factor_challenge_token.clone(),
+        )
+        .await?;
+    if !matches!(new_context, ChallengeContext::AddFactorByNewFactor {}) {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::InvalidChallengeContext,
+            "Challenge context mismatch",
+        ));
+    }
+
+    // Step 2: Detect the same-account metadata-only upgrade, where one OIDC ID token + session
+    // keypair authorizes both sides. Both sides then carry the same nonce, which the commit step
+    // below burns exactly once. Compare raw JWT + session key per provider (not the full
+    // `OidcToken`), so Apple `aud: None` vs an explicit default still counts as one session, while a
+    // Google and an Apple token are never treated as the same session merely because their opaque
+    // JWT strings happened to be equal.
     let reuse_same_oidc_session = match (
         &request.existing_factor_authorization,
         &request.new_factor_authorization,
@@ -333,24 +236,284 @@ pub async fn handler(
         _ => false,
     };
 
-    // Step 2A.2: Use AuthHandler to validate the new factor
-    let validation_result = auth_handler
-        .validate_factor_registration(
+    // Step 3: Enforce the binding between the new-factor descriptor the existing factor's token
+    // was minted for and the new-factor authorization actually provided. This catches a swapped
+    // new-factor challenge token (a different ceremony entirely); the material binding in step 5
+    // catches a swapped credential within the same ceremony. Cheap, so it runs before any crypto.
+    match (&expected_new_factor, &request.new_factor_authorization) {
+        (
+            NewFactorType::OidcAccount {
+                oidc_token: expected_oidc_token,
+            },
+            Authorization::OidcAccount { oidc_token, .. },
+        ) => {
+            let raw_oidc_token = match oidc_token {
+                OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
+            };
+            if raw_oidc_token != expected_oidc_token {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::OidcTokenMismatch,
+                    "OIDC Token mismatch",
+                ));
+            }
+        }
+        (
+            NewFactorType::PasskeyRegistration {
+                registration_hash: expected_hash,
+            },
+            Authorization::Passkey { .. },
+        ) => {
+            if registration_state_hash(&new_challenge_payload) != *expected_hash {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::PasskeyRegistrationMismatch,
+                    "Passkey registration does not match the one authorized by the existing factor",
+                ));
+            }
+        }
+        _ => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::InvalidNewFactorType,
+                "Invalid new factor type",
+            ));
+        }
+    }
+
+    // Step 4: Verify the new factor's proof. Nothing is consumed: its challenge token and (for
+    // OIDC) nonce come back as keys to burn at the commit step. The token was already decrypted
+    // in step 1; each decrypt is a KMS call, so it is handed over rather than decrypted again.
+    let (validation_result, pending_new_factor) = auth_handler
+        .verify_factor_registration_with_decrypted_token(
             &request.new_factor_authorization,
-            request.new_factor_challenge_token.clone(),
+            DecryptedChallengeToken {
+                token: request.new_factor_challenge_token.clone(),
+                payload: new_challenge_payload,
+                context: new_context,
+            },
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
-            !reuse_same_oidc_session,
         )
         .await?;
+
+    // Step 5: Compute what the existing factor must have signed from what was actually submitted,
+    // then verify the existing factor against it. The digest covers the verified credential/token
+    // plus every request field that gets persisted with it.
+    let material_kind = match &validation_result.material {
+        NewFactorMaterialParts::Passkey {
+            credential_id,
+            public_key_sec1,
+            algorithm,
+            label,
+            client_data_json,
+            attestation_object,
+        } => {
+            let Some(public_key_sec1) = public_key_sec1 else {
+                // Reachable before the existing factor is authenticated, so counted rather than
+                // logged loudly; the metric is the alerting signal.
+                record_binding_outcome("unsupported_alg", existing_kind, new_kind);
+                tracing::info!(
+                    message =
+                        "Rejected add-factor passkey registration: not an ES256/P-256 credential",
+                    algorithm = algorithm,
+                    credential_id = URL_SAFE_NO_PAD.encode(credential_id),
+                );
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::UnsupportedPasskeyAlgorithm,
+                    "Only ES256 (P-256) passkeys can be added as a factor",
+                ));
+            };
+            NewFactorMaterialKind::Passkey {
+                credential_id,
+                public_key_sec1,
+                label,
+                client_data_json,
+                attestation_object,
+            }
+        }
+        NewFactorMaterialParts::Oidc { raw_jwt } => NewFactorMaterialKind::Oidc { raw_jwt },
+        NewFactorMaterialParts::EcKeypair => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::NotSupported,
+                "EC keypair is not supported as a main factor for add-factor",
+            ));
+        }
+    };
+    let material = NewFactorMaterial {
+        kind: material_kind,
+        turnkey_provider_id: request.turnkey_provider_id.as_deref(),
+        encrypted_backup_key: request.encrypted_backup_key.as_ref(),
+    };
+    let signed_payload = existing_factor_signed_payload(&existing_challenge, &material.digest());
+    // Existing=OIDC only: a session-keypair signature that fails to verify over the bound payload is
+    // indistinguishable from one made with the wrong key, so every such failure is reported as a
+    // binding mismatch (`result=mismatch`). For existing=Passkey the stamp is verified first, so
+    // there a mismatch is exactly that.
+
+    let (backup_id, existing_factor_nonce) = match &request.existing_factor_authorization {
+        Authorization::Passkey { credential, .. } => {
+            // Step 5A.1: Validate the format of data: turnkey activity, passkey assertion object
+            let Some(turnkey_activity) = &request.existing_factor_turnkey_activity else {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::MissingTurnkeyActivity,
+                    "Turnkey activity is missing",
+                ));
+            };
+            // Parse credential per the WebAuthn spec
+            let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
+
+            // Step 5A.2: Retrieve the potential backup using credential ID in the passkey.
+            // At this point, the user has not verified that they correctly signed the challenge.
+            let provided_credential_id = user_provided_credential.get_credential_id();
+            let backup_id = factor_lookup
+                .lookup(
+                    FactorScope::Main,
+                    &FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(provided_credential_id)),
+                )
+                .await?;
+            let Some(backup_id) = backup_id else {
+                return Err(AuthError::BackupUntraceable.into());
+            };
+            let backup = backup_storage.get_by_backup_id(&backup_id).await?;
+            let Some(backup) = backup else {
+                return Err(AuthError::BackupMissing.into());
+            };
+
+            // Step 5A.3: Verify the signature of the passkey assertion object using the public key
+            // from backup metadata as a reference. It should sign the Turnkey activity.
+            let reference_passkey = backup
+                .metadata
+                .factors
+                .iter()
+                .find_map(|factor| {
+                    if let FactorKind::Passkey {
+                        webauthn_credential,
+                        ..
+                    } = &factor.kind
+                    {
+                        if webauthn_credential.cred_id() == provided_credential_id {
+                            Some(webauthn_credential)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| AuthError::BackupUntraceable)?;
+
+            verify_turnkey_activity_webauthn_stamp(
+                reference_passkey.get_public_key(),
+                turnkey_activity,
+                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.authenticator_data),
+                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.client_data_json),
+                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.signature),
+            )?;
+
+            // Step 5A.4: Verify the Turnkey activity is valid and matches what we know about the user.
+
+            // If the user already has a Turnkey account registered, we expect the Turnkey activity to contain the same account ID.
+            let expected_turnkey_account_id = backup.metadata.keys.iter().find_map(|key| {
+                if let BackupEncryptionKey::Turnkey {
+                    turnkey_account_id, ..
+                } = key
+                {
+                    Some(turnkey_account_id.clone())
+                } else {
+                    None
+                }
+            });
+
+            verify_turnkey_activity_parameters(
+                turnkey_activity,
+                expected_turnkey_account_id,
+                EXPECTED_TURNKEY_ACTIVITY_TYPE,
+                TURNKEY_ACTIVITY_TTL,
+            )?;
+
+            // Step 5A.5: Verify that the Turnkey activity carries the backup-service binding payload.
+            let turnkey_activity_json: serde_json::Value = serde_json::from_str(turnkey_activity)
+                .map_err(|err| {
+                tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
+                ErrorResponse::bad_request(
+                    ErrorCode::InvalidTurnkeyActivity,
+                    "Provided Turnkey activity is invalid",
+                )
+            })?;
+
+            let backup_service_challenge = turnkey_activity_json["metadata"]["challenge"]
+                .as_str()
+                .ok_or_else(|| {
+                    tracing::info!(
+                        message =
+                            "Failed to get the backup-service challenge from Turnkey activity"
+                    );
+                    ErrorResponse::bad_request(
+                        ErrorCode::InvalidTurnkeyActivity,
+                        "Turnkey activity is missing server challenge",
+                    )
+                })?;
+
+            // This is the most important piece: the stamped activity must carry
+            // `challenge || material_digest`, which binds the passkey signature both to the
+            // challenge we issued in `/add-factor/challenge` and to the exact new factor and
+            // request fields submitted here. The whole activity is signed and verified above, so
+            // no separate signature check is needed on this field.
+            if STANDARD.encode(signed_payload) != backup_service_challenge {
+                let legacy_shape = STANDARD.encode(existing_challenge) == backup_service_challenge;
+                return Err(binding_mismatch(
+                    &backup_id,
+                    existing_kind,
+                    new_kind,
+                    legacy_shape,
+                ));
+            }
+
+            (backup_id, None)
+        }
+        Authorization::OidcAccount {
+            oidc_token,
+            public_key,
+            signature,
+        } => {
+            // Step 5B.1: Verify the ID token (no Redis) and resolve the account to its backup.
+            let (backup_id, _metadata, verified_token) = auth_handler
+                .authenticate_existing_oidc_claims(oidc_token, public_key)
+                .await?;
+
+            // Step 5B.2: The session keypair must have signed `challenge || material_digest`.
+            match verify_signature(public_key, signature, &signed_payload) {
+                Ok(()) => {}
+                Err(VerifySignatureError::SignatureVerificationError) => {
+                    let legacy_shape =
+                        verify_signature(public_key, signature, &existing_challenge).is_ok();
+                    return Err(binding_mismatch(
+                        &backup_id,
+                        existing_kind,
+                        new_kind,
+                        legacy_shape,
+                    ));
+                }
+                Err(err) => return Err(err.into()),
+            }
+
+            (backup_id, Some(verified_token.burn_key()))
+        }
+        Authorization::EcKeypair { .. } => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::NotSupported,
+                "EC keypair is not supported as an existing main factor for add-factor",
+            ));
+        }
+    };
+    record_binding_outcome("ok", existing_kind, new_kind);
 
     let new_factor = validation_result.factor;
     let new_factor_kind = new_factor.kind.clone();
     let factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Hold the factor mutate lock across lookup insert + metadata put (and any lookup heal/ensure
-    // that follows) so auth stale-delete cannot remove the row while S3 is still catching up.
+    // Step 6: Hold the factor mutate lock across the commit, lookup insert and metadata put (and
+    // any lookup heal/ensure that follows) so auth stale-delete cannot remove the row while S3 is
+    // still catching up. Taken before the commit so a lost lock race burns nothing.
     let mut factor_lock = redis_cache_manager
         .try_acquire_lock_guard(
             FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
@@ -359,7 +522,24 @@ pub async fn handler(
         )
         .await?;
 
-    // Step 3.1: Update the factor lookup with the new factor.
+    // Step 7: Commit — consume both challenge tokens and every OIDC nonce in one atomic step, so
+    // a replay of any of them fails and a failure here leaves nothing half-consumed. In the
+    // same-session case both sides carry one nonce, burned once.
+    let mut burn_keys = pending_new_factor.into_burn_keys();
+    burn_keys.push(BurnKey::ChallengeToken(
+        request.existing_factor_challenge_token.clone(),
+    ));
+    if let Some(existing_factor_nonce) = existing_factor_nonce {
+        if !reuse_same_oidc_session {
+            burn_keys.push(existing_factor_nonce);
+        }
+    }
+    if let Err(err) = redis_cache_manager.burn_all_or_nothing(&burn_keys).await {
+        let _ = factor_lock.release().await;
+        return Err(err.into());
+    }
+
+    // Step 8.1: Update the factor lookup with the new factor.
     // Same-backup ConditionalCheckFailed is treated as idempotent; other failures abort.
     let lookup_insert_succeeded = match factor_lookup
         .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
@@ -420,7 +600,7 @@ pub async fn handler(
     // provides the best security guarantees: it avoids a window where a factor exists in the backup
     // metadata (and is therefore usable) without a lookup entry.
 
-    // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
+    // Step 8.2: Add the new factor and potentially new encrypted key to the backup metadata
     let write = backup_storage
         .add_factor(
             &backup_id,
@@ -491,7 +671,7 @@ pub async fn handler(
         }));
     }
 
-    // Step 3.3: Roll back FactorLookup only when we inserted this request's row and the metadata
+    // Step 8.3: Roll back FactorLookup only when we inserted this request's row and the metadata
     // write definitely did not land (`NotInserted`).
     //
     // Another concurrent request may adopt this lookup row (same-backup ConditionalCheckFailed)
@@ -567,7 +747,7 @@ pub async fn handler(
         ensure_result?;
     }
 
-    // Step 4: Return the new factor ID and the updated backup metadata
+    // Step 9: Return the new factor ID and the updated backup metadata
     Ok(Json(AddFactorResponse {
         factor_id: new_factor.id,
         backup_metadata: updated_metadata.exported(),
