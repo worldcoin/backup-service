@@ -327,6 +327,36 @@ impl Environment {
             Self::Production => env_bool("ENFORCE_BACKUP_ACCOUNT_PROOF", false),
         }
     }
+
+    /// Until when `/add-factor` still accepts the legacy existing=Passkey payload — a Turnkey
+    /// activity carrying the bare challenge instead of `challenge || material_digest` — next to the
+    /// bound one. Read from `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` (RFC 3339) on every call so
+    /// the bridge can be switched off without a deploy.
+    ///
+    /// `None` means the bridge is off and only the bound payload is accepted: that is the secure
+    /// default (variable unset), the state the flag must end in (instant in the past), and what an
+    /// unparseable value falls back to. An unparseable value is logged as an error rather than
+    /// silently extending or shortening the window.
+    pub fn add_factor_legacy_passkey_payload_sunset(
+        &self,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        let raw = env::var("ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET").ok()?;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        match chrono::DateTime::parse_from_rfc3339(raw) {
+            Ok(sunset) => Some(sunset.with_timezone(&chrono::Utc)),
+            Err(err) => {
+                tracing::error!(
+                    message = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET is not an RFC 3339 instant; treating the legacy-payload bridge as off",
+                    value = raw,
+                    error = %err,
+                );
+                None
+            }
+        }
+    }
 }
 
 /// Parses a boolean flag env value.

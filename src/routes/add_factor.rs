@@ -4,6 +4,7 @@ use crate::auth::{AuthError, AuthHandler, DecryptedChallengeToken, NewFactorMate
 use crate::backup_metadata::{BackupMetadata, FactorKind};
 use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, NewFactorType};
+use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::factor_binding::{
     existing_factor_signed_payload, registration_state_hash, NewFactorMaterial,
@@ -13,6 +14,7 @@ use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
     FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
+use crate::headers::CLIENT_VERSION;
 use crate::redis_cache::{BurnKey, RedisCacheManager};
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
@@ -22,7 +24,8 @@ use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
+use http::HeaderMap;
 use rand::Rng;
 use types::{
     AddFactorRequest, AddFactorResponse, Authorization, BackupEncryptionKey, ErrorCode,
@@ -39,9 +42,24 @@ const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 
 /// Outcome of the existing-factor ↔ new-factor material binding check. A `mismatch` is either an
 /// attempt at the authenticator/field-swap attack the check exists for, or a client building the
-/// signed payload wrong; `legacy_rejected` is a client still signing the bare challenge. Both must
-/// be visible on their own rather than folded into generic 400s.
+/// signed payload wrong; `legacy_rejected` is a client still signing the bare challenge, and
+/// `legacy_accepted` is the same client being let through by the rollout bridge (see
+/// [`legacy_passkey_payload_bridge`]). All must be visible on their own rather than folded into
+/// generic 400s — `legacy_accepted` in particular is the number that has to reach zero before the
+/// bridge is switched off.
 const ADD_FACTOR_BINDING_METRIC: &str = "add_factor_binding_check_total";
+
+/// The rollout bridge for the existing=Passkey path: while
+/// `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` is in the future, a Turnkey activity carrying only the
+/// bare challenge (what shipped clients sign today) is still accepted, so the server can deploy
+/// ahead of the app release. Returns the sunset while the bridge is active. Every request that uses
+/// it is one the binding check did not protect, which is why it is counted and logged separately
+/// and why the bridge is off by default and ends by itself.
+fn legacy_passkey_payload_bridge(environment: &Environment) -> Option<DateTime<Utc>> {
+    environment
+        .add_factor_legacy_passkey_payload_sunset()
+        .filter(|sunset| Utc::now() < *sunset)
+}
 
 fn authorization_kind_label(authorization: &Authorization) -> &'static str {
     match authorization {
@@ -109,19 +127,30 @@ fn binding_mismatch(
 /// Nothing is consumed (no Redis write) until both factors have been verified and the factor mutate
 /// lock is held, so a rejection anywhere before that costs the user nothing.
 ///
+/// During the client rollout, and only for existing=Passkey, the legacy bare-challenge payload is
+/// still accepted while the configured sunset is in the future — see
+/// [`legacy_passkey_payload_bridge`].
+///
 /// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
 /// as a Main Factor for add-factor.
 #[allow(clippy::too_many_lines)] // the code is properly split out into steps
+#[allow(clippy::too_many_arguments)] // axum extractors, one per dependency; not a call-site API
 pub async fn handler(
+    Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    headers: HeaderMap,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     let existing_kind = authorization_kind_label(&request.existing_factor_authorization);
     let new_kind = authorization_kind_label(&request.new_factor_authorization);
+    let client_version = headers
+        .get(&CLIENT_VERSION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
 
     // Step 1: Reject unsupported factor kinds and decrypt both challenge tokens. Decryption only
     // proves we issued the tokens and they have not expired; nothing is consumed yet.
@@ -460,12 +489,29 @@ pub async fn handler(
             // no separate signature check is needed on this field.
             if STANDARD.encode(signed_payload) != backup_service_challenge {
                 let legacy_shape = STANDARD.encode(existing_challenge) == backup_service_challenge;
-                return Err(binding_mismatch(
-                    &backup_id,
-                    existing_kind,
-                    new_kind,
-                    legacy_shape,
-                ));
+                match legacy_passkey_payload_bridge(&environment) {
+                    Some(sunset) if legacy_shape => {
+                        // The client signed only the challenge, exactly as shipped clients do
+                        // today, and the rollout bridge is still open: let it through, but make
+                        // it count — this request's new factor is NOT bound to the approval.
+                        record_binding_outcome("legacy_accepted", existing_kind, new_kind);
+                        tracing::warn!(
+                            message = "Accepted legacy add-factor payload (bare challenge) under the rollout bridge; the new factor is not bound to this approval",
+                            backup_id = backup_id,
+                            new_kind = new_kind,
+                            client_version = client_version,
+                            bridge_sunset = %sunset.to_rfc3339(),
+                        );
+                    }
+                    _ => {
+                        return Err(binding_mismatch(
+                            &backup_id,
+                            existing_kind,
+                            new_kind,
+                            legacy_shape,
+                        ));
+                    }
+                }
             }
 
             (backup_id, None)
