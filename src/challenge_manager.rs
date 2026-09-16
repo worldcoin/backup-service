@@ -250,6 +250,13 @@ pub enum ChallengeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
+    /// Registering a new passkey (`WebAuthn` credential creation).
+    ///
+    /// `registration_hash` is produced by
+    /// [`registration_state_hash`](crate::routes::add_factor_challenge::registration_state_hash);
+    /// see its doc comment for what it binds and why.
+    #[serde(rename_all = "camelCase")]
+    PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]
     OidcAccount { oidc_token: String },
 }
