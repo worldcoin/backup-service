@@ -378,6 +378,9 @@ pub async fn handler(
     // binding mismatch (`result=mismatch`). For existing=Passkey the stamp is verified first, so
     // there a mismatch is exactly that.
 
+    // Recorded once, after the existing-factor check: `ok` for a bound payload, `legacy_accepted`
+    // when the rollout bridge let a bare challenge through (never both).
+    let mut binding_outcome = "ok";
     let (backup_id, existing_factor_nonce) = match &request.existing_factor_authorization {
         Authorization::Passkey { credential, .. } => {
             // Step 5A.1: Validate the format of data: turnkey activity, passkey assertion object
@@ -494,7 +497,7 @@ pub async fn handler(
                         // The client signed only the challenge, exactly as shipped clients do
                         // today, and the rollout bridge is still open: let it through, but make
                         // it count — this request's new factor is NOT bound to the approval.
-                        record_binding_outcome("legacy_accepted", existing_kind, new_kind);
+                        binding_outcome = "legacy_accepted";
                         tracing::warn!(
                             message = "Accepted legacy add-factor payload (bare challenge) under the rollout bridge; the new factor is not bound to this approval",
                             backup_id = backup_id,
@@ -551,7 +554,7 @@ pub async fn handler(
             ));
         }
     };
-    record_binding_outcome("ok", existing_kind, new_kind);
+    record_binding_outcome(binding_outcome, existing_kind, new_kind);
 
     let new_factor = validation_result.factor;
     let new_factor_kind = new_factor.kind.clone();

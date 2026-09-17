@@ -10,7 +10,7 @@
 
 use sha2::{Digest, Sha256};
 use types::BackupEncryptionKey;
-use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType};
+use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType, ECDSACurve};
 
 /// Domain-separation prefix hashed in front of the encoded material.
 pub const ADD_FACTOR_BINDING_TAG: &[u8] = b"backup-service:add-factor-binding:v1";
@@ -186,6 +186,11 @@ pub fn passkey_public_key_sec1(public_key: &COSEKey) -> Option<[u8; 65]> {
     let COSEKeyType::EC_EC2(ec2_key) = &public_key.key else {
         return None;
     };
+    // `alg: ES256` is only meaningful on P-256; a key that claims ES256 over another 32-byte
+    // curve would otherwise produce a point clients cannot reproduce.
+    if ec2_key.curve != ECDSACurve::SECP256R1 {
+        return None;
+    }
     let (x, y) = (ec2_key.x.as_slice(), ec2_key.y.as_slice());
     if x.len() != 32 || y.len() != 32 {
         return None;
@@ -449,32 +454,54 @@ mod tests {
     fn sec1_is_only_defined_for_es256_p256_keys() {
         let x = [1u8; 32];
         let y = [2u8; 32];
-        let ec_key = |alg, x: Vec<u8>, y: Vec<u8>| COSEKey {
+        let ec_key = |alg, curve, x: Vec<u8>, y: Vec<u8>| COSEKey {
             type_: alg,
             key: COSEKeyType::EC_EC2(COSEEC2Key {
-                curve: ECDSACurve::SECP256R1,
+                curve,
                 x: x.into(),
                 y: y.into(),
             }),
         };
 
-        let sec1 = passkey_public_key_sec1(&ec_key(COSEAlgorithm::ES256, x.to_vec(), y.to_vec()))
-            .expect("ES256 P-256 key");
+        let sec1 = passkey_public_key_sec1(&ec_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP256R1,
+            x.to_vec(),
+            y.to_vec(),
+        ))
+        .expect("ES256 P-256 key");
         assert_eq!(sec1[0], 0x04);
         assert_eq!(sec1[1..33], x);
         assert_eq!(sec1[33..], y);
 
-        assert!(
-            passkey_public_key_sec1(&ec_key(COSEAlgorithm::RS256, x.to_vec(), y.to_vec()))
-                .is_none()
-        );
-        assert!(
-            passkey_public_key_sec1(&ec_key(COSEAlgorithm::ES256, vec![1u8; 31], y.to_vec()))
-                .is_none()
-        );
-        assert!(
-            passkey_public_key_sec1(&ec_key(COSEAlgorithm::ES256, x.to_vec(), vec![2u8; 33]))
-                .is_none()
-        );
+        assert!(passkey_public_key_sec1(&ec_key(
+            COSEAlgorithm::RS256,
+            ECDSACurve::SECP256R1,
+            x.to_vec(),
+            y.to_vec()
+        ))
+        .is_none());
+        // `alg: ES256` on a different curve must not be mistaken for a P-256 point.
+        assert!(passkey_public_key_sec1(&ec_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP384R1,
+            x.to_vec(),
+            y.to_vec()
+        ))
+        .is_none());
+        assert!(passkey_public_key_sec1(&ec_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP256R1,
+            vec![1u8; 31],
+            y.to_vec()
+        ))
+        .is_none());
+        assert!(passkey_public_key_sec1(&ec_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP256R1,
+            x.to_vec(),
+            vec![2u8; 33]
+        ))
+        .is_none());
     }
 }
