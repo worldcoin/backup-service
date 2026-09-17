@@ -1,8 +1,8 @@
 //! `POST /v1/add-factor` binds the existing factor's authorization to the new passkey's public
 //! key as a 65-byte SEC1 P-256 point, so the binding is only defined for ES256 credentials. The
-//! registration options the service hands out nevertheless list RS256 as well
-//! (`COSEAlgorithm::secure_algs()` is `[ES256, RS256]`), and `webauthn-rs` verifies an RS256
-//! registration without complaint — so the server itself must turn one away, with
+//! add-factor registration options therefore advertise ES256 only (webauthn-rs's default list is
+//! `[ES256, RS256]`), but `webauthn-rs` verifies an RS256 registration without complaint — so the
+//! server itself must still turn one away when a client submits it anyway, with
 //! `unsupported_passkey_algorithm`, and without consuming either challenge.
 //!
 //! The mock authenticator only ever mints ES256 credentials, so the RS256 registration response
@@ -359,19 +359,19 @@ async fn test_add_factor_rejects_rs256_passkey_registration_and_leaves_challenge
     let challenges = passkey_registration_challenges().await;
     let new_factor_challenge = &challenges["newFactorChallenge"];
 
-    // The options the service hands out genuinely invite RS256, so an authenticator honoring
-    // them can return one; the rejection below has to be the server's.
+    // The options only invite what completion accepts, so an authenticator honoring them never
+    // produces the RS256 credential below; the server still has to reject one submitted anyway.
     let advertised_algorithms: Vec<i64> = new_factor_challenge["publicKey"]["pubKeyCredParams"]
         .as_array()
         .expect("publicKey.pubKeyCredParams")
         .iter()
         .map(|param| param["alg"].as_i64().expect("pubKeyCredParams[].alg"))
         .collect();
-    assert!(
-        advertised_algorithms.contains(&COSE_ALG_RS256),
-        "registration options no longer advertise RS256 ({advertised_algorithms:?}); this test's premise is gone"
+    assert_eq!(
+        advertised_algorithms,
+        vec![COSE_ALG_ES256],
+        "add-factor registration options must advertise ES256 only"
     );
-    assert!(advertised_algorithms.contains(&COSE_ALG_ES256));
 
     let session = ExistingOidcSession::new(&backup.oidc_server, &backup.subject);
 
