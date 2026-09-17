@@ -1,8 +1,9 @@
-//! Rollout bridge for the add-factor material binding (#253): while
-//! `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` lies in the future, `/add-factor` still accepts the
-//! legacy existing=Passkey payload — the bare `existingFactorChallenge` in the Turnkey activity —
-//! next to the bound one. It is off by default, off once the sunset has passed, off on an
-//! unparseable value, and never on for existing=OIDC (which has no shipped clients to bridge).
+//! Rollout bridge for the add-factor material binding (#253): until
+//! `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` has passed, `/add-factor` still accepts the legacy
+//! existing=Passkey payload — the bare `existingFactorChallenge` in the Turnkey activity — next to
+//! the bound one. It is open by default (unset or empty means no sunset), stays open on an
+//! unparseable value (logged as an error), closes once the sunset has passed, and never applies to
+//! existing=OIDC (which has no shipped clients to bridge).
 //!
 //! The variable is process-global, so every test here is `#[serial]` and clears it on exit.
 
@@ -12,7 +13,7 @@ use crate::common::{
     add_factor_payload_for_oidc_new, create_test_backup, create_test_backup_with_oidc_account,
     create_turnkey_activity_and_hash, generate_keypair, get_add_factor_challenges_generic,
     get_test_redis_cache_manager, parse_response_body, send_post_request_with_environment,
-    sign_keypair_challenge, verify_s3_metadata_exists,
+    sign_keypair_challenge, verify_s3_metadata_exists, LegacyBridgeVar,
 };
 use axum::http::StatusCode;
 use backup_service::environment::Environment;
@@ -26,29 +27,7 @@ use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
 
-const SUNSET_VAR: &str = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET";
 const TURNKEY_PROVIDER_ID: &str = "turnkey_provider_id";
-
-/// Sets (or clears) the bridge variable for one test and clears it again on drop, panic included.
-struct BridgeVar;
-
-impl BridgeVar {
-    fn set(value: &str) -> Self {
-        std::env::set_var(SUNSET_VAR, value);
-        Self
-    }
-
-    fn unset() -> Self {
-        std::env::remove_var(SUNSET_VAR);
-        Self
-    }
-}
-
-impl Drop for BridgeVar {
-    fn drop(&mut self) {
-        std::env::remove_var(SUNSET_VAR);
-    }
-}
 
 fn future_sunset() -> String {
     (Utc::now() + Duration::days(1)).to_rfc3339()
@@ -203,7 +182,7 @@ fn assert_legacy_rejected(status: StatusCode, body: &serde_json::Value) {
 #[tokio::test]
 #[serial]
 async fn test_bridge_accepts_legacy_passkey_payload_while_sunset_is_ahead() {
-    let _bridge = BridgeVar::set(&future_sunset());
+    let _bridge = LegacyBridgeVar::set(&future_sunset());
     let mut flow = PasskeyToOidc::prepare().await;
 
     let (status, body) = flow.send(&flow.legacy_payload()).await;
@@ -216,7 +195,7 @@ async fn test_bridge_accepts_legacy_passkey_payload_while_sunset_is_ahead() {
 #[tokio::test]
 #[serial]
 async fn test_bridge_still_accepts_bound_payload() {
-    let _bridge = BridgeVar::set(&future_sunset());
+    let _bridge = LegacyBridgeVar::set(&future_sunset());
     let mut flow = PasskeyToOidc::prepare().await;
 
     let (status, body) = flow.send(&flow.bound_payload()).await;
@@ -228,7 +207,7 @@ async fn test_bridge_still_accepts_bound_payload() {
 #[tokio::test]
 #[serial]
 async fn test_bridge_closed_after_sunset_rejects_legacy_payload_without_consuming_anything() {
-    let _bridge = BridgeVar::set(&past_sunset());
+    let _bridge = LegacyBridgeVar::set(&past_sunset());
     let mut flow = PasskeyToOidc::prepare().await;
 
     let (status, body) = flow.send(&flow.legacy_payload()).await;
@@ -242,28 +221,45 @@ async fn test_bridge_closed_after_sunset_rejects_legacy_payload_without_consumin
     flow.assert_oidc_factor_persisted(true).await;
 }
 
+/// Production configuration lives outside this repository, so the server must keep shipped
+/// clients working until a sunset is deliberately configured.
 #[tokio::test]
 #[serial]
-async fn test_bridge_is_off_by_default() {
-    let _bridge = BridgeVar::unset();
+async fn test_bridge_is_open_by_default() {
+    let _bridge = LegacyBridgeVar::unset();
     let mut flow = PasskeyToOidc::prepare().await;
 
     let (status, body) = flow.send(&flow.legacy_payload()).await;
 
-    assert_legacy_rejected(status, &body);
-    flow.assert_oidc_factor_persisted(false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    flow.assert_oidc_factor_persisted(true).await;
+    flow.assert_challenge_tokens_used(true).await;
 }
 
+/// What the deploy config carries until a sunset is agreed: the variable present but empty.
 #[tokio::test]
 #[serial]
-async fn test_unparseable_sunset_keeps_the_bridge_off() {
-    let _bridge = BridgeVar::set("next year, probably");
+async fn test_empty_sunset_means_no_sunset() {
+    let _bridge = LegacyBridgeVar::set("");
     let mut flow = PasskeyToOidc::prepare().await;
 
     let (status, body) = flow.send(&flow.legacy_payload()).await;
 
-    assert_legacy_rejected(status, &body);
-    flow.assert_oidc_factor_persisted(false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    flow.assert_oidc_factor_persisted(true).await;
+}
+
+/// A typo in the sunset must not cut shipped clients off; it is logged and delays the cutover.
+#[tokio::test]
+#[serial]
+async fn test_unparseable_sunset_keeps_the_bridge_open() {
+    let _bridge = LegacyBridgeVar::set("next year, probably");
+    let mut flow = PasskeyToOidc::prepare().await;
+
+    let (status, body) = flow.send(&flow.legacy_payload()).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    flow.assert_oidc_factor_persisted(true).await;
 }
 
 /// existing=OIDC has no shipped clients, so the bridge never applies to it: the session keypair must
@@ -271,7 +267,7 @@ async fn test_unparseable_sunset_keeps_the_bridge_off() {
 #[tokio::test]
 #[serial]
 async fn test_bridge_does_not_cover_oidc_existing_factor() {
-    let _bridge = BridgeVar::set(&future_sunset());
+    let _bridge = LegacyBridgeVar::set(&future_sunset());
 
     let subject = format!("existing-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;

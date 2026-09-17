@@ -17,7 +17,7 @@ use crate::common::{
     get_add_factor_challenges_generic, get_keypair_challenge, get_test_redis_cache_manager,
     make_sync_factor, oidc_nonce_from_jwt, parse_response_body, send_post_request_with_environment,
     send_post_request_with_multipart, sign_keypair_challenge, verify_s3_metadata_exists,
-    webauthn_bytes, BackupAccount,
+    webauthn_bytes, BackupAccount, LegacyBridgeVar,
 };
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -962,7 +962,9 @@ async fn test_encrypted_backup_key_swap_rejected_on_same_oidc_session_upgrade() 
 }
 
 // ---------------------------------------------------------------------------------------------
-// 4. Legacy shape: the existing factor still signs only the bare challenge
+// 4. Legacy shape: the existing factor still signs only the bare challenge. For existing=Passkey
+//    this is what the rollout bridge lets through while it is open (covered in
+//    `add_factor_legacy_payload_bridge.rs`); here the bridge is closed, so both paths reject.
 // ---------------------------------------------------------------------------------------------
 
 /// The server names the legacy shape in its message; that is the only external signal that a
@@ -977,7 +979,8 @@ fn assert_legacy_shape_named(error: &Value) {
 
 #[tokio::test]
 #[serial]
-async fn test_legacy_bare_challenge_rejected_with_passkey_existing_factor() {
+async fn test_legacy_bare_challenge_rejected_with_passkey_existing_factor_once_bridge_closed() {
+    let _bridge = LegacyBridgeVar::closed();
     let mut backup = create_passkey_backup().await;
     let account = NewOidcAccount::new().await;
     let challenges = oidc_challenges(&account.session.token, "PASSKEY").await;

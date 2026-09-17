@@ -24,7 +24,7 @@ use crate::webauthn::TryFromValue;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Duration;
 use http::HeaderMap;
 use rand::Rng;
 use types::{
@@ -44,22 +44,10 @@ const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 /// attempt at the authenticator/field-swap attack the check exists for, or a client building the
 /// signed payload wrong; `legacy_rejected` is a client still signing the bare challenge, and
 /// `legacy_accepted` is the same client being let through by the rollout bridge (see
-/// [`legacy_passkey_payload_bridge`]). All must be visible on their own rather than folded into
-/// generic 400s — `legacy_accepted` in particular is the number that has to reach zero before the
-/// bridge is switched off.
+/// [`Environment::legacy_passkey_payload_bridge`]). All must be visible on their own rather than
+/// folded into generic 400s — `legacy_accepted` in particular is the number that has to reach zero
+/// before the bridge is closed.
 const ADD_FACTOR_BINDING_METRIC: &str = "add_factor_binding_check_total";
-
-/// The rollout bridge for the existing=Passkey path: while
-/// `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` is in the future, a Turnkey activity carrying only the
-/// bare challenge (what shipped clients sign today) is still accepted, so the server can deploy
-/// ahead of the app release. Returns the sunset while the bridge is active. Every request that uses
-/// it is one the binding check did not protect, which is why it is counted and logged separately
-/// and why the bridge is off by default and ends by itself.
-fn legacy_passkey_payload_bridge(environment: &Environment) -> Option<DateTime<Utc>> {
-    environment
-        .add_factor_legacy_passkey_payload_sunset()
-        .filter(|sunset| Utc::now() < *sunset)
-}
 
 fn authorization_kind_label(authorization: &Authorization) -> &'static str {
     match authorization {
@@ -128,8 +116,8 @@ fn binding_mismatch(
 /// lock is held, so a rejection anywhere before that costs the user nothing.
 ///
 /// During the client rollout, and only for existing=Passkey, the legacy bare-challenge payload is
-/// still accepted while the configured sunset is in the future — see
-/// [`legacy_passkey_payload_bridge`].
+/// still accepted until the configured sunset has passed — see
+/// [`Environment::legacy_passkey_payload_bridge`].
 ///
 /// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
 /// as a Main Factor for add-factor.
@@ -492,28 +480,26 @@ pub async fn handler(
             // no separate signature check is needed on this field.
             if STANDARD.encode(signed_payload) != backup_service_challenge {
                 let legacy_shape = STANDARD.encode(existing_challenge) == backup_service_challenge;
-                match legacy_passkey_payload_bridge(&environment) {
-                    Some(sunset) if legacy_shape => {
-                        // The client signed only the challenge, exactly as shipped clients do
-                        // today, and the rollout bridge is still open: let it through, but make
-                        // it count — this request's new factor is NOT bound to the approval.
-                        binding_outcome = "legacy_accepted";
-                        tracing::warn!(
-                            message = "Accepted legacy add-factor payload (bare challenge) under the rollout bridge; the new factor is not bound to this approval",
-                            backup_id = backup_id,
-                            new_kind = new_kind,
-                            client_version = client_version,
-                            bridge_sunset = %sunset.to_rfc3339(),
-                        );
-                    }
-                    _ => {
-                        return Err(binding_mismatch(
-                            &backup_id,
-                            existing_kind,
-                            new_kind,
-                            legacy_shape,
-                        ));
-                    }
+                let bridge = environment.legacy_passkey_payload_bridge();
+                if legacy_shape && bridge.is_open() {
+                    // The client signed only the challenge, exactly as shipped clients do today,
+                    // and the rollout bridge is still open: let it through, but make it count —
+                    // this request's new factor is NOT bound to the approval.
+                    binding_outcome = "legacy_accepted";
+                    tracing::warn!(
+                        message = "Accepted legacy add-factor payload (bare challenge) under the rollout bridge; the new factor is not bound to this approval",
+                        backup_id = backup_id,
+                        new_kind = new_kind,
+                        client_version = client_version,
+                        bridge = %bridge,
+                    );
+                } else {
+                    return Err(binding_mismatch(
+                        &backup_id,
+                        existing_kind,
+                        new_kind,
+                        legacy_shape,
+                    ));
                 }
             }
 

@@ -1022,3 +1022,36 @@ pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> 
 
     (jwk, jwt)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rollout bridge for the legacy existing=Passkey add-factor payload (#253)
+// ---------------------------------------------------------------------------------------------
+
+/// Sets (or clears) `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` for one test and clears it again on
+/// drop, panic included. The variable is process-global, so only use this from `#[serial]` tests.
+pub struct LegacyBridgeVar;
+
+impl LegacyBridgeVar {
+    const VAR: &str = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET";
+
+    pub fn set(value: &str) -> Self {
+        std::env::set_var(Self::VAR, value);
+        Self
+    }
+
+    pub fn unset() -> Self {
+        std::env::remove_var(Self::VAR);
+        Self
+    }
+
+    /// A sunset already in the past: only the bound payload is accepted.
+    pub fn closed() -> Self {
+        Self::set("2000-01-01T00:00:00Z")
+    }
+}
+
+impl Drop for LegacyBridgeVar {
+    fn drop(&mut self) {
+        std::env::remove_var(Self::VAR);
+    }
+}

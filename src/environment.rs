@@ -1,6 +1,6 @@
 use crate::kms_jwe::KmsKey;
 use openidconnect::{ClientId, IssuerUrl, JsonWebKeySetUrl};
-use std::env;
+use std::{env, fmt};
 use webauthn_rs::prelude::Url;
 use webauthn_rs::{Webauthn, WebauthnBuilder};
 
@@ -328,18 +328,28 @@ impl Environment {
         }
     }
 
-    /// Until when `/add-factor` still accepts the legacy existing=Passkey payload — a Turnkey
-    /// activity carrying the bare challenge instead of `challenge || material_digest` — next to the
-    /// bound one. Read from `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` (RFC 3339) on every call so
-    /// the bridge can be switched off without a deploy.
+    /// State of the `/add-factor` rollout bridge for the legacy existing=Passkey payload — a Turnkey
+    /// activity carrying the bare challenge instead of `challenge || material_digest`. Evaluated
+    /// against `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` (RFC 3339) on every call.
     ///
-    /// `None` means the bridge is off and only the bound payload is accepted: that is the secure
-    /// default (variable unset), the state the flag must end in (instant in the past), and what an
-    /// unparseable value falls back to. An unparseable value is logged as an error rather than
-    /// silently extending or shortening the window.
-    pub fn add_factor_legacy_passkey_payload_sunset(
-        &self,
-    ) -> Option<chrono::DateTime<chrono::Utc>> {
+    /// The bridge is open unless the variable holds a valid instant that has passed: unset or
+    /// empty means no sunset is configured, and a value that is not an RFC 3339 instant is logged
+    /// as an error and treated the same way, so a typo delays the cutover (visible in the log and
+    /// in `legacy_accepted` not dropping) instead of cutting shipped clients off. Open is the
+    /// default because the server deploys ahead of the app release and production configuration
+    /// lives outside this repository; the variable therefore has to be part of every environment's
+    /// deploy config, since it is the only way to close the bridge.
+    #[must_use]
+    pub fn legacy_passkey_payload_bridge(&self) -> LegacyPasskeyPayloadBridge {
+        match Self::add_factor_legacy_passkey_payload_sunset() {
+            Some(sunset) if chrono::Utc::now() >= sunset => LegacyPasskeyPayloadBridge::Closed,
+            sunset => LegacyPasskeyPayloadBridge::Open { sunset },
+        }
+    }
+
+    /// `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` as an instant; `None` when unset, empty or not
+    /// RFC 3339 (logged as an error).
+    fn add_factor_legacy_passkey_payload_sunset() -> Option<chrono::DateTime<chrono::Utc>> {
         let raw = env::var("ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET").ok()?;
         let raw = raw.trim();
         if raw.is_empty() {
@@ -349,12 +359,43 @@ impl Environment {
             Ok(sunset) => Some(sunset.with_timezone(&chrono::Utc)),
             Err(err) => {
                 tracing::error!(
-                    message = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET is not an RFC 3339 instant; treating the legacy-payload bridge as off",
+                    message = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET is not an RFC 3339 instant; the legacy add-factor payload stays accepted with no sunset",
                     value = raw,
                     error = %err,
                 );
                 None
             }
+        }
+    }
+}
+
+/// Whether `/add-factor` still accepts the legacy existing=Passkey payload next to the bound one.
+/// See [`Environment::legacy_passkey_payload_bridge`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyPasskeyPayloadBridge {
+    /// The legacy payload is accepted; `sunset` is when that stops, if a sunset is configured.
+    Open {
+        sunset: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// The configured sunset has passed; only the bound payload is accepted.
+    Closed,
+}
+
+impl LegacyPasskeyPayloadBridge {
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. })
+    }
+}
+
+impl fmt::Display for LegacyPasskeyPayloadBridge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open { sunset: None } => f.write_str("open, no sunset configured"),
+            Self::Open {
+                sunset: Some(sunset),
+            } => write!(f, "open until {}", sunset.to_rfc3339()),
+            Self::Closed => f.write_str("closed"),
         }
     }
 }
@@ -473,6 +514,46 @@ mod tests {
         env::set_var("DISABLE_ATTESTATION_GATEWAY", "1");
         assert!(env.disable_attestation_gateway_enforcement());
         env::remove_var("DISABLE_ATTESTATION_GATEWAY");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_legacy_passkey_payload_bridge() {
+        const VAR: &str = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET";
+        let env = Environment::Production;
+
+        // Open by default: unset, empty and not-an-instant (logged) all mean "no sunset".
+        for value in [None, Some(""), Some("   "), Some("next year, probably")] {
+            match value {
+                Some(value) => env::set_var(VAR, value),
+                None => env::remove_var(VAR),
+            }
+            assert_eq!(
+                env.legacy_passkey_payload_bridge(),
+                LegacyPasskeyPayloadBridge::Open { sunset: None },
+                "{value:?}"
+            );
+            assert!(env.legacy_passkey_payload_bridge().is_open());
+        }
+
+        // A future instant keeps it open until then.
+        let future = chrono::Utc::now() + chrono::Duration::days(1);
+        env::set_var(VAR, future.to_rfc3339());
+        assert_eq!(
+            env.legacy_passkey_payload_bridge(),
+            LegacyPasskeyPayloadBridge::Open {
+                sunset: Some(future)
+            }
+        );
+
+        // A past instant is the only thing that closes it.
+        env::set_var(VAR, "2000-01-01T00:00:00Z");
+        assert_eq!(
+            env.legacy_passkey_payload_bridge(),
+            LegacyPasskeyPayloadBridge::Closed
+        );
+        assert!(!env.legacy_passkey_payload_bridge().is_open());
+        env::remove_var(VAR);
     }
 
     #[test]
