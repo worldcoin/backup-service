@@ -37,6 +37,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("...Starting backup service");
 
     let environment = Environment::from_env();
+
+    // Degraded security mode worth one line per process start: while the bridge is open, legacy
+    // clients' add-factor approvals are not bound to the new factor (#253). Evaluated here so an
+    // open bridge, or a mistyped sunset (logged as an error by the getter), is visible at startup
+    // rather than only once a legacy request arrives.
+    let legacy_bridge = environment.legacy_passkey_payload_bridge();
+    if legacy_bridge.is_open() {
+        tracing::warn!(
+            message = "add-factor legacy passkey payload bridge is open; legacy clients are not covered by the material binding",
+            bridge = %legacy_bridge,
+        );
+    }
+
     let s3_client = Arc::new(S3Client::from_conf(environment.s3_client_config().await));
     let dynamodb_client = Arc::new(aws_sdk_dynamodb::Client::new(
         &environment.aws_config().await,

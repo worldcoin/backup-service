@@ -1,24 +1,17 @@
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
+use crate::factor_binding::registration_state_hash;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::RngCore;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use types::{
     AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor, Platform,
 };
 use uuid::Uuid;
-
-/// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
-/// token. Binding this into the existing-factor token (see
-/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
-/// prevents swapping a different registration ceremony after the old factor has signed.
-pub(crate) fn registration_state_hash(registration_bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(registration_bytes))
-}
+use webauthn_rs::prelude::COSEAlgorithm;
 
 /// Request to get challenges for adding a new factor.
 ///
@@ -58,7 +51,7 @@ pub async fn handler(
             // one; the WebAuthn options it produces (platform attachment + resident key
             // required + user verification required) are exactly what we need on iOS too, and
             // Apple platforms honor them the same way — it's just not named for that.
-            let (challenge, registration) = match platform {
+            let (mut challenge, registration) = match platform {
                 Platform::Ios | Platform::Android => environment
                     .webauthn_config()
                     .start_google_passkey_in_google_password_manager_only_registration(
@@ -68,6 +61,15 @@ pub async fn handler(
                         None,
                     )?,
             };
+            // The binding digest encodes the new passkey's P-256 key, so `/add-factor` rejects any
+            // non-ES256 credential (`unsupported_passkey_algorithm`). Advertise only what will be
+            // accepted, so no authenticator picks an algorithm the ceremony then fails on. The
+            // registration state keeps webauthn-rs's default list; a credential outside the
+            // advertised set is still caught at completion.
+            challenge
+                .public_key
+                .pub_key_cred_params
+                .retain(|params| params.alg == COSEAlgorithm::ES256 as i64);
             let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
             let registration_json = serde_json::to_string(&registration)?;
             let registration_hash = registration_state_hash(registration_json.as_bytes());
