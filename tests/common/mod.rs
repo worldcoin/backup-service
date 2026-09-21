@@ -709,7 +709,11 @@ pub fn sign_keypair_challenge(secret_key: &SecretKey, challenge: &str) -> String
 pub async fn verify_s3_backup_exists(backup_id: &str, expected_content: &[u8]) -> Vec<u8> {
     let s3_client = get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
-    let backup_key = format!("{backup_id}/backup");
+    let metadata = verify_s3_metadata_exists(backup_id).await;
+    let backup_key = match metadata["archiveId"].as_str() {
+        Some(archive_id) => format!("{backup_id}/backups/{archive_id}"),
+        None => format!("{backup_id}/backup"),
+    };
 
     let operation = || async {
         let result = s3_client

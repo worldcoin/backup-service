@@ -26,6 +26,17 @@ A typical backup lifecycle:
 - **Encrypted Backup Key**: Encryption key for the backup data, encrypted separately for each factor kind. The encrypted key is coming from user's device and is stored in the backup metadata.
 - **Turnkey Shared Passkey Challenge**: A passkey challenge that is a valid [Webauthn Turnkey stamp](https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn) and can be used to add a new factor to backup-service. Allows to add new factor with authorization to Turnkey & backup-service in a single passkey prompt.
 
+### Backup storage
+
+Metadata selects an immutable archive under `<account>/backups/<uuid>`. Create publishes metadata
+only for an unused account; sync replaces it only if its S3 ETag and the client's previous manifest
+hash still match. Metadata without an archive ID reads the original `<account>/backup` object.
+
+Deploy with old service writers drained: older binaries cannot preserve the archive reference.
+Released client request formats are unchanged. Archive uploads are retained, including superseded,
+unpublished, and deleted backups, so downloads holding a metadata snapshot can finish. Physical
+cleanup needs a separate retention policy that protects selected archives and active readers.
+
 ### Running Locally
 
 To run the service locally with a Localstack S3 service:
