@@ -58,12 +58,16 @@ pub async fn handler(
         let sync_factor_token = redis_cache_manager
             .create_sync_factor_token(backup_metadata.id.clone())
             .await?;
+        let sync_factor_maintenance_token = redis_cache_manager
+            .create_sync_factor_maintenance_token(backup_metadata.id.clone())
+            .await?;
 
         // Step 4: Return the backup and metadata
         Ok(Json(RetrieveBackupFromChallengeResponse {
             backup: STANDARD.encode(backup),
             metadata: backup_metadata.exported(),
             sync_factor_token,
+            sync_factor_maintenance_token,
         }))
     }
     .instrument(span)

@@ -4,6 +4,7 @@ use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
+use chrono::Utc;
 use std::sync::Arc;
 use types::BackupEncryptionKey;
 
@@ -61,6 +62,11 @@ pub const MAX_MAIN_FACTORS_PER_BACKUP: usize = 10;
 /// This limit is also consistent with client-side enforcement for Sync Factors and is
 /// below Turnkey's hard limit of 100.
 pub const MAX_SYNC_FACTORS_PER_BACKUP: usize = 25;
+
+/// The metadata does not record a sync factor's last use, so age is the only lifecycle signal
+/// available to this service. The maintenance endpoint removes at most one older factor, and only
+/// after the cap has blocked a recovery, making this a deliberately conservative escape hatch.
+pub const STALE_SYNC_FACTOR_RETENTION_DAYS: i64 = 365;
 
 /// Which factor list in [`BackupMetadata`] an add/reconcile operation targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -708,6 +714,42 @@ impl BackupStorage {
         Ok(metadata)
     }
 
+    /// Reclaims one stale sync-factor slot when the backup has reached its sync-factor cap.
+    ///
+    /// The metadata write is the source of truth. The caller must remove the returned factor from
+    /// the lookup table after this succeeds. The oldest eligible factor is chosen deterministically
+    /// to minimize the impact of a recovery that has accumulated abandoned device keys.
+    pub async fn reclaim_stale_sync_factor_slot(
+        &self,
+        backup_id: &str,
+    ) -> Result<Option<(Factor, BackupMetadata)>, BackupManagerError> {
+        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Err(BackupManagerError::BackupNotFound);
+        };
+        let Some(e_tag) = e_tag else {
+            return Err(BackupManagerError::ETagNotFound);
+        };
+
+        if metadata.sync_factors.len() < MAX_SYNC_FACTORS_PER_BACKUP {
+            return Ok(None);
+        }
+
+        let Some(index) = stale_sync_factor_index(&metadata.sync_factors, Utc::now()) else {
+            return Ok(None);
+        };
+
+        let removed = metadata.sync_factors.remove(index);
+        self.put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_metadata_key(backup_id))
+            .if_match(e_tag)
+            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
+            .send()
+            .await?;
+
+        Ok(Some((removed, metadata)))
+    }
+
     /// Deletes a backup and its metadata from S3.
     ///
     /// # Errors
@@ -768,6 +810,16 @@ impl BackupStorage {
         }
         builder
     }
+}
+
+fn stale_sync_factor_index(sync_factors: &[Factor], now: chrono::DateTime<Utc>) -> Option<usize> {
+    let stale_before = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS);
+    sync_factors
+        .iter()
+        .enumerate()
+        .filter(|(_, factor)| factor.created_at <= stale_before)
+        .min_by_key(|(_, factor)| factor.created_at)
+        .map(|(index, _)| index)
 }
 
 pub struct FoundBackup {
@@ -892,6 +944,31 @@ mod tests {
         let access_denied =
             BackupStorage::classify_put_object_error::<()>(put_object_service_error(403));
         assert!(access_denied.should_rollback_lookup());
+    }
+
+    #[test]
+    fn stale_sync_factor_index_chooses_the_oldest_eligible_factor() {
+        let now = Utc::now();
+        let mut oldest = Factor::new_ec_keypair("oldest".to_string());
+        oldest.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS + 1);
+        let mut newer_stale = Factor::new_ec_keypair("newer-stale".to_string());
+        newer_stale.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS);
+        let mut recent = Factor::new_ec_keypair("recent".to_string());
+        recent.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS - 1);
+
+        assert_eq!(
+            stale_sync_factor_index(&[newer_stale, recent, oldest], now),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn stale_sync_factor_index_ignores_recent_factors() {
+        let now = Utc::now();
+        let mut recent = Factor::new_ec_keypair("recent".to_string());
+        recent.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS - 1);
+
+        assert_eq!(stale_sync_factor_index(&[recent], now), None);
     }
 
     #[test]

@@ -3,7 +3,8 @@
 
 use backup_service_types::endpoints::{
     AddFactorRequest, BodyKind, CreateBackupRequest, Endpoint, Method, NewFactor, Platform,
-    ResetRequest, SyncBackupRequest, ALL_ENDPOINTS,
+    ReclaimSyncFactorSlotRequest, ReclaimSyncFactorSlotResponse, ResetRequest, SyncBackupRequest,
+    ALL_ENDPOINTS,
 };
 use backup_service_types::{
     Authorization, BackupEncryptionKey, ErrorBody, ErrorCode, ErrorObject, ExportedBackupMetadata,
@@ -89,6 +90,25 @@ fn authorization_ec_keypair() {
             "signature": "c2ln",
         }),
     );
+}
+
+#[test]
+fn reclaim_sync_factor_slot_wire() {
+    assert_wire(
+        &ReclaimSyncFactorSlotRequest {
+            sync_factor_maintenance_token: "maintenance-token".to_string(),
+        },
+        &json!({"syncFactorMaintenanceToken": "maintenance-token"}),
+    );
+    assert_wire(
+        &ReclaimSyncFactorSlotResponse { reclaimed: true },
+        &json!({"reclaimed": true}),
+    );
+    assert_eq!(
+        ReclaimSyncFactorSlotRequest::PATH,
+        "/v1/reclaim-sync-factor-slot"
+    );
+    assert!(ReclaimSyncFactorSlotRequest::REQUIRES_ATTESTATION);
 }
 
 #[test]

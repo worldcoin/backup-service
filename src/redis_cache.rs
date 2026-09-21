@@ -52,27 +52,20 @@ impl RedisCacheManager {
         &self,
         backup_id: String,
     ) -> Result<String, RedisCacheError> {
-        // Generate a random token
-        let mut token_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut token_bytes);
-        let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
+        self.create_scoped_token(SYNC_FACTOR_TOKEN_PREFIX, backup_id)
+            .await
+    }
 
-        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
-
-        let ttl_seconds = self.default_ttl.as_secs();
-        let token_data = SyncFactorTokenData::new(backup_id);
-        let mut redis = self.redis.clone();
-        redis
-            .set_options(
-                &token_hash,
-                token_data.into_bytes(),
-                SetOptions::default()
-                    .with_expiration(SetExpiry::EX(ttl_seconds))
-                    .conditional_set(ExistenceCheck::NX),
-            )
-            .await?;
-
-        Ok(token)
+    /// Creates a single-use token permitting bounded sync-factor maintenance after recovery.
+    ///
+    /// It intentionally has a distinct Redis prefix from `sync_factor_token`: possession grants
+    /// only the maintenance operation, never registration of an arbitrary sync factor.
+    pub async fn create_sync_factor_maintenance_token(
+        &self,
+        backup_id: String,
+    ) -> Result<String, RedisCacheError> {
+        self.create_scoped_token(SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX, backup_id)
+            .await
     }
 
     /// Verifies the token and returns the backup ID, unless it was already used.
@@ -97,7 +90,48 @@ impl RedisCacheManager {
     /// * `RedisCacheError::TokenExpired` - if the token has expired
     /// * `RedisCacheError::ParseError` - if the token data cannot be parsed
     pub async fn use_sync_factor_token(&self, token: String) -> Result<String, RedisCacheError> {
-        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
+        self.use_scoped_token(SYNC_FACTOR_TOKEN_PREFIX, token).await
+    }
+
+    /// Consumes a recovery-issued sync-factor-maintenance token and returns its backup ID.
+    pub async fn use_sync_factor_maintenance_token(
+        &self,
+        token: String,
+    ) -> Result<String, RedisCacheError> {
+        self.use_scoped_token(SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX, token)
+            .await
+    }
+
+    async fn create_scoped_token(
+        &self,
+        prefix: &str,
+        backup_id: String,
+    ) -> Result<String, RedisCacheError> {
+        let mut token_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut token_bytes);
+        let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash = hash_token(prefix, &token);
+        let ttl_seconds = self.default_ttl.as_secs();
+        let token_data = SyncFactorTokenData::new(backup_id);
+        let mut redis = self.redis.clone();
+        redis
+            .set_options(
+                &token_hash,
+                token_data.into_bytes(),
+                SetOptions::default()
+                    .with_expiration(SetExpiry::EX(ttl_seconds))
+                    .conditional_set(ExistenceCheck::NX),
+            )
+            .await?;
+        Ok(token)
+    }
+
+    async fn use_scoped_token(
+        &self,
+        prefix: &str,
+        token: String,
+    ) -> Result<String, RedisCacheError> {
+        let token_hash = hash_token(prefix, &token);
         let mut redis = self.redis.clone();
 
         // Lua script for atomic check-and-set operation
@@ -314,6 +348,7 @@ impl SyncFactorTokenData {
 }
 
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
+const SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX: &str = "syncFactorMaintenanceToken";
 const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash";
 const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
