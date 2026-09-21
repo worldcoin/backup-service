@@ -184,7 +184,11 @@ async fn orphaned_upload_does_not_reserve_an_account() {
     let original = metadata();
     for key in [
         format!("{}/backup", original.id),
-        format!("{}/backups/{}", original.id, Uuid::new_v4()),
+        format!(
+            "{}/backups/archive_{}",
+            original.id,
+            Uuid::new_v4().simple()
+        ),
     ] {
         client
             .put_object()
@@ -327,7 +331,7 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
             .mock(
                 "PUT",
                 Matcher::Regex(format!(
-                    "^/{}/{}/backups/[0-9a-f-]+$",
+                    "^/{}/{}/backups/archive_[0-9a-f]{{32}}$",
                     environment.s3_bucket(),
                     original.id
                 )),

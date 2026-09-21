@@ -28,7 +28,8 @@ A typical backup lifecycle:
 
 ### Backup storage
 
-Metadata selects an immutable archive under `<account>/backups/<uuid>`. Create publishes metadata
+Metadata selects an immutable archive under `<account>/backups/archive_<uuidcompact>`.
+The UUID is lowercase with no hyphens. Create publishes metadata
 only for an unused account; sync replaces it only if its S3 ETag and the client's previous manifest
 hash still match. Metadata without an archive ID reads the original `<account>/backup` object.
 
