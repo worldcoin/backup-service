@@ -301,7 +301,9 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
         .unwrap()
         .unwrap();
 
-    for (upload_status, commit_status) in [(503, 200), (200, 412), (200, 409), (200, 503)] {
+    for (upload_status, commit_status) in
+        [(503, 200), (200, 412), (200, 409), (200, 404), (200, 503)]
+    {
         let mut server = mockito::Server::new_async().await;
         let config = environment
             .s3_client_config()
@@ -343,7 +345,11 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
             .match_query(Matcher::Any)
             .match_header("if-match", etag.as_ref().unwrap().as_str())
             .with_status(commit_status)
-            .with_body("<Error><Code>PreconditionFailed</Code></Error>")
+            .with_body(if commit_status == 404 {
+                "<Error><Code>NoSuchKey</Code></Error>"
+            } else {
+                "<Error><Code>PreconditionFailed</Code></Error>"
+            })
             .expect(usize::from(upload_status == 200))
             .create_async()
             .await;
@@ -362,6 +368,11 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
             )
             .await;
         assert!(result.is_err());
+        if commit_status == 404 {
+            let Err(BackupManagerError::BackupNotFound) = result else {
+                panic!("a concurrent deletion must report BackupNotFound");
+            };
+        }
         read.assert_async().await;
         upload.assert_async().await;
         commit.assert_async().await;

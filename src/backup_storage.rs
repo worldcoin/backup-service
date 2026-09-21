@@ -101,7 +101,16 @@ impl BackupStorage {
             .body(ByteStream::from(serde_json::to_vec(&backup_metadata)?))
             .if_none_match("*")
             .send()
-            .await?;
+            .await
+            .inspect_err(|error| {
+                metrics::counter!("backup_archive_publication_failures_total", "operation" => "create")
+                    .increment(1);
+                tracing::warn!(
+                    message = "Archive publication unconfirmed; retaining uploaded copy",
+                    archive_id = ?backup_metadata.archive_id,
+                    error = ?error,
+                );
+            })?;
 
         Ok(())
     }
@@ -229,6 +238,10 @@ impl BackupStorage {
 
         match result {
             Ok(_) => Ok(()),
+            Err(SdkError::ServiceError(err)) if err.raw().status().as_u16() == 404 => {
+                tracing::warn!(message = "Backup deleted while syncing", backup_id);
+                Err(BackupManagerError::BackupNotFound)
+            }
             Err(SdkError::ServiceError(err))
                 if err.raw().status().as_u16() == 412 || err.raw().status().as_u16() == 409 =>
             {
@@ -236,6 +249,10 @@ impl BackupStorage {
             }
             Err(err) => Err(err.into()),
         }
+        .inspect_err(|_| {
+            metrics::counter!("backup_archive_publication_failures_total", "operation" => "sync")
+                .increment(1);
+        })
     }
 
     async fn upload_archive(
@@ -244,6 +261,7 @@ impl BackupStorage {
         backup: Bytes,
     ) -> Result<Uuid, BackupManagerError> {
         let archive_id = Uuid::new_v4();
+        let size = backup.len() as u64;
         self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(format!("{backup_id}/backups/{archive_id}"))
@@ -251,6 +269,8 @@ impl BackupStorage {
             .body(ByteStream::from(backup))
             .send()
             .await?;
+        metrics::counter!("backup_archive_uploads_total").increment(1);
+        metrics::counter!("backup_archive_upload_bytes_total").increment(size);
         Ok(archive_id)
     }
 
