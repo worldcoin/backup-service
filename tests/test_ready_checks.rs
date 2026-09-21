@@ -1,4 +1,6 @@
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::Request;
 use backup_service::{
@@ -7,6 +9,7 @@ use backup_service::{
     challenge_manager::{ChallengeContext, ChallengeType},
     environment::Environment,
     factor_lookup::FactorToLookup,
+    shutdown,
 };
 use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
 use http::StatusCode;
@@ -120,11 +123,18 @@ async fn test_end_to_end_readiness() {
         .expect("Failed to create challenge token");
 }
 
+async fn get_status(app: axum::Router, path: &str) -> StatusCode {
+    let request = Request::builder().uri(path).body(String::new()).unwrap();
+    app.oneshot(request).await.unwrap().status()
+}
+
 #[tokio::test]
 async fn test_ready_endpoint() {
     dotenvy::from_filename(".env.example").unwrap();
+    shutdown::install_signal_handlers().unwrap();
     let app = get_test_router(None, None).await;
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/ready")
@@ -140,4 +150,22 @@ async fn test_ready_endpoint() {
     let response_body = response.into_body().collect().await.unwrap().to_bytes();
     let response_body: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
     assert_eq!(response_body, json!({ "status": "ok" }));
+
+    // Assert graceful shutdown
+    let pid = std::process::id().to_string();
+    let killed = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    assert!(killed.success(), "could not signal the test process");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !shutdown::is_draining() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the signal handler must start the drain");
+
+    assert_eq!(
+        get_status(app.clone(), "/ready").await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(get_status(app, "/health").await, StatusCode::OK,);
 }

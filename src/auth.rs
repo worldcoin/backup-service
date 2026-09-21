@@ -97,6 +97,12 @@ pub struct ValidationResult {
     pub factor_to_lookup: FactorToLookup,
 }
 
+/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
+/// `FactorLookup` rows that no longer match backup metadata (the source of truth). `FactorLookup` is
+/// only a convenience index and the two stores are written non-atomically, so this is the only
+/// signal into how often — and how successfully — that drift actually gets cleaned up in production.
+const FACTOR_LOOKUP_GC_METRIC: &str = "factor_lookup_gc_total";
+
 #[derive(Clone)]
 pub struct AuthHandler {
     backup_storage: Arc<BackupStorage>,
@@ -663,6 +669,7 @@ impl AuthHandler {
         {
             Ok(guard) => guard,
             Err(RedisCacheError::Locked) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "locked_skip").increment(1);
                 tracing::info!(
                     message = "Skipping stale FactorLookup delete; mutate lock held by a writer",
                     scope = %scope,
@@ -671,6 +678,8 @@ impl AuthHandler {
                 return;
             }
             Err(err) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "lock_error_skip")
+                    .increment(1);
                 tracing::error!(
                     message = "Skipping stale FactorLookup delete; failed to acquire mutate lock",
                     error = ?err,
@@ -683,6 +692,7 @@ impl AuthHandler {
 
         match self.factor_lookup.delete(scope, factor).await {
             Ok(()) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "deleted").increment(1);
                 tracing::info!(
                     message = "Deleted stale FactorLookup not authorized in backup metadata",
                     scope = %scope,
@@ -690,6 +700,8 @@ impl AuthHandler {
                 );
             }
             Err(err) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "delete_failed")
+                    .increment(1);
                 tracing::error!(
                     message = "Failed to delete stale FactorLookup during authentication",
                     error = ?err,

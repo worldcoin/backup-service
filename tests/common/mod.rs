@@ -25,6 +25,7 @@ use josekit::jwk::alg::ec::EcCurve;
 use josekit::jwk::Jwk;
 use josekit::jws::{JwsHeader, ES256};
 use josekit::jwt::{self, JwtPayload};
+use k256::elliptic_curve::Generate;
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
@@ -400,13 +401,13 @@ pub struct BackupAccount {
 
 impl BackupAccount {
     pub fn generate() -> Self {
-        Self::from_secret_key(k256::SecretKey::random(&mut OsRng))
+        Self::from_secret_key(k256::SecretKey::generate())
     }
 
     pub fn from_secret_key(secret_key: k256::SecretKey) -> Self {
         let signing_key = k256::ecdsa::SigningKey::from(&secret_key);
         let compressed = k256::ecdsa::VerifyingKey::from(&signing_key)
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
 

@@ -5,6 +5,7 @@ use crate::factor_lookup::FactorLookup;
 use crate::oidc_token_verifier::OidcTokenVerifier;
 use crate::redis_cache::RedisCacheManager;
 use crate::routes;
+use crate::shutdown;
 use crate::{auth::AuthHandler, backup_storage::BackupStorage};
 use aide::openapi::{ApiKeyLocation, Info, OpenApi, ReferenceOr, SecurityScheme};
 use aws_sdk_s3::Client as S3Client;
@@ -15,15 +16,16 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::trace::{MakeSpan, OnResponse};
 use tracing::Span;
+use types::endpoints::{HEALTH_PATH, READY_PATH};
 
-/// Custom span maker that excludes /health endpoint from logs
+/// Custom span maker that excludes the probe endpoints from logs
 #[derive(Clone)]
 struct ConditionalMakeSpan {}
 
 impl<B> MakeSpan<B> for ConditionalMakeSpan {
     fn make_span(&mut self, request: &axum::http::Request<B>) -> Span {
-        // don't create a span for /health endpoint
-        if request.uri().path() == "/health" {
+        let path = request.uri().path();
+        if path == HEALTH_PATH || path == READY_PATH {
             return Span::none();
         }
 
@@ -134,7 +136,9 @@ pub async fn start(
         .layer(
             tower_http::trace::TraceLayer::new_for_http()
                 .make_span_with(ConditionalMakeSpan {})
-                .on_response(ConditionalOnResponse {}),
+                .on_response(ConditionalOnResponse {})
+                // The response hook above already logs failures, with the status and the latency.
+                .on_failure(()),
         )
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -171,11 +175,26 @@ pub async fn start(
     tracing::info!("✅ Backup service started on http://{addr}");
     tracing::info!("📊 Metrics available on http://{metrics_addr}/metrics");
 
-    let (api_result, metrics_result) = tokio::join!(
-        axum::serve(listener, router.into_make_service()),
-        axum::serve(metrics_listener, metrics_router.into_make_service()),
-    );
-    api_result.map_err(anyhow::Error::from)?;
-    metrics_result.map_err(anyhow::Error::from)?;
+    let servers = async {
+        tokio::join!(
+            axum::serve(listener, router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+            axum::serve(metrics_listener, metrics_router.into_make_service())
+                .with_graceful_shutdown(shutdown::drained()),
+        )
+    };
+
+    tokio::select! {
+        biased;
+        (api_result, metrics_result) = servers => {
+            api_result.map_err(anyhow::Error::from)?;
+            metrics_result.map_err(anyhow::Error::from)?;
+            tracing::info!(message = "graceful shutdown complete");
+        }
+        () = shutdown::deadline() => {
+            tracing::error!(message = "shutdown deadline hit, terminating in-flight requests");
+        }
+    }
+
     Ok(())
 }
