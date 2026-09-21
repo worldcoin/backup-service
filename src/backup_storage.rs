@@ -381,10 +381,10 @@ impl BackupStorage {
     /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts (`412`, timeouts,
     /// 5xx) surface as errors — callers may retry; the exact-match pre-check makes retries safe.
     ///
-    /// `expected_factor_kind` must still be present in the metadata this function reads — the key
-    /// is only ever meaningful attached to that factor. Without this check, a concurrent delete of
-    /// that factor between the caller's own presence check and this call would still succeed in
-    /// appending the key, leaving it orphaned with no owning factor (see #265).
+    /// The key only makes sense while the factor it belongs to exists, so this function checks that
+    /// a factor of `expected_factor_kind` is present in the metadata snapshot it is about to write.
+    /// The caller's own check is not enough: that factor can be deleted between the caller's check
+    /// and this write, which would leave a key with no owning factor (#265).
     ///
     /// # Errors
     /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent,
@@ -403,6 +403,9 @@ impl BackupStorage {
             return Err(BackupManagerError::ETagNotFound);
         };
 
+        // Ownership is only implied by the kind today, so "some factor of this kind exists" is the
+        // strongest check available; #276 tracks tying each key to its owning factor so this
+        // becomes structural rather than a scan.
         if !metadata
             .factors
             .iter()
