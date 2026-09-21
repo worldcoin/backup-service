@@ -1,7 +1,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use passkey::authenticator::Authenticator;
-use passkey::authenticator::{UserCheck, UserValidationMethod};
+use passkey::authenticator::{UiHint, UserCheck, UserValidationMethod};
 use passkey::client::Client;
 use passkey::types::Passkey;
 use passkey::types::ctap2::{Aaguid, Ctap2Error};
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 pub type MockPasskeyClient =
-    Client<Option<Passkey>, MockUserValidationMethod, public_suffix::PublicSuffixList>;
+    Client<Option<Passkey>, MockUserValidationMethod, public_suffix::PublicSuffixList, ()>;
 
 pub struct MockUserValidationMethod {}
 
@@ -28,7 +28,7 @@ impl UserValidationMethod for MockUserValidationMethod {
 
     async fn check_user<'a>(
         &self,
-        _credential: Option<&'a Self::PasskeyItem>,
+        _hint: UiHint<'a, Self::PasskeyItem>,
         _presence: bool,
         _verification: bool,
     ) -> Result<UserCheck, Ctap2Error> {
