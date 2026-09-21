@@ -270,8 +270,8 @@ impl BackupStorage {
         &self,
         backup_id: &str,
         backup: Bytes,
-    ) -> Result<Uuid, BackupManagerError> {
-        let archive_id = Uuid::new_v4();
+    ) -> Result<String, BackupManagerError> {
+        let archive_id = format!("archive_{}", Uuid::new_v4().simple());
         let size = backup.len() as u64;
         self.put_object()
             .bucket(self.environment.s3_bucket())
@@ -773,7 +773,7 @@ pub struct FoundBackup {
 }
 
 fn get_backup_key(metadata: &BackupMetadata) -> String {
-    match metadata.archive_id {
+    match &metadata.archive_id {
         Some(archive_id) => format!("{}/backups/{archive_id}", metadata.id),
         None => format!("{}/backup", metadata.id),
     }
