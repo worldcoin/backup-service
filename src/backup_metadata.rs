@@ -42,7 +42,7 @@ pub struct BackupMetadata {
     /// Selects an immutable upload; absent for backups stored at the original S3 key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_id: Option<Uuid>,
-    /// Public key used to encrypt this archive; only main-authorized registration can initialize it.
+    /// Encryption public key, initialized only by main-authorized registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_public_key: Option<String>,
 }

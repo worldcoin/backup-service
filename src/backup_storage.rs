@@ -204,7 +204,8 @@ impl BackupStorage {
     /// # Errors
     /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
     /// * `BackupManagerError::ManifestHashMismatch` - if another writer committed first.
-    /// * `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key is missing or different.
+    /// * `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key is missing
+    ///   or differs from the stored key.
     /// * `BackupManagerError::ETagNotFound` - if S3 returned an object with no `ETag`.
     /// * `BackupManagerError::GetObjectError` / `PutObjectError` - if S3 fails.
     /// * `BackupManagerError::ByteStreamError` - if the backup cannot be converted to bytes.
@@ -428,7 +429,8 @@ impl BackupStorage {
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
     ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
     ///   so a just-inserted sync lookup (and sync token) can be rolled back.
-    /// - `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key would replace the key.
+    /// - `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key would replace
+    ///   the stored key.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,

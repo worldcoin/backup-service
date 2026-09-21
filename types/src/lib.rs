@@ -220,7 +220,7 @@ pub struct ExportedBackupMetadata {
     /// must be presented when performing updates (syncs) to the backup, which ensures updates are
     /// always performed on the latest state.
     pub manifest_hash: String,
-    /// Hex-encoded, 32-byte backup encryption public key. Absent until registered for legacy backups.
+    /// Hex-encoded, 32-byte encryption public key; absent on unregistered legacy backups.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

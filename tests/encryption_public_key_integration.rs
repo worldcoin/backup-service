@@ -65,9 +65,13 @@ async fn retrieve(key: &SecretKey) -> Value {
         body(send_post_request("/v1/retrieve/challenge/keypair", json!({})).await).await;
     let response = send_post_request_with_bypass_attestation_token(
         "/v1/retrieve/from-challenge",
-        json!({"authorization": authorization(key, &challenge), "challengeToken": challenge["token"]}),
+        json!({
+            "authorization": authorization(key, &challenge),
+            "challengeToken": challenge["token"],
+        }),
         None,
-    ).await;
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     body(response).await
 }
