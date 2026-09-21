@@ -132,6 +132,8 @@ pub enum ErrorCode {
     BackupAccountIdAlreadyExists,
     /// The backup account ID is malformed.
     InvalidBackupAccountId,
+    /// The request did not carry the signature proving ownership of the backup account ID.
+    MissingBackupAccountProof,
     /// The signature is malformed.
     InvalidSignature,
     /// The signature did not verify against the challenge.

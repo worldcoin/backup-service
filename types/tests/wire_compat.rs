@@ -366,6 +366,7 @@ const ERROR_CODES: &[&str] = &[
     "invalid_turnkey_activity",
     "jwt_error",
     "manifest_hash_mismatch",
+    "missing_backup_account_proof",
     "missing_backup_field",
     "missing_email",
     "missing_payload_field",

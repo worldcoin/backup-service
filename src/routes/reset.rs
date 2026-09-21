@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::backup_account::verify_backup_account_signature;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::{ChallengeContext, ChallengeManager};
 use crate::error::ErrorResponse;
@@ -7,11 +8,6 @@ use crate::factor_lookup::FactorLookup;
 use crate::redis_cache::RedisCacheManager;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use k256::ecdsa::signature::Verifier;
-use k256::ecdsa::{Signature, VerifyingKey};
-use k256::EncodedPoint;
 use tracing::Instrument;
 use types::{ErrorCode, ResetRequest};
 
@@ -91,147 +87,4 @@ pub async fn handler(
     }
     .instrument(span)
     .await
-}
-
-/// Extracts the public key from a `backup_account_id` and verifies a signature on a given message.
-///
-/// # Important
-/// The `backup_account_id` is a public key on the `secp256k1` curve.
-fn verify_backup_account_signature(
-    backup_account_id: &str,
-    signature_base64: &str,
-    message: &[u8],
-) -> Result<(), ErrorResponse> {
-    // Extract the hex-encoded compressed public key from backup_account_id
-    let compressed_hex = backup_account_id
-        .strip_prefix("backup_account_")
-        .ok_or_else(|| {
-            ErrorResponse::bad_request(
-                ErrorCode::InvalidBackupAccountId,
-                "backup_account_id must start with 'backup_account_' prefix.",
-            )
-        })?;
-
-    // Decode the hex to get compressed SEC1 bytes (33 bytes)
-    let compressed_bytes = hex::decode(compressed_hex).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::InvalidBackupAccountId,
-            "backup_account_id contains invalid hex encoding.",
-        )
-    })?;
-
-    if compressed_bytes.len() != 33 {
-        return Err(ErrorResponse::bad_request(
-            ErrorCode::InvalidBackupAccountId,
-            "backup_account_id must contain exactly 33 bytes of compressed public key data.",
-        ));
-    }
-
-    // Parse the compressed SEC1 public key
-    let encoded_point = EncodedPoint::from_bytes(&compressed_bytes).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::InvalidBackupAccountId,
-            "Failed to parse compressed public key from backup_account_id.",
-        )
-    })?;
-
-    let verifying_key = VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::InvalidBackupAccountId,
-            "Failed to create verifying key from backup_account_id.",
-        )
-    })?;
-
-    // Decode the base64 signature
-    let signature_bytes = STANDARD.decode(signature_base64).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::InvalidSignature,
-            "Signature must be valid base64.",
-        )
-    })?;
-
-    // Parse DER signature
-    let signature = Signature::from_der(&signature_bytes).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::InvalidSignature,
-            "Failed to parse signature as DER format.",
-        )
-    })?;
-
-    // Verify the signature
-    verifying_key.verify(message, &signature).map_err(|_| {
-        ErrorResponse::bad_request(
-            ErrorCode::SignatureVerificationError,
-            "Signature verification failed.",
-        )
-    })?;
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use k256::ecdsa::signature::Signer;
-    use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
-    use k256::SecretKey;
-
-    #[test]
-    fn test_verify_backup_account_signature_success() {
-        // Generate a test keypair
-        let secret_key = SecretKey::random(&mut OsRng);
-        let signing_key = SigningKey::from(&secret_key);
-        // Explicit use of `secp256k1` in the tests
-        let verifying_key = k256::ecdsa::VerifyingKey::from(&signing_key);
-
-        // Create backup_account_id from compressed public key
-        let compressed_bytes = verifying_key.to_encoded_point(true).as_bytes().to_vec();
-        let backup_account_id = format!("backup_account_{}", hex::encode(&compressed_bytes));
-
-        // Sign a message
-        let message = b"test challenge";
-        let signature: Signature = signing_key.sign(message);
-        let signature_base64 = STANDARD.encode(signature.to_der());
-
-        // Should succeed
-        let result =
-            verify_backup_account_signature(&backup_account_id, &signature_base64, message);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_verify_backup_account_signature_wrong_signature() {
-        // Generate a test keypair
-        let secret_key = SecretKey::random(&mut OsRng);
-        let signing_key = SigningKey::from(&secret_key);
-        let verifying_key = VerifyingKey::from(&signing_key);
-
-        // Create backup_account_id from compressed public key
-        let compressed_bytes = verifying_key.to_encoded_point(true).as_bytes().to_vec();
-        let backup_account_id = format!("backup_account_{}", hex::encode(&compressed_bytes));
-
-        // Sign a different message
-        let message = b"test challenge";
-        let wrong_message = b"wrong challenge";
-        let signature: Signature = signing_key.sign(wrong_message);
-        let signature_base64 = STANDARD.encode(signature.to_der());
-
-        // Should fail
-        let result =
-            verify_backup_account_signature(&backup_account_id, &signature_base64, message);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_verify_backup_account_signature_invalid_backup_account_id() {
-        let result = verify_backup_account_signature("invalid_format", "dGVzdA==", b"test");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_verify_backup_account_signature_invalid_hex() {
-        let result = verify_backup_account_signature("backup_account_GGGG", "dGVzdA==", b"test");
-        assert!(result.is_err());
-    }
 }

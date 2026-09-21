@@ -1,5 +1,6 @@
 pub mod attestation_gateway;
 pub mod auth;
+pub mod backup_account;
 pub mod backup_metadata;
 pub mod backup_storage;
 pub mod challenge_manager;
@@ -14,6 +15,7 @@ pub mod oidc_token_verifier;
 pub mod redis_cache;
 pub mod routes;
 pub mod server;
+pub mod shutdown;
 pub mod turnkey_activity;
 pub mod utils;
 pub mod verify_signature;

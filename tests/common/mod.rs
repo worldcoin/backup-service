@@ -286,14 +286,15 @@ pub async fn send_post_request_with_bypass_attestation_token(
     .unwrap()
 }
 
-// Get a passkey challenge response from the server
+// Get a passkey challenge response from the server. The response also carries the Backup Account
+// challenge that `/create` requires.
 pub async fn get_passkey_challenge() -> serde_json::Value {
     let challenge_response = send_post_request(
         "/v1/create/challenge/passkey",
         json!({
             "name": "MOCK USERNAME",
             "displayName": "MOCK DISPLAY NAME",
-            "platform": "IOS"
+            "platform": "IOS",
         }),
     )
     .await;
@@ -306,7 +307,8 @@ pub async fn get_passkey_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
-// Get a keypair challenge response from the server that's used for OIDC and Keypair registration
+// Get a keypair challenge response from the server that's used for OIDC and Keypair registration.
+// The response also carries the Backup Account challenge that `/create` requires.
 pub async fn get_keypair_challenge() -> serde_json::Value {
     let challenge_response = send_post_request("/v1/create/challenge/keypair", json!({})).await;
     let challenge_response: Bytes = challenge_response
@@ -333,7 +335,8 @@ pub async fn get_keypair_retrieve_challenge() -> serde_json::Value {
 // Get sync factor as keypair that signs a challenge from the server.
 // Returns (factor, challenge token, secret key).
 pub async fn make_sync_factor() -> (serde_json::Value, String, SecretKey) {
-    // Get a challenge from the server
+    // Get a challenge from the server. A sync factor does not authorize the backup account ID, so
+    // the Backup Account challenge in the response is unused.
     let challenge_response = get_keypair_challenge().await;
 
     // Generate keypair and sign the challenge
@@ -378,6 +381,10 @@ pub async fn get_keypair_retrieval_challenge() -> serde_json::Value {
     serde_json::from_slice(&challenge_response).unwrap()
 }
 
+/// Generates a syntactically valid backup ID with no known secret key. Only for tests that write
+/// metadata directly or expect a lookup miss: `/create` rejects it for want of a break-glass proof.
+/// Note the random x coordinate lands on `secp256k1` about half the time, so this is not a reliable
+/// way to produce an ID that fails curve validation.
 pub fn generate_random_backup_id() -> String {
     let mut test_backup_id: [u8; 33] = [0; 33];
     OsRng.fill_bytes(&mut test_backup_id);
@@ -385,13 +392,66 @@ pub fn generate_random_backup_id() -> String {
     format!("backup_account_{}", hex::encode(test_backup_id))
 }
 
+/// A break-glass keypair and the `backup_account_id` that encodes its public key.
+pub struct BackupAccount {
+    pub id: String,
+    pub secret_key: k256::SecretKey,
+}
+
+impl BackupAccount {
+    pub fn generate() -> Self {
+        Self::from_secret_key(k256::SecretKey::random(&mut OsRng))
+    }
+
+    pub fn from_secret_key(secret_key: k256::SecretKey) -> Self {
+        let signing_key = k256::ecdsa::SigningKey::from(&secret_key);
+        let compressed = k256::ecdsa::VerifyingKey::from(&signing_key)
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
+
+        Self {
+            id: format!("backup_account_{}", hex::encode(compressed)),
+            secret_key,
+        }
+    }
+
+    /// Signs a base64-encoded challenge with the break-glass key.
+    pub fn sign(&self, challenge: &str) -> String {
+        use k256::ecdsa::signature::Signer;
+
+        let signing_key = k256::ecdsa::SigningKey::from(&self.secret_key);
+        let challenge = STANDARD.decode(challenge).unwrap();
+        let signature: k256::ecdsa::Signature = signing_key.sign(&challenge);
+        STANDARD.encode(signature.to_der())
+    }
+
+    /// Builds the `(backupAccountChallengeToken, backupAccountSignature)` pair that `/create`
+    /// expects, from a create challenge response.
+    pub fn proof(&self, challenge_response: &serde_json::Value) -> (String, String) {
+        let token = challenge_response["backupAccountChallengeToken"]
+            .as_str()
+            .expect("challenge response is missing backupAccountChallengeToken")
+            .to_string();
+        let signature = self.sign(
+            challenge_response["backupAccountChallenge"]
+                .as_str()
+                .expect("challenge response is missing backupAccountChallenge"),
+        );
+
+        (token, signature)
+    }
+}
+
 /// Create a test backup with a passkey credential. Returns both the credential JSON and the create response.
 pub async fn create_test_backup(
     passkey_client: &mut MockPasskeyClient,
     backup_data: &[u8],
 ) -> (serde_json::Value, Response) {
-    // Get a challenge from the server
+    // Get a challenge from the server, which also carries the Backup Account challenge
+    let backup_account = BackupAccount::generate();
     let challenge_response = get_passkey_challenge().await;
+    let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Register a credential by solving the challenge
     let credential =
@@ -416,7 +476,9 @@ pub async fn create_test_backup(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": "0101010101010101010101010101010101010101010101010101010101010101",
-            "backupAccountId": generate_random_backup_id(),
+            "backupAccountId": backup_account.id,
+            "backupAccountChallengeToken": proof_token,
+            "backupAccountSignature": proof_signature,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -445,8 +507,10 @@ pub async fn create_test_backup(
 pub async fn create_test_backup_with_keypair(
     backup_data: &[u8],
 ) -> ((String, SecretKey), Response) {
-    // Get a challenge from the server
+    // Get a challenge from the server, which also carries the Backup Account challenge
+    let backup_account = BackupAccount::generate();
     let challenge_response = get_keypair_challenge().await;
+    let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Generate keypair and sign the challenge
     let keypair = generate_keypair();
@@ -475,7 +539,9 @@ pub async fn create_test_backup_with_keypair(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
-            "backupAccountId": generate_random_backup_id(),
+            "backupAccountId": backup_account.id,
+            "backupAccountChallengeToken": proof_token,
+            "backupAccountSignature": proof_signature,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -493,8 +559,10 @@ pub async fn create_test_backup_with_keypair(
 pub async fn create_test_backup_with_sync_keypair(
     backup_data: &[u8],
 ) -> ((String, SecretKey), Response, SecretKey) {
-    // Get a challenge from the server
+    // Get a challenge from the server, which also carries the Backup Account challenge
+    let backup_account = BackupAccount::generate();
     let challenge_response = get_keypair_challenge().await;
+    let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Generate keypair and sign the challenge
     let keypair = generate_keypair();
@@ -523,7 +591,9 @@ pub async fn create_test_backup_with_sync_keypair(
             "initialSyncFactor": sync_factor,
             "initialSyncChallengeToken": sync_challenge_token,
             "manifestHash": hex::encode([1u8; 32]),
-            "backupAccountId": generate_random_backup_id(),
+            "backupAccountId": backup_account.id,
+            "backupAccountChallengeToken": proof_token,
+            "backupAccountSignature": proof_signature,
         }),
         Bytes::from(backup_data.to_vec()),
         None,
@@ -552,8 +622,10 @@ pub async fn create_test_backup_with_oidc_account(
     let environment =
         Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
-    // Get a challenge from the server
+    // Get a challenge from the server, which also carries the Backup Account challenge
+    let backup_account = BackupAccount::generate();
     let challenge_response = get_keypair_challenge().await;
+    let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Generate temporary keypair for OIDC authentication and sign the challenge
     let (public_key, secret_key) = generate_keypair();
@@ -595,7 +667,9 @@ pub async fn create_test_backup_with_oidc_account(
             "initialSyncChallengeToken": sync_challenge_token,
             "turnkeyProviderId": "turnkey_provider_id",
             "manifestHash": hex::encode([1u8; 32]),
-            "backupAccountId": generate_random_backup_id(),
+            "backupAccountId": backup_account.id,
+            "backupAccountChallengeToken": proof_token,
+            "backupAccountSignature": proof_signature,
         }),
         Bytes::from(backup_data.to_vec()),
         Some(environment),
