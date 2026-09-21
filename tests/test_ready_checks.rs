@@ -102,7 +102,6 @@ async fn test_end_to_end_readiness() {
         .await
         .expect("Failed to create backup");
 
-    // Step 6: Remove the backup (S3 GetObject + DeleteObject)
     backup_storage
         .get_by_backup_id(TEST_BACKUP_ID)
         .await

@@ -6,7 +6,9 @@ use aws_sdk_s3::Client;
 use backup_service::backup_metadata::{BackupMetadata, Factor};
 use backup_service::backup_storage::{BackupManagerError, BackupStorage};
 use backup_service::environment::Environment;
+use backup_service::error::ErrorResponse;
 use mockito::Matcher;
+use types::ErrorCode;
 use uuid::Uuid;
 
 async fn storage() -> (BackupStorage, Client, Environment) {
@@ -367,12 +369,15 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
                 "02".repeat(32),
             )
             .await;
-        assert!(result.is_err());
-        if commit_status == 404 {
-            let Err(BackupManagerError::BackupNotFound) = result else {
-                panic!("a concurrent deletion must report BackupNotFound");
-            };
-        }
+        let error = ErrorResponse::from(result.unwrap_err());
+        let expected = if commit_status == 404 {
+            ErrorCode::BackupNotFound
+        } else if commit_status == 409 || commit_status == 412 {
+            ErrorCode::ManifestHashMismatch
+        } else {
+            ErrorCode::InternalServerError
+        };
+        assert_eq!(error.code(), &expected);
         read.assert_async().await;
         upload.assert_async().await;
         commit.assert_async().await;
