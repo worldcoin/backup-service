@@ -4,8 +4,12 @@ use base64::Engine;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::{AsyncTypedCommands, ExistenceCheck, RedisError, Script, SetExpiry, SetOptions};
 use sha2::{Digest, Sha256};
+use std::future::Future;
 use std::time::Duration;
+use tokio::time::Instant;
 use types::OidcProvider;
+
+pub const BACKUP_LOCK_PREFIX: &str = "backup_account:";
 
 /// The `RedisCacheManager` introduces a simple and generic cache layer on top of `Redis`.
 ///
@@ -73,6 +77,24 @@ impl RedisCacheManager {
             .await?;
 
         Ok(token)
+    }
+
+    /// Resolves an unused enrollment token without consuming it.
+    ///
+    /// # Errors
+    /// Returns an error for missing, used, malformed tokens or Redis failures.
+    pub async fn sync_factor_backup_id(&self, token: &str) -> Result<String, RedisCacheError> {
+        let mut redis = self.redis.clone();
+        let data: Option<Vec<u8>> = redis::cmd("GET")
+            .arg(hash_token(SYNC_FACTOR_TOKEN_PREFIX, token))
+            .query_async(&mut redis)
+            .await?;
+        let data = data.ok_or(RedisCacheError::TokenNotFound)?;
+        let token = SyncFactorTokenData::from_bytes(&data)?;
+        if token.is_used {
+            return Err(RedisCacheError::AlreadyUsed);
+        }
+        Ok(token.backup_id)
     }
 
     /// Verifies the token and returns the backup ID, unless it was already used.
@@ -159,7 +181,7 @@ impl RedisCacheManager {
             return Err(RedisCacheError::TokenNotFound);
         }
 
-        redis.setrange(&token_hash, 0, 0).await?;
+        redis.setrange(&token_hash, 0, &[0_u8]).await?;
         Ok(())
     }
 
@@ -253,6 +275,15 @@ impl RedisCacheManager {
             ttl_seconds.unwrap_or(self.default_ttl.as_secs()),
         )
         .await
+    }
+
+    /// Locks all reads of archive bytes and mutations for one backup account.
+    ///
+    /// # Errors
+    /// Returns `Locked` if another operation owns the account, or a Redis connection error.
+    pub async fn lock_backup(&self, backup_id: &str) -> Result<RedisLockGuard, RedisCacheError> {
+        self.try_acquire_lock_guard(BACKUP_LOCK_PREFIX, backup_id, Some(120))
+            .await
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -352,15 +383,22 @@ pub struct RedisLockGuard {
     identifier: String,
     owner_token: String,
     released: bool,
+    deadline: Instant,
 }
 
 impl RedisLockGuard {
+    pub fn limit_deadline(&mut self, deadline: Instant) {
+        self.deadline = self.deadline.min(deadline);
+    }
+
     async fn new_from_manager(
         manager: &RedisCacheManager,
         prefix: String,
         identifier: String,
         ttl_seconds: u64,
     ) -> Result<Self, RedisCacheError> {
+        // Finish before the HTTP timeout and leave time for cancelled storage calls to settle.
+        let deadline = Instant::now() + Duration::from_secs(ttl_seconds.min(25));
         let mut redis = manager.redis.clone();
 
         let lock_options = SetOptions::default()
@@ -389,7 +427,44 @@ impl RedisLockGuard {
             identifier,
             owner_token,
             released: false,
+            deadline,
         })
+    }
+
+    /// Runs an operation within this lease, refusing stale or released ownership.
+    ///
+    /// # Errors
+    /// Returns `Locked` if ownership is lost or the operation exceeds its deadline.
+    pub fn run<T, E, F>(
+        &self,
+        operation: F,
+    ) -> impl Future<Output = Result<T, E>> + use<'_, T, E, F>
+    where
+        E: From<RedisCacheError>,
+        F: Future<Output = Result<T, E>>,
+    {
+        let operation = Box::pin(operation);
+        async move {
+            let guarded = async {
+                if self.released || Instant::now() >= self.deadline {
+                    return Err(RedisCacheError::Locked.into());
+                }
+                let mut redis = self.redis.clone();
+                let owner: Option<String> = redis
+                    .get(self.as_key())
+                    .await
+                    .map_err(RedisCacheError::from)?;
+                if owner.as_deref() != Some(self.owner_token.as_str()) {
+                    return Err(RedisCacheError::Locked.into());
+                }
+                operation.await
+            };
+            tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(self.deadline) => Err(RedisCacheError::Locked.into()),
+                result = guarded => result,
+            }
+        }
     }
 
     /// Explicitly releases the lock. Safe to call multiple times.
@@ -444,6 +519,72 @@ impl Drop for RedisLockGuard {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn expired_guard_does_not_start_work_or_release_another_owner() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut guard = cache.lock_backup(&id).await.unwrap();
+        guard.deadline = Instant::now();
+        let result: Result<(), RedisCacheError> =
+            guard.run(async { panic!("stale work ran") }).await;
+        assert!(matches!(result, Err(RedisCacheError::Locked)));
+
+        guard.deadline = Instant::now() + Duration::from_secs(25);
+        let mut redis = cache.redis.clone();
+        redis.set(guard.as_key(), "another-owner").await.unwrap();
+        let result: Result<(), RedisCacheError> =
+            guard.run(async { panic!("stale work ran") }).await;
+        assert!(matches!(result, Err(RedisCacheError::Locked)));
+        guard.release().await.unwrap();
+        assert_eq!(
+            redis.get(guard.as_key()).await.unwrap().as_deref(),
+            Some("another-owner")
+        );
+        redis.del(guard.as_key()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lease_deadline_cancels_pending_work() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let mut guard = cache
+            .lock_backup(&uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        guard.deadline = Instant::now() + Duration::from_millis(50);
+        let result: Result<(), RedisCacheError> = guard.run(std::future::pending()).await;
+        assert!(matches!(result, Err(RedisCacheError::Locked)));
+        guard.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn enrollment_lookup_preserves_token_and_rejects_used_tokens() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let token = cache.create_sync_factor_token(id.clone()).await.unwrap();
+        assert_eq!(cache.sync_factor_backup_id(&token).await.unwrap(), id);
+        assert_eq!(
+            cache.use_sync_factor_token(token.clone()).await.unwrap(),
+            id
+        );
+        assert!(matches!(
+            cache.sync_factor_backup_id(&token).await,
+            Err(RedisCacheError::AlreadyUsed)
+        ));
+        assert!(matches!(
+            cache.sync_factor_backup_id("missing").await,
+            Err(RedisCacheError::TokenNotFound)
+        ));
+    }
 
     #[tokio::test]
     async fn test_create_and_use_token() {

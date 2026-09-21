@@ -44,7 +44,7 @@ pub async fn handler(
     }
 
     // Step 2: Auth. Verify the solved challenge
-    let (backup_id, backup_metadata) = auth_handler
+    let (backup_id, backup_metadata, mut account_lock) = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Sync,
@@ -59,7 +59,7 @@ pub async fn handler(
         .await?;
 
     let span = tracing::info_span!("delete_factor", backup_id = %backup_id, scope = %request.scope);
-    async move {
+    let result = account_lock.run(async move {
         // Step 3: Find the factor to delete from the backup
         let factor_to_delete = match request.scope {
             FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
@@ -72,6 +72,16 @@ pub async fn handler(
         let Some(factor_to_delete) = factor_to_delete else {
             tracing::info!(message = "Factor not found in backup metadata");
             return Err(ErrorResponse::bad_request(ErrorCode::FactorNotFound, "Factor not found in backup"));
+        };
+
+        let lookup_deletion = if request.scope == FactorScope::Main && backup_metadata.factors.len() == 1 {
+            factor_lookup.prepare_deletion(&backup_metadata).await?
+        } else {
+            factor_lookup.prepare_factor_deletion(
+                &backup_id,
+                request.scope,
+                &factor_to_delete.as_factor_to_lookup(&environment),
+            ).await?
         };
 
         // Step 4: Delete the factor from the backup storage
@@ -112,18 +122,12 @@ pub async fn handler(
         //   this may lead to a backup not found error when retrieval, but it does not affect security.
 
         // Step 5: Delete the factor from the `FactorLookup` (or all factors for the backup if it's the last main factor)
-        if backup_deleted {
-            factor_lookup
-                .delete_all_by_backup_id(backup_id.clone())
-                .await?;
-        } else {
-            factor_lookup
-                .delete(request.scope, &factor_to_delete.as_factor_to_lookup(&environment))
-                .await?;
-        }
+        factor_lookup.delete_captured(lookup_deletion).await?;
 
         Ok(Json(DeleteFactorResponse { backup_deleted, backup_metadata: metadata.map(|m| m.exported()) }))
-    }
+    })
     .instrument(span)
-    .await
+    .await;
+    let _ = account_lock.release().await;
+    result
 }

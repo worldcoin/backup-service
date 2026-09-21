@@ -115,6 +115,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
         .api_route(
             SyncBackupRequest::PATH,
             post(sync_backup::handler)
+                .route_layer(middleware::from_fn(sync_backup::with_deadline))
                 .route_layer(middleware::from_fn(validate_content_length))
                 .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )

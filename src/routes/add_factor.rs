@@ -45,7 +45,9 @@ pub async fn handler(
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     // Step 1: Check authorization for the existing factor and get the backup ID
-    let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
+    let (backup_id, expected_new_factor, mut account_lock) = match &request
+        .existing_factor_authorization
+    {
         Authorization::Passkey { credential, .. } => {
             // Step 1A.1: Validate the format of data: turnkey activity, passkey assertion object
 
@@ -71,15 +73,22 @@ pub async fn handler(
             let Some(backup_id) = backup_id else {
                 return Err(AuthError::BackupUntraceable.into());
             };
-            let backup = backup_storage.get_by_backup_id(&backup_id).await?;
-            let Some(backup) = backup else {
+            let account_lock = redis_cache_manager.lock_backup(&backup_id).await?;
+            let metadata = account_lock
+                .run(async {
+                    backup_storage
+                        .get_metadata_by_backup_id(&backup_id)
+                        .await
+                        .map_err(ErrorResponse::from)
+                })
+                .await?;
+            let Some((backup_metadata, _)) = metadata else {
                 return Err(AuthError::BackupMissing.into());
             };
 
             // Step 1A.3: Verify the signature of the passkey assertion object using the public key
             // from backup metadata as a reference. It should sign the Turnkey activity.
-            let reference_passkey = backup
-                .metadata
+            let reference_passkey = backup_metadata
                 .factors
                 .iter()
                 .find_map(|factor| {
@@ -110,7 +119,7 @@ pub async fn handler(
             // Step 1A.4: Verify the Turnkey activity is valid and matches what we know about the user.
 
             // If the user already has a Turnkey account registered, we expect the Turnkey activity to contain the same account ID.
-            let expected_turnkey_account_id = backup.metadata.keys.iter().find_map(|key| {
+            let expected_turnkey_account_id = backup_metadata.keys.iter().find_map(|key| {
                 if let BackupEncryptionKey::Turnkey {
                     turnkey_account_id, ..
                 } = key
@@ -179,7 +188,7 @@ pub async fn handler(
             // TODO / FIXME
 
             // Step 1A.7: Return the backup ID and the new factor type
-            (backup_id, new_factor_type)
+            (backup_id, new_factor_type, account_lock)
         }
         Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
             // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair.
@@ -192,6 +201,7 @@ pub async fn handler(
         }
     };
 
+    let result = account_lock.run(async {
     // Step 2: Validate the new factor using AuthHandler
     // First, we need to verify that the new factor type matches what was expected from the existing factor's challenge
     match &request.new_factor_authorization {
@@ -288,4 +298,7 @@ pub async fn handler(
         factor_id: new_factor.id,
         backup_metadata: updated_metadata.exported(),
     }))
+    }).await;
+    let _ = account_lock.release().await;
+    result
 }
