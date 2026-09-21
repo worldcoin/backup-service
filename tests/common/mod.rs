@@ -25,12 +25,12 @@ use josekit::jwk::alg::ec::EcCurve;
 use josekit::jwk::Jwk;
 use josekit::jws::{JwsHeader, ES256};
 use josekit::jwt::{self, JwtPayload};
-use k256::elliptic_curve::Generate;
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::SecretKey;
+use rand::rngs::OsRng;
 use rand::RngCore;
 use serde_json::json;
 use std::sync::Arc;
@@ -690,7 +690,7 @@ pub async fn create_test_backup_with_oidc_account(
 /// Generate a P256 keypair that's used as a temporary session keypair in OIDC authentication
 /// and as a permanent keypair in the keypair backups.
 pub fn generate_keypair() -> (String, SecretKey) {
-    let secret_key = SecretKey::random(&mut OsRng);
+    let secret_key = SecretKey::generate();
     let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
     (public_key, secret_key)
 }

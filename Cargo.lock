@@ -470,7 +470,7 @@ dependencies = [
  "hmac 0.13.0",
  "http 0.2.12",
  "http 1.3.1",
- "p256",
+ "p256 0.13.2",
  "percent-encoding",
  "sha2 0.11.0",
  "subtle",
@@ -847,7 +847,7 @@ dependencies = [
  "metrics",
  "mockito",
  "openidconnect",
- "p256",
+ "p256 0.14.0",
  "rand 0.8.6",
  "redis",
  "reqwest",
@@ -879,7 +879,7 @@ dependencies = [
  "hex",
  "mockito",
  "openidconnect",
- "p256",
+ "p256 0.14.0",
  "passkey",
  "public-suffix",
  "rand 0.8.6",
@@ -2809,7 +2809,7 @@ dependencies = [
  "itertools",
  "log",
  "oauth2",
- "p256",
+ "p256 0.13.2",
  "p384",
  "rand 0.8.6",
  "rsa",
@@ -2906,6 +2906,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "p256"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a"
+dependencies = [
+ "ecdsa 0.17.0",
+ "elliptic-curve 0.14.1",
+ "primefield",
+ "primeorder 0.14.0",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "p384"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2961,7 +2974,7 @@ dependencies = [
  "async-trait",
  "coset",
  "log",
- "p256",
+ "p256 0.13.2",
  "passkey-types",
  "rand 0.8.6",
 ]

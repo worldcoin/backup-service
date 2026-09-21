@@ -14,9 +14,8 @@ use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
-use k256::elliptic_curve::Generate;
 use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::SecretKey;
 use serde_json::json;
 use std::sync::Arc;
@@ -111,7 +110,7 @@ async fn create_test_backup_with_backup_account_id(
     );
 
     // Create a sync factor - use same challenge as main factor (create challenge)
-    let sync_factor_secret_key = SecretKey::random(&mut OsRng);
+    let sync_factor_secret_key = SecretKey::generate();
     let sync_factor_signing_key = SigningKey::from(&sync_factor_secret_key);
     let sync_factor_public_key =
         STANDARD.encode(sync_factor_signing_key.verifying_key().to_sec1_bytes());

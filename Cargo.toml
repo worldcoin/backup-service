@@ -20,7 +20,7 @@ sha2 = "0.10.8"
 strum = "0.27.2"
 strum_macros = "0.27.1"
 uuid = { version = "1.23.0", features = ["v4", "serde"] }
-p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 k256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
 
 # dev workspace dependencies
