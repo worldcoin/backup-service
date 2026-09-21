@@ -252,7 +252,7 @@ async fn concurrent_factor_write_and_sync_preserve_the_selected_archive() {
 }
 
 #[tokio::test]
-async fn deletion_unpublishes_without_invalidating_an_existing_reader() {
+async fn deletion_removes_archives_before_recreation() {
     let (storage, _, _) = storage().await;
     let original = metadata();
     storage
@@ -271,26 +271,115 @@ async fn deletion_unpublishes_without_invalidating_an_existing_reader() {
         .await
         .unwrap()
         .is_none());
-    assert_eq!(
-        storage
-            .get_backup_by_metadata(&snapshot.metadata)
-            .await
-            .unwrap()
-            .unwrap(),
-        b"old"
-    );
+    assert!(storage
+        .get_backup_by_metadata(&snapshot.metadata)
+        .await
+        .unwrap()
+        .is_none());
     storage
         .create(b"replacement".to_vec().into(), &original)
         .await
         .unwrap();
-    assert_eq!(
-        storage
-            .get_backup_by_metadata(&snapshot.metadata)
+    assert!(storage
+        .get_backup_by_metadata(&snapshot.metadata)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn failed_conditional_delete_preserves_archives() {
+    let (_, _, environment) = storage().await;
+    let metadata = metadata();
+    let mut server = mockito::Server::new_async().await;
+    let client = Client::from_conf(
+        environment
+            .s3_client_config()
             .await
-            .unwrap()
-            .unwrap(),
-        b"old"
+            .to_builder()
+            .endpoint_url(server.url())
+            .retry_config(RetryConfig::disabled())
+            .build(),
     );
+    let storage = BackupStorage::new(environment, Arc::new(client));
+    let path = format!("/{}/{}/metadata", environment.s3_bucket(), metadata.id);
+    let read = server
+        .mock("GET", path.as_str())
+        .match_query(Matcher::Any)
+        .with_header("etag", "\"original\"")
+        .with_body(serde_json::to_vec(&metadata).unwrap())
+        .create_async()
+        .await;
+    let list = server
+        .mock(
+            "GET",
+            Matcher::Regex(format!("^/{}/?$", environment.s3_bucket())),
+        )
+        .match_query(Matcher::Any)
+        .with_body("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+        .create_async()
+        .await;
+    // LocalStack 4.14 ignores batch-delete ETags, so exercise the AWS contract here.
+    let deletion = server.mock("POST", Matcher::Regex(format!("^/{}/?$", environment.s3_bucket())))
+        .match_query(Matcher::Any)
+        .match_body(Matcher::Regex("<ETag>original</ETag>".into()))
+        .with_body(format!("<DeleteResult><Error><Key>{}/metadata</Key><Code>PreconditionFailed</Code></Error></DeleteResult>", metadata.id))
+        .create_async().await;
+    let archives = server
+        .mock("DELETE", Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let result = storage.delete_backup(&metadata.id).await;
+    assert!(
+        matches!(result, Err(BackupManagerError::DeletionRejected(_))),
+        "{result:?}"
+    );
+    read.assert_async().await;
+    list.assert_async().await;
+    deletion.assert_async().await;
+    archives.assert_async().await;
+}
+
+#[tokio::test]
+async fn deletion_includes_superseded_unpublished_and_legacy_archives() {
+    let (storage, client, environment) = storage().await;
+    let metadata = metadata();
+    storage
+        .create(b"old".to_vec().into(), &metadata)
+        .await
+        .unwrap();
+    storage
+        .update_backup(
+            &metadata.id,
+            b"new".to_vec().into(),
+            "01".repeat(32),
+            "02".repeat(32),
+        )
+        .await
+        .unwrap();
+    for key in [
+        format!("{}/backup", metadata.id),
+        format!("{}/backups/unpublished", metadata.id),
+    ] {
+        client
+            .put_object()
+            .bucket(environment.s3_bucket())
+            .key(key)
+            .body(b"leftover".to_vec().into())
+            .send()
+            .await
+            .unwrap();
+    }
+    storage.delete_backup(&metadata.id).await.unwrap();
+    let remaining = client
+        .list_objects_v2()
+        .bucket(environment.s3_bucket())
+        .prefix(format!("{}/", metadata.id))
+        .send()
+        .await
+        .unwrap();
+    assert!(remaining.contents().is_empty());
 }
 
 #[tokio::test]

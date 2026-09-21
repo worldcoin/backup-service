@@ -105,6 +105,22 @@ impl OidcTokenVerifier {
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
+        let claims = self
+            .verify_claims(token, expected_public_key_sec1_base64)
+            .await?;
+        self.consume_nonce(token, &claims).await?;
+        Ok(claims)
+    }
+
+    /// Verifies claims without consuming the nonce, so callers can first acquire an account lock.
+    ///
+    /// # Errors
+    /// Returns an error if the token, audience, signature, or nonce binding is invalid.
+    pub(crate) async fn verify_claims(
+        &self,
+        token: &OidcToken,
+        expected_public_key_sec1_base64: String,
+    ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
         // Step 1: Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
@@ -150,7 +166,14 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Step 6: Track the nonce to prevent replays
+        Ok(claims.clone())
+    }
+
+    pub(crate) async fn consume_nonce(
+        &self,
+        token: &OidcToken,
+        claims: &IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>,
+    ) -> Result<(), OidcTokenVerifierError> {
         let nonce = claims
             .nonce()
             .ok_or(OidcTokenVerifierError::MissingNonce)?
@@ -160,7 +183,7 @@ impl OidcTokenVerifier {
             .use_oidc_nonce(nonce, &token.into())
             .await?;
 
-        Ok(claims.clone())
+        Ok(())
     }
 }
 
