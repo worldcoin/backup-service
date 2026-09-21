@@ -204,6 +204,7 @@ impl BackupStorage {
     /// # Errors
     /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
     /// * `BackupManagerError::ManifestHashMismatch` - if another writer committed first.
+    /// * `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key is missing or different.
     /// * `BackupManagerError::ETagNotFound` - if S3 returned an object with no `ETag`.
     /// * `BackupManagerError::GetObjectError` / `PutObjectError` - if S3 fails.
     /// * `BackupManagerError::ByteStreamError` - if the backup cannot be converted to bytes.
@@ -427,6 +428,7 @@ impl BackupStorage {
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
     ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
     ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// - `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key would replace the key.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -456,6 +458,13 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
+        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
+        if let Some(duplicate) =
+            Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
+        {
+            return duplicate;
+        }
+
         if let Some(key) = encryption_public_key {
             if let Some(existing) = &metadata.encryption_public_key {
                 if existing != &key {
@@ -465,13 +474,6 @@ impl BackupStorage {
                 }
             }
             metadata.encryption_public_key = Some(key);
-        }
-
-        // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
-        if let Some(duplicate) =
-            Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
-        {
-            return duplicate;
         }
 
         if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {

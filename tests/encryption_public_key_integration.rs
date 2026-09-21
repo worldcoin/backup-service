@@ -94,14 +94,13 @@ async fn sync(
     .await
 }
 
-async fn enroll(token: &str, encryption_key: Option<&str>) -> Response {
+async fn enroll(token: &str, encryption_key: Option<&str>, key: &SecretKey) -> Response {
     let challenge =
         body(send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await).await;
-    let (_, key) = generate_keypair();
     send_post_request(
         "/v1/add-sync-factor",
         json!({
-            "syncFactor": authorization(&key, &challenge),
+            "syncFactor": authorization(key, &challenge),
             "challengeToken": challenge["token"],
             "syncFactorToken": token,
             "encryptionPublicKey": encryption_key,
@@ -171,7 +170,12 @@ async fn only_main_authorized_registration_can_initialize_a_legacy_key() {
     assert_eq!(rejected.status(), StatusCode::CONFLICT);
     assert_eq!(verify_s3_metadata_exists(&id).await, snapshot);
 
-    let unauthorized = enroll("invalid-token", Some(&encryption_key)).await;
+    let unauthorized = enroll(
+        "invalid-token",
+        Some(&encryption_key),
+        &generate_keypair().1,
+    )
+    .await;
     assert_eq!(unauthorized.status(), StatusCode::BAD_REQUEST);
     assert_eq!(verify_s3_metadata_exists(&id).await, snapshot);
 
@@ -180,6 +184,7 @@ async fn only_main_authorized_registration_can_initialize_a_legacy_key() {
     let accepted = enroll(
         retrieved["syncFactorToken"].as_str().unwrap(),
         Some(&encryption_key),
+        &generate_keypair().1,
     )
     .await;
     assert_eq!(accepted.status(), StatusCode::OK);
@@ -208,7 +213,7 @@ async fn registration_rejects_replacement_and_can_retry_with_the_matching_key() 
     let snapshot = verify_s3_metadata_exists(&id).await;
     let retrieved = retrieve(&main).await;
     let token = retrieved["syncFactorToken"].as_str().unwrap();
-    let rejected = enroll(token, Some(&"cd".repeat(32))).await;
+    let rejected = enroll(token, Some(&"cd".repeat(32)), &generate_keypair().1).await;
     assert_eq!(rejected.status(), StatusCode::CONFLICT);
     assert_eq!(
         body(rejected).await["error"]["code"],
@@ -216,10 +221,62 @@ async fn registration_rejects_replacement_and_can_retry_with_the_matching_key() 
     );
     assert_eq!(verify_s3_metadata_exists(&id).await, snapshot);
 
-    let accepted = enroll(token, Some(&encryption_key)).await;
+    let accepted = enroll(token, Some(&encryption_key), &generate_keypair().1).await;
     assert_eq!(accepted.status(), StatusCode::OK);
     let after = verify_s3_metadata_exists(&id).await;
     assert_eq!(after["archiveId"], snapshot["archiveId"]);
     assert_eq!(after["encryptionPublicKey"], encryption_key);
     assert_eq!(after["syncFactors"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn mismatched_duplicate_registration_preserves_a_repaired_lookup() {
+    use backup_service::environment::Environment;
+    use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
+    use std::sync::Arc;
+    use types::FactorScope;
+
+    let encryption_key = "ab".repeat(32);
+    let (id, main, sync_key) = create(Some(&encryption_key)).await;
+    let snapshot = verify_s3_metadata_exists(&id).await;
+    let retrieved = retrieve(&main).await;
+    let environment = Environment::development(None);
+    let lookup = FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::new(
+            &environment.aws_config().await,
+        )),
+    );
+    let factor = FactorToLookup::from_ec_keypair(
+        BASE64_STANDARD.encode(sync_key.public_key().to_sec1_bytes()),
+    );
+    lookup.delete(FactorScope::Sync, &factor).await.unwrap();
+
+    let rejected = enroll(
+        retrieved["syncFactorToken"].as_str().unwrap(),
+        Some(&"cd".repeat(32)),
+        &sync_key,
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body(rejected).await["error"]["code"],
+        "factor_already_exists"
+    );
+    assert_eq!(verify_s3_metadata_exists(&id).await, snapshot);
+    assert_eq!(
+        lookup
+            .lookup_consistent(FactorScope::Sync, &factor)
+            .await
+            .unwrap(),
+        Some(id)
+    );
+    let synced = sync(
+        &sync_key,
+        Some(&encryption_key),
+        &"01".repeat(32),
+        &"02".repeat(32),
+    )
+    .await;
+    assert_eq!(synced.status(), StatusCode::OK);
 }
