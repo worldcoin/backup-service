@@ -3,10 +3,14 @@ mod common;
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::response::Response;
+use backup_service::environment::Environment;
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use base64::prelude::{Engine, BASE64_STANDARD};
 use http_body_util::BodyExt;
 use p256::SecretKey;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use types::FactorScope;
 
 use crate::common::{
     generate_keypair, get_keypair_challenge, make_sync_factor, send_post_request,
@@ -217,15 +221,31 @@ async fn registration_rejects_replacement_and_can_retry_with_the_matching_key() 
     let snapshot = verify_s3_metadata_exists(&id).await;
     let retrieved = retrieve(&main).await;
     let token = retrieved["syncFactorToken"].as_str().unwrap();
-    let rejected = enroll(token, Some(&"cd".repeat(32)), &generate_keypair().1).await;
+    let (_, candidate) = generate_keypair();
+    let environment = Environment::development(None);
+    let lookup = FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::new(
+            &environment.aws_config().await,
+        )),
+    );
+    let factor = FactorToLookup::from_ec_keypair(
+        BASE64_STANDARD.encode(candidate.public_key().to_sec1_bytes()),
+    );
+    let rejected = enroll(token, Some(&"cd".repeat(32)), &candidate).await;
     assert_eq!(rejected.status(), StatusCode::CONFLICT);
     assert_eq!(
         body(rejected).await["error"]["code"],
         "encryption_public_key_mismatch"
     );
     assert_eq!(verify_s3_metadata_exists(&id).await, snapshot);
+    assert!(lookup
+        .lookup_consistent(FactorScope::Sync, &factor)
+        .await
+        .unwrap()
+        .is_none());
 
-    let accepted = enroll(token, Some(&encryption_key), &generate_keypair().1).await;
+    let accepted = enroll(token, Some(&encryption_key), &candidate).await;
     assert_eq!(accepted.status(), StatusCode::OK);
     let after = verify_s3_metadata_exists(&id).await;
     assert_eq!(after["archiveId"], snapshot["archiveId"]);
@@ -235,11 +255,6 @@ async fn registration_rejects_replacement_and_can_retry_with_the_matching_key() 
 
 #[tokio::test]
 async fn mismatched_duplicate_registration_preserves_a_repaired_lookup() {
-    use backup_service::environment::Environment;
-    use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
-    use std::sync::Arc;
-    use types::FactorScope;
-
     let encryption_key = "ab".repeat(32);
     let (id, main, sync_key) = create(Some(&encryption_key)).await;
     let snapshot = verify_s3_metadata_exists(&id).await;
