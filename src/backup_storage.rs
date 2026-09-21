@@ -103,8 +103,10 @@ impl BackupStorage {
             .send()
             .await
             .inspect_err(|error| {
-                metrics::counter!("backup_archive_publication_failures_total", "operation" => "create")
-                    .increment(1);
+                metrics::counter!(
+                    "backup_archive_publication_failures_total", "operation" => "create"
+                )
+                .increment(1);
                 tracing::warn!(
                     message = "Archive publication unconfirmed; retaining uploaded copy",
                     archive_id = ?backup_metadata.archive_id,
