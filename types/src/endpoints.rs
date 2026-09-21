@@ -297,6 +297,13 @@ pub struct CreateBackupRequest {
     pub challenge_token: String,
     /// The first encrypted copy of the backup encryption key.
     pub initial_encryption_key: BackupEncryptionKey,
+    /// Hex-encoded, 32-byte public key used to encrypt the backup. Optional for released clients.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::normalize_optional_hex_32"
+    )]
+    pub encryption_public_key: Option<String>,
     /// First sync factor registered for this backup.
     pub initial_sync_factor: Authorization,
     /// Token from the challenge the `initial_sync_factor` solves.
@@ -480,6 +487,14 @@ pub struct AddSyncFactorRequest {
     /// The `sync_factor_token` from [`RetrieveBackupFromChallengeResponse`], which authorizes the
     /// request against a specific backup.
     pub sync_factor_token: String,
+    /// Verified encryption public key from main-factor recovery, used to initialize legacy backups.
+    /// An existing key must match and cannot be replaced.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::normalize_optional_hex_32"
+    )]
+    pub encryption_public_key: Option<String>,
 }
 
 impl Endpoint for AddSyncFactorRequest {
@@ -618,6 +633,14 @@ pub struct SyncBackupRequest {
     /// The hex-encoded manifest hash of the backup after this update.
     #[serde(deserialize_with = "crate::normalize_hex_32")]
     pub new_manifest_hash: String,
+    /// Must match the stored encryption public key when supplied. Omitted by released clients.
+    /// Sync cannot initialize a missing key; use main-authorized sync-factor registration first.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::normalize_optional_hex_32"
+    )]
+    pub encryption_public_key: Option<String>,
 }
 
 impl Endpoint for SyncBackupRequest {

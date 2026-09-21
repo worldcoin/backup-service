@@ -37,6 +37,12 @@ Released client request formats are unchanged. Archive uploads are retained, inc
 unpublished, and deleted backups, so downloads holding a metadata snapshot can finish. Physical
 cleanup needs a separate retention policy that protects selected archives and active readers.
 
+Create and main-authorized sync-factor registration accept an optional `encryptionPublicKey`:
+the hex-encoded, 32-byte key clients already use to encrypt the archive. Registration can initialize
+a missing legacy key but cannot replace one. Sync checks a supplied key against metadata before
+uploading; it cannot initialize a missing key. Authenticated metadata returns the stored key.
+Omitting the field remains supported for released clients; requiring it is a later rollout step.
+
 ### Running Locally
 
 To run the service locally with a Localstack S3 service:

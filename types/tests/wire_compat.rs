@@ -2,8 +2,8 @@
 //! on the wire format
 
 use backup_service_types::endpoints::{
-    AddFactorRequest, BodyKind, CreateBackupRequest, Endpoint, Method, NewFactor, Platform,
-    ResetRequest, SyncBackupRequest, ALL_ENDPOINTS,
+    AddFactorRequest, AddSyncFactorRequest, BodyKind, CreateBackupRequest, Endpoint, Method,
+    NewFactor, Platform, ResetRequest, SyncBackupRequest, ALL_ENDPOINTS,
 };
 use backup_service_types::{
     Authorization, BackupEncryptionKey, ErrorBody, ErrorCode, ErrorObject, ExportedBackupMetadata,
@@ -262,6 +262,7 @@ fn backup_metadata() {
             },
         }],
         manifest_hash: "ab".repeat(32),
+        encryption_public_key: None,
     };
 
     assert_wire(
@@ -347,6 +348,7 @@ const ERROR_CODES: &[&str] = &[
     "empty_backup_file",
     "encryption_key_not_allowed",
     "encryption_key_not_found",
+    "encryption_public_key_mismatch",
     "factor_already_exists",
     "factor_not_found",
     "factor_orphaned_from_encryption_key",
@@ -453,6 +455,66 @@ fn manifest_hashes_of_the_wrong_length_are_rejected() {
         "newManifestHash": "cd".repeat(32),
     });
     assert!(serde_json::from_value::<SyncBackupRequest>(body).is_err());
+}
+
+fn check_encryption_public_key<T: Serialize + DeserializeOwned>(mut body: Value) {
+    for key in [None, Some(Value::Null)] {
+        if let Some(key) = key {
+            body["encryptionPublicKey"] = key;
+        }
+        let decoded: T = serde_json::from_value(body.clone()).unwrap();
+        assert!(serde_json::to_value(decoded)
+            .unwrap()
+            .get("encryptionPublicKey")
+            .is_none());
+    }
+    for key in ["AB".repeat(32), format!("0x{}", "AB".repeat(32))] {
+        body["encryptionPublicKey"] = json!(key);
+        let decoded: T = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["encryptionPublicKey"],
+            "ab".repeat(32)
+        );
+    }
+    for key in [
+        json!(""),
+        json!("ab".repeat(31)),
+        json!("ab".repeat(33)),
+        json!("gg".repeat(32)),
+        json!(42),
+    ] {
+        body["encryptionPublicKey"] = key;
+        assert!(serde_json::from_value::<T>(body.clone()).is_err());
+    }
+}
+
+#[test]
+fn encryption_public_key_requests_preserve_legacy_wire_format_and_validate_present_keys() {
+    let authorization = json!({"kind": "EC_KEYPAIR", "publicKey": "pk", "signature": "sig"});
+    check_encryption_public_key::<CreateBackupRequest>(json!({
+        "authorization": authorization,
+        "challengeToken": "token",
+        "initialEncryptionKey": {"kind": "PRF", "encryptedKey": "encrypted"},
+        "initialSyncFactor": authorization,
+        "initialSyncChallengeToken": "sync-token",
+        "manifestHash": "01".repeat(32),
+        "backupAccountId": format!("backup_account_{}", "ab".repeat(33)),
+    }));
+    check_encryption_public_key::<SyncBackupRequest>(json!({
+        "authorization": authorization,
+        "challengeToken": "token",
+        "currentManifestHash": "01".repeat(32),
+        "newManifestHash": "02".repeat(32),
+    }));
+    check_encryption_public_key::<AddSyncFactorRequest>(json!({
+        "syncFactor": authorization,
+        "challengeToken": "token",
+        "syncFactorToken": "sync-token",
+    }));
+    check_encryption_public_key::<ExportedBackupMetadata>(json!({
+        "id": "id", "keys": [], "factors": [], "syncFactors": [],
+        "manifestHash": "01".repeat(32),
+    }));
 }
 
 #[test]

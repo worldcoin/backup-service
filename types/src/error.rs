@@ -123,6 +123,8 @@ pub enum ErrorCode {
     FactorOrphanedFromEncryptionKey,
     /// The backup already holds an encryption key of this kind.
     OnlyOneEncryptionKeyPerTypeAllowed,
+    /// The supplied encryption public key differs from stored metadata or has not been registered.
+    EncryptionPublicKeyMismatch,
 
     // SECTION: Backup lifecycle
     /// The submitted manifest hash does not match the stored one; the client is not operating on

@@ -485,6 +485,7 @@ async fn test_remove_sync_factor_etag_concurrency() {
         keys: vec![],
         manifest_hash: hex::encode([1u8; 32]),
         archive_id: None,
+        encryption_public_key: None,
     };
 
     // Create the backup
