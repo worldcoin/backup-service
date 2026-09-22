@@ -360,7 +360,7 @@ impl BackupStorage {
 
     /// Adds an encryption key if the expected factor still exists.
     ///
-    /// The factor check and key update use the same metadata version to prevent races with deletion.
+    /// The factor check and key update use the same metadata version to avoid races with deletion.
     /// Retrying with the same key succeeds while the factor is present.
     ///
     /// # Errors
