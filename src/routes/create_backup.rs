@@ -20,9 +20,6 @@ use types::{
     MULTIPART_PAYLOAD_FIELD,
 };
 
-const CREATE_BACKUP_LOCK_KEY: &str = "crate_backup_lock:";
-const CREATE_BACKUP_LOCK_TTL: u64 = 120; // 2 minutes (normally timeout shouldn't be hit, it's a fallback in case the lock is not released)
-
 // TODO: Metric relevant for progressive roll out, can be removed after full release.
 const BACKUP_ACCOUNT_PROOF_METRIC: &str = "backup_account_proof_total";
 
@@ -144,6 +141,11 @@ pub async fn handler(
     let backup_account_proof_token =
         verify_backup_account_proof(environment, &challenge_manager, &request).await?;
 
+    let mut account_lock = redis_cache_manager
+        .lock_backup(&request.backup_account_id)
+        .await?;
+    let result = account_lock.run(async {
+
     // Step 3: Verify the main authentication factor
     // This validates the primary factor used to authenticate the user creating the backup
 
@@ -189,14 +191,6 @@ pub async fn handler(
             "Backup ID already exists. Please `/sync` instead.",
         ));
     }
-    let mut lock_guard = redis_cache_manager
-        .try_acquire_lock_guard(
-            CREATE_BACKUP_LOCK_KEY,
-            request.backup_account_id.clone(),
-            Some(CREATE_BACKUP_LOCK_TTL),
-        )
-        .await?;
-
     // Step 6: Burn the Backup Account challenge token. Done inside the create lock so the same
     // proof cannot be spent twice concurrently, and before any mutation: a create that fails past
     // this point needs a fresh challenge.
@@ -208,7 +202,6 @@ pub async fn handler(
                 "not_consumed"
             };
             metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => result).increment(1);
-            let _ = lock_guard.release().await;
             return Err(err.into());
         }
         metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "ok").increment(1);
@@ -278,13 +271,11 @@ pub async fn handler(
         }
         let _ = main_factor_lock.release().await;
         let _ = sync_factor_lock.release().await;
-        let _ = lock_guard.release().await;
         return Err(e.into());
     }
 
     let _ = main_factor_lock.release().await;
     let _ = sync_factor_lock.release().await;
-    let _ = lock_guard.release().await; // explicitly releasing the lock is more reliable
 
     let backup_id = backup_metadata.id.clone();
 
@@ -292,4 +283,7 @@ pub async fn handler(
         backup_id,
         backup_metadata: backup_metadata.exported(),
     }))
+    }).await;
+    let _ = account_lock.release().await;
+    result
 }

@@ -20,6 +20,11 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
+    let backup_id = redis_cache_manager
+        .sync_factor_backup_id(&request.sync_factor_token)
+        .await?;
+    let mut account_lock = redis_cache_manager.lock_backup(&backup_id).await?;
+    let result = account_lock.run(async {
     // Step 1: Validate the new sync factor using AuthHandler
     let validation_result = auth_handler
         .validate_factor_registration(
@@ -81,4 +86,7 @@ pub async fn handler(
     write.into_result()?;
 
     Ok(Json(AddSyncFactorResponse { backup_id }))
+    }).await;
+    let _ = account_lock.release().await;
+    result
 }

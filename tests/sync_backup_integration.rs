@@ -26,6 +26,8 @@ async fn test_sync_backup_happy_path() {
     let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
 
+    let old_metadata = verify_s3_metadata_exists(backup_id).await;
+
     // Get a sync challenge
     let challenge_response =
         common::send_post_request("/v1/sync/challenge/keypair", json!({})).await;
@@ -71,6 +73,19 @@ async fn test_sync_backup_happy_path() {
 
     // Verify the backup was updated in S3
     verify_s3_backup_exists(backup_id, b"UPDATED BACKUP").await;
+    let client = common::get_test_s3_client().await;
+    let archives = client
+        .list_objects_v2()
+        .bucket("backup-service-bucket")
+        .prefix(format!("{backup_id}/backups/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(archives.contents().len(), 1);
+    assert!(!archives.contents()[0]
+        .key()
+        .unwrap()
+        .ends_with(old_metadata["archiveId"].as_str().unwrap()));
 }
 
 // Test with incorrect authorization - should fail

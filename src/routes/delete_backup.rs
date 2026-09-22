@@ -18,7 +18,7 @@ pub async fn handler(
     request: Json<DeleteBackupRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    let (backup_id, _backup_metadata) = auth_handler
+    let (backup_id, backup_metadata, mut account_lock) = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Sync,
@@ -29,17 +29,19 @@ pub async fn handler(
 
     let span = tracing::info_span!("delete_backup", backup_id = %backup_id);
 
-    async move {
-        // Step 2: Delete the backup and the metadata
-        backup_storage.delete_backup(&backup_id).await?;
+    let result = account_lock
+        .run(async move {
+            let lookup_deletion = factor_lookup.prepare_deletion(&backup_metadata).await?;
+            // Step 2: Delete the backup and the metadata
+            backup_storage.delete_backup(&backup_id).await?;
 
-        // Step 3: Delete all factors from `FactorLookup`
-        factor_lookup
-            .delete_all_by_backup_id(backup_id.clone())
-            .await?;
+            // Step 3: Delete all factors from `FactorLookup`
+            factor_lookup.delete_captured(lookup_deletion).await?;
 
-        Ok(StatusCode::NO_CONTENT)
-    }
-    .instrument(span)
-    .await
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .instrument(span)
+        .await;
+    let _ = account_lock.release().await;
+    result
 }

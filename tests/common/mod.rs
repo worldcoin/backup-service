@@ -100,6 +100,14 @@ pub async fn get_test_router(
     environment: Option<Environment>,
     attestation_gateway_base_url_override: Option<&str>,
 ) -> axum::Router {
+    get_test_router_with_storage(environment, attestation_gateway_base_url_override, None).await
+}
+
+pub async fn get_test_router_with_storage(
+    environment: Option<Environment>,
+    attestation_gateway_base_url_override: Option<&str>,
+    route_storage: Option<Arc<BackupStorage>>,
+) -> axum::Router {
     dotenvy::from_path(".env.example").ok();
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -154,7 +162,7 @@ pub async fn get_test_router(
         .layer(Extension(environment))
         .layer(Extension(s3_client))
         .layer(Extension(challenge_manager))
-        .layer(Extension(backup_storage))
+        .layer(Extension(route_storage.unwrap_or(backup_storage)))
         .layer(Extension(factor_lookup))
         .layer(Extension(oidc_token_verifier))
         .layer(Extension(redis_cache_manager))

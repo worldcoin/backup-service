@@ -14,7 +14,7 @@ use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
 use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
-use crate::redis_cache::RedisCacheError;
+use crate::redis_cache::{RedisCacheError, RedisLockGuard};
 use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
 use crate::{
@@ -144,7 +144,7 @@ impl AuthHandler {
         expected_factor_scope: FactorScope,
         expected_challenge_context: ChallengeContext,
         challenge_token: String,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, RedisLockGuard), AuthError> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
         if expected_factor_scope == FactorScope::Sync {
@@ -168,7 +168,7 @@ impl AuthHandler {
         }
 
         // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
-        let (backup_id, backup_metadata) = match authorization {
+        let (backup_id, backup_metadata, account_lock) = match authorization {
             Authorization::Passkey { credential, .. } => {
                 self.validate_passkey_authentication(
                     credential,
@@ -206,11 +206,31 @@ impl AuthHandler {
         };
 
         // Step 5: Track the used challenge to prevent replay attacks
-        self.redis_cache_manager
-            .use_challenge_token(challenge_token)
+        account_lock
+            .run(
+                self.redis_cache_manager
+                    .use_challenge_token(challenge_token),
+            )
             .await?;
 
-        Ok((backup_id, backup_metadata))
+        Ok((backup_id, backup_metadata, account_lock))
+    }
+
+    async fn locked_metadata(
+        &self,
+        backup_id: &str,
+    ) -> Result<(Option<BackupMetadata>, RedisLockGuard), AuthError> {
+        let account_lock = self.redis_cache_manager.lock_backup(backup_id).await?;
+        let metadata = account_lock
+            .run(async {
+                let metadata = self
+                    .backup_storage
+                    .get_metadata_by_backup_id(backup_id)
+                    .await?;
+                Ok::<_, AuthError>(metadata.map(|(metadata, _)| metadata))
+            })
+            .await?;
+        Ok((metadata, account_lock))
     }
 
     /// Validates a candidate **new** factor (`Sync` or `Main`) is valid for registration in the user's backup.
@@ -353,7 +373,7 @@ impl AuthHandler {
         credential: &serde_json::Value,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, RedisLockGuard), AuthError> {
         let passkey_state: DiscoverableAuthentication =
             serde_json::from_slice(challenge_token_payload).map_err(|err| {
                 AuthError::PasskeySerializationError {
@@ -380,11 +400,8 @@ impl AuthHandler {
             return Err(AuthError::BackupUntraceable);
         };
 
-        let backup_metadata = self
-            .backup_storage
-            .get_metadata_by_backup_id(&not_verified_backup_id)
-            .await?;
-        let Some((backup_metadata, _e_tag)) = backup_metadata else {
+        let (backup_metadata, account_lock) = self.locked_metadata(&not_verified_backup_id).await?;
+        let Some(backup_metadata) = backup_metadata else {
             self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::BackupMissing);
@@ -435,7 +452,7 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
-        Ok((verified_backup_id, backup_metadata))
+        Ok((verified_backup_id, backup_metadata, account_lock))
     }
 
     //------------------------------------------------------------------------------------------------
@@ -504,10 +521,10 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, RedisLockGuard), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
+            .verify_claims(oidc_token, public_key.to_string())
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
@@ -530,12 +547,8 @@ impl AuthHandler {
             return Err(AuthError::BackupUntraceable);
         };
 
-        let backup_metadata = self
-            .backup_storage
-            .get_metadata_by_backup_id(&not_verified_backup_id)
-            .await?;
-
-        let Some((backup_metadata, _e_tag)) = backup_metadata else {
+        let (backup_metadata, account_lock) = self.locked_metadata(&not_verified_backup_id).await?;
+        let Some(backup_metadata) = backup_metadata else {
             self.delete_stale_factor_lookup(expected_factor_scope, &oidc_factor)
                 .await;
             return Err(AuthError::BackupMissing);
@@ -563,10 +576,19 @@ impl AuthHandler {
             return Err(AuthError::UnauthorizedFactor);
         }
 
+        account_lock
+            .run(async {
+                self.oidc_token_verifier
+                    .consume_nonce(oidc_token, &claims)
+                    .await?;
+                Ok::<_, AuthError>(())
+            })
+            .await?;
+
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
-        Ok((verified_backup_id, backup_metadata))
+        Ok((verified_backup_id, backup_metadata, account_lock))
     }
 
     //------------------------------------------------------------------------------------------------
@@ -598,7 +620,7 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, RedisLockGuard), AuthError> {
         verify_signature(public_key, signature, challenge_token_payload)?;
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
@@ -612,11 +634,8 @@ impl AuthHandler {
             return Err(AuthError::BackupUntraceable);
         };
 
-        let backup_metadata = self
-            .backup_storage
-            .get_metadata_by_backup_id(&not_verified_backup_id)
-            .await?;
-        let Some((backup_metadata, _e_tag)) = backup_metadata else {
+        let (backup_metadata, account_lock) = self.locked_metadata(&not_verified_backup_id).await?;
+        let Some(backup_metadata) = backup_metadata else {
             self.delete_stale_factor_lookup(expected_factor_scope, &factor_to_lookup)
                 .await;
             return Err(AuthError::BackupMissing);
@@ -649,7 +668,7 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
-        Ok((verified_backup_id, backup_metadata))
+        Ok((verified_backup_id, backup_metadata, account_lock))
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
