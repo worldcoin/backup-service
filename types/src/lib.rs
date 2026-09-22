@@ -220,6 +220,13 @@ pub struct ExportedBackupMetadata {
     /// must be presented when performing updates (syncs) to the backup, which ensures updates are
     /// always performed on the latest state.
     pub manifest_hash: String,
+    /// Hex-encoded, 32-byte encryption public key; absent on unregistered legacy backups.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "normalize_optional_hex_32"
+    )]
+    pub encryption_public_key: Option<String>,
 }
 
 /// A single authentication method registered on a backup.
@@ -313,6 +320,21 @@ where
         return Err(de::Error::custom("Expected 32 bytes"));
     }
     Ok(s.to_lowercase())
+}
+
+/// Deserializes an optional hex-encoded, 32-byte value in the same format as manifest hashes.
+///
+/// # Errors
+/// Returns an error for a present value that is not a hex-encoded, 32-byte array.
+pub fn normalize_optional_hex_32<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::IntoDeserializer;
+
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_hex_32(value.into_deserializer()))
+        .transpose()
 }
 
 /// Deserializes a backup account ID and verifies it has the correct format.

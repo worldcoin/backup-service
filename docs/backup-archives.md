@@ -5,6 +5,13 @@ Metadata selects an immutable ciphertext object at
 still read the legacy `<backup-account-id>/backup` object. Archive IDs are internal
 and are omitted from the client metadata response.
 
+Create and main-authorized sync-factor registration accept an optional
+`encryptionPublicKey`: the hex-encoded, 32-byte key clients use to encrypt the archive.
+Registration can initialize a missing legacy key but cannot replace one. Sync checks
+a supplied key against metadata before uploading; it cannot initialize a missing
+key. Authenticated metadata returns the stored key. Omitting the field remains
+supported for released clients; requiring it is a later rollout step.
+
 Create uploads the ciphertext before conditionally creating metadata. Sync uploads
 the replacement before conditionally publishing its archive ID and manifest hash.
 An unconfirmed publication leaves its uploaded object in place because S3 may have

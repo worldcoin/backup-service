@@ -27,6 +27,7 @@ fn metadata() -> BackupMetadata {
         keys: vec![],
         manifest_hash: "01".repeat(32),
         archive_id: None,
+        encryption_public_key: None,
     }
 }
 
@@ -57,6 +58,7 @@ async fn legacy_snapshot_survives_sync_and_factor_changes() {
             b"new".to_vec().into(),
             "01".repeat(32),
             "02".repeat(32),
+            None,
         )
         .await
         .unwrap();
@@ -83,7 +85,7 @@ async fn legacy_snapshot_survives_sync_and_factor_changes() {
 
     let factor = Factor::new_ec_keypair("new-sync-key".into());
     storage
-        .add_sync_factor(&original.id, factor.clone())
+        .add_sync_factor(&original.id, factor.clone(), None)
         .await
         .into_result()
         .unwrap();
@@ -122,13 +124,15 @@ async fn concurrent_syncs_publish_one_matching_archive_and_hash() {
             &original.id,
             b"first".to_vec().into(),
             "01".repeat(32),
-            "02".repeat(32)
+            "02".repeat(32),
+            None
         ),
         storage.update_backup(
             &original.id,
             b"second".to_vec().into(),
             "01".repeat(32),
-            "03".repeat(32)
+            "03".repeat(32),
+            None
         ),
     );
     assert_ne!(first.is_ok(), second.is_ok());
@@ -227,9 +231,10 @@ async fn concurrent_factor_write_and_sync_preserve_the_selected_archive() {
             &original.id,
             b"new".to_vec().into(),
             "01".repeat(32),
-            "02".repeat(32)
+            "02".repeat(32),
+            None
         ),
-        storage.add_sync_factor(&original.id, factor.clone()),
+        storage.add_sync_factor(&original.id, factor.clone(), None),
     );
     let addition = addition.into_result();
     assert!(sync.is_ok() || addition.is_ok());
@@ -355,6 +360,7 @@ async fn deletion_includes_superseded_unpublished_and_legacy_archives() {
             b"new".to_vec().into(),
             "01".repeat(32),
             "02".repeat(32),
+            None,
         )
         .await
         .unwrap();
@@ -380,6 +386,51 @@ async fn deletion_includes_superseded_unpublished_and_legacy_archives() {
         .await
         .unwrap();
     assert!(remaining.contents().is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_registration_cannot_replace_the_first_encryption_key() {
+    let (storage, _, _) = storage().await;
+    let original = metadata();
+    storage
+        .create(b"old".to_vec().into(), &original)
+        .await
+        .unwrap();
+    let before = storage
+        .get_by_backup_id(&original.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let first_factor = Factor::new_ec_keypair("first-sync-key".into());
+    let second_factor = Factor::new_ec_keypair("second-sync-key".into());
+    let first_key = "ab".repeat(32);
+    let second_key = "cd".repeat(32);
+    let (first, second) = tokio::join!(
+        storage.add_sync_factor(&original.id, first_factor.clone(), Some(first_key.clone())),
+        storage.add_sync_factor(
+            &original.id,
+            second_factor.clone(),
+            Some(second_key.clone())
+        ),
+    );
+    let first = first.into_result();
+    let second = second.into_result();
+    assert_ne!(first.is_ok(), second.is_ok());
+    let (key, factor) = if first.is_ok() {
+        (first_key, first_factor)
+    } else {
+        (second_key, second_factor)
+    };
+    let after = storage
+        .get_by_backup_id(&original.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.metadata.encryption_public_key, Some(key));
+    assert_eq!(after.metadata.sync_factors, vec![factor]);
+    assert_eq!(after.metadata.archive_id, before.metadata.archive_id);
+    assert_eq!(after.metadata.manifest_hash, before.metadata.manifest_hash);
+    assert_eq!(after.backup, before.backup);
 }
 
 #[tokio::test]
@@ -460,6 +511,7 @@ async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
                 b"new".to_vec().into(),
                 "01".repeat(32),
                 "02".repeat(32),
+                None,
             )
             .await;
         let error = ErrorResponse::from(result.unwrap_err());

@@ -95,6 +95,7 @@ async fn test_end_to_end_readiness() {
         keys: vec![],
         manifest_hash: hex::encode([1u8; 32]),
         archive_id: None,
+        encryption_public_key: None,
     };
 
     backup_storage

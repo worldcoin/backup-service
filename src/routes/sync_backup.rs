@@ -105,6 +105,7 @@ pub async fn handler(
                             backup,
                             request.current_manifest_hash,
                             request.new_manifest_hash,
+                            request.encryption_public_key.as_deref(),
                         )
                         .await?,
                 )

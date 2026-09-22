@@ -42,6 +42,9 @@ pub struct BackupMetadata {
     /// Selects an immutable upload; absent for backups stored at the original S3 key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_id: Option<String>,
+    /// Encryption public key, initialized only by main-authorized registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_public_key: Option<String>,
 }
 
 impl BackupMetadata {
@@ -54,6 +57,7 @@ impl BackupMetadata {
             factors: self.factors.iter().map(Factor::exported).collect(),
             sync_factors: self.sync_factors.iter().map(Factor::exported).collect(),
             manifest_hash: self.manifest_hash.clone(),
+            encryption_public_key: self.encryption_public_key.clone(),
         }
     }
 }

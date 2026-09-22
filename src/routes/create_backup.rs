@@ -215,6 +215,7 @@ pub async fn handler(
         keys: vec![request.initial_encryption_key.clone()],
         manifest_hash: request.manifest_hash,
         archive_id: None,
+        encryption_public_key: request.encryption_public_key,
     };
 
     // Hold factor mutate locks across lookup insert + S3 create so auth stale-delete cannot remove

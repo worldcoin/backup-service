@@ -205,6 +205,8 @@ impl BackupStorage {
     /// # Errors
     /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
     /// * `BackupManagerError::ManifestHashMismatch` - if another writer committed first.
+    /// * `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key is missing
+    ///   or differs from the stored key.
     /// * `BackupManagerError::ETagNotFound` - if S3 returned an object with no `ETag`.
     /// * `BackupManagerError::GetObjectError` / `PutObjectError` - if S3 fails.
     /// * `BackupManagerError::ByteStreamError` - if the backup cannot be converted to bytes.
@@ -214,6 +216,7 @@ impl BackupStorage {
         backup: Bytes,
         current_manifest_hash: String,
         new_manifest_hash: String,
+        encryption_public_key: Option<&str>,
     ) -> Result<String, BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
@@ -225,6 +228,12 @@ impl BackupStorage {
 
         if metadata.manifest_hash != current_manifest_hash {
             return Err(BackupManagerError::ManifestHashMismatch);
+        }
+
+        if let Some(key) = encryption_public_key {
+            if metadata.encryption_public_key.as_deref() != Some(key) {
+                return Err(BackupManagerError::EncryptionPublicKeyMismatch);
+            }
         }
 
         let previous_archive = get_backup_key(&metadata);
@@ -430,10 +439,13 @@ impl BackupStorage {
     /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
     ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
     ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// - `BackupManagerError::EncryptionPublicKeyMismatch` - if a supplied key would replace
+    ///   the stored key.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
+        encryption_public_key: Option<String>,
     ) -> FactorMetadataWrite<()> {
         // Sync factor must be a keypair
         match sync_factor.kind {
@@ -463,6 +475,17 @@ impl BackupStorage {
             Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
         {
             return duplicate;
+        }
+
+        if let Some(key) = encryption_public_key {
+            if let Some(existing) = &metadata.encryption_public_key {
+                if existing != &key {
+                    return FactorMetadataWrite::NotInserted(
+                        BackupManagerError::EncryptionPublicKeyMismatch,
+                    );
+                }
+            }
+            metadata.encryption_public_key = Some(key);
         }
 
         if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
@@ -888,6 +911,8 @@ pub enum BackupManagerError {
         "Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first."
     )]
     ManifestHashMismatch,
+    #[error("The backup encryption public key is missing or does not match the supplied key")]
+    EncryptionPublicKeyMismatch,
     #[error("A factor would be orphaned by removing the specific encryption key.")]
     FactorOrphanedFromEncryptionKey,
     /// Today only one encryption key per type is allowed. In practice a user cannot have any combination of factors that would
@@ -982,6 +1007,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -995,6 +1021,7 @@ mod tests {
                 vec![6, 7, 8, 9, 10].into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
+                None,
             )
             .await;
 
@@ -1029,6 +1056,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1162,6 +1190,7 @@ mod tests {
             }],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         // Create a backup
@@ -1229,6 +1258,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1241,6 +1271,7 @@ mod tests {
                 updated_backup_data.clone().into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
+                None,
             )
             .await
             .unwrap();
@@ -1272,6 +1303,7 @@ mod tests {
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         // Create a backup
@@ -1334,6 +1366,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1380,6 +1413,7 @@ mod tests {
             keys: vec![initial_key],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         // Create a backup
@@ -1462,6 +1496,7 @@ mod tests {
                     keys: vec![existing_key.clone()],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1514,6 +1549,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1574,6 +1610,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1621,6 +1658,7 @@ mod tests {
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         // Create a backup
@@ -1632,7 +1670,7 @@ mod tests {
         // Add the sync factor
         let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await
             .into_result()
             .unwrap();
@@ -1652,7 +1690,7 @@ mod tests {
 
         // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await;
         assert!(!result.should_rollback_lookup());
         match result {
@@ -1673,12 +1711,13 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
             .unwrap();
         let result = backup_storage
-            .add_sync_factor(&main_only_backup_id, main_keypair)
+            .add_sync_factor(&main_only_backup_id, main_keypair, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1697,7 +1736,7 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, oidc_factor)
+            .add_sync_factor(&test_backup_id, oidc_factor, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1707,7 +1746,7 @@ mod tests {
 
         // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
-            .add_sync_factor("non_existent_backup", keypair_factor.clone())
+            .add_sync_factor("non_existent_backup", keypair_factor.clone(), None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1746,6 +1785,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1816,6 +1856,7 @@ mod tests {
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
                     archive_id: None,
+                    encryption_public_key: None,
                 },
             )
             .await
@@ -1826,6 +1867,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-at-limit".to_string()),
+                None,
             )
             .await
             .into_result()
@@ -1836,6 +1878,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-over-limit".to_string()),
+                None,
             )
             .await;
         assert!(result.should_rollback_lookup());
@@ -1889,6 +1932,7 @@ mod tests {
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
         backup_storage
             .create(test_backup_data.clone().into(), &initial_metadata)
@@ -1979,6 +2023,7 @@ mod tests {
             keys: vec![turnkey_key.clone()],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         backup_storage
@@ -2031,6 +2076,7 @@ mod tests {
             keys: vec![initial_prf_key],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         backup_storage
@@ -2179,6 +2225,7 @@ mod tests {
             keys: vec![turnkey_key.clone(), prf_key.clone()],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         backup_storage
@@ -2246,6 +2293,7 @@ mod tests {
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
             archive_id: None,
+            encryption_public_key: None,
         };
 
         // Test 1: Create backup with SSE-KMS
@@ -2298,6 +2346,7 @@ mod tests {
                 updated_backup_data.clone().into(),
                 hex::encode([1u8; 32]),
                 hex::encode([2u8; 32]),
+                None,
             )
             .await
             .unwrap();
@@ -2334,7 +2383,7 @@ mod tests {
         // Test 6: Add sync factor with SSE-KMS
         let sync_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, sync_factor.clone())
+            .add_sync_factor(&test_backup_id, sync_factor.clone(), None)
             .await
             .into_result()
             .unwrap();

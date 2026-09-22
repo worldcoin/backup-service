@@ -662,6 +662,7 @@ mod test {
                 keys: vec![],
                 manifest_hash: String::new(),
                 archive_id: None,
+                encryption_public_key: None,
             })
             .await
             .unwrap();

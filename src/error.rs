@@ -342,6 +342,10 @@ impl From<BackupManagerError> for ErrorResponse {
                     "Encryption key not found.",
                 )
             }
+            BackupManagerError::EncryptionPublicKeyMismatch => {
+                tracing::info!(message = "Backup encryption public key mismatch");
+                ErrorResponse::conflict(ErrorCode::EncryptionPublicKeyMismatch, &err.to_string())
+            }
             BackupManagerError::ManifestHashMismatch => {
                 tracing::info!(message = BackupManagerError::ManifestHashMismatch.to_string());
                 ErrorResponse {

@@ -60,7 +60,11 @@ pub async fn handler(
 
     // Step 4: Add the sync factor to the backup metadata
     let write = backup_storage
-        .add_sync_factor(&backup_id, sync_factor)
+        .add_sync_factor(
+            &backup_id,
+            sync_factor,
+            request.encryption_public_key.clone(),
+        )
         .await;
 
     // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land
