@@ -250,7 +250,7 @@ mod tests {
     use backup_service_test_utils::{MockOidcProvider, MockOidcServer};
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::SecretKey;
     use types::OidcProvider;
 
@@ -300,7 +300,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -337,7 +337,7 @@ mod tests {
         ];
 
         for aud in audiences {
-            let secret_key = SecretKey::random(&mut OsRng);
+            let secret_key = SecretKey::generate();
             let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
             let token = oidc_server.generate_token_with_aud(
                 mock_provider(OidcProvider::Apple),
@@ -365,7 +365,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -389,7 +389,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -418,7 +418,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -447,7 +447,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -477,7 +477,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -519,7 +519,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -551,7 +551,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
@@ -583,11 +583,11 @@ mod tests {
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
 
         // Generate a correct key pair for token generation
-        let correct_secret_key = SecretKey::random(&mut OsRng);
+        let correct_secret_key = SecretKey::generate();
         let correct_public_key = STANDARD.encode(correct_secret_key.public_key().to_sec1_bytes());
 
         // Generate a different key pair for verification
-        let incorrect_secret_key = SecretKey::random(&mut OsRng);
+        let incorrect_secret_key = SecretKey::generate();
         let incorrect_public_key =
             STANDARD.encode(incorrect_secret_key.public_key().to_sec1_bytes());
 
@@ -623,7 +623,7 @@ mod tests {
         let oidc_server = MockOidcServer::new().await;
         let environment =
             Environment::development(Some(oidc_server.server.socket_address().port() as usize));
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
 
         let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);

@@ -28,8 +28,9 @@ use josekit::jwt::{self, JwtPayload};
 use openidconnect::SubjectIdentifier;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::SecretKey;
+use rand::rngs::OsRng;
 use rand::RngCore;
 use serde_json::json;
 use std::sync::Arc;
@@ -408,13 +409,13 @@ pub struct BackupAccount {
 
 impl BackupAccount {
     pub fn generate() -> Self {
-        Self::from_secret_key(k256::SecretKey::random(&mut OsRng))
+        Self::from_secret_key(k256::SecretKey::generate())
     }
 
     pub fn from_secret_key(secret_key: k256::SecretKey) -> Self {
         let signing_key = k256::ecdsa::SigningKey::from(&secret_key);
         let compressed = k256::ecdsa::VerifyingKey::from(&signing_key)
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
 
@@ -697,7 +698,7 @@ pub async fn create_test_backup_with_oidc_account(
 /// Generate a P256 keypair that's used as a temporary session keypair in OIDC authentication
 /// and as a permanent keypair in the keypair backups.
 pub fn generate_keypair() -> (String, SecretKey) {
-    let secret_key = SecretKey::random(&mut OsRng);
+    let secret_key = SecretKey::generate();
     let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
     (public_key, secret_key)
 }
