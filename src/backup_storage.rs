@@ -356,21 +356,14 @@ impl BackupStorage {
         }
     }
 
-    /// Appends an encryption key without adding a factor.
+    /// Adds an encryption key if the expected factor still exists.
     ///
-    /// Idempotent when the exact same key is already present; same kind with different material is
-    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts (`412`, timeouts,
-    /// 5xx) surface as errors — callers may retry; the exact-match pre-check makes retries safe.
-    ///
-    /// The key only makes sense while the factor it belongs to exists, so this function checks that
-    /// a factor of `expected_factor_kind` is present in the metadata snapshot it is about to write.
-    /// The caller's own check is not enough: that factor can be deleted between the caller's check
-    /// and this write, which would leave a key with no owning factor (#265).
+    /// The factor check and key update use the same metadata version to prevent races with deletion.
+    /// Retrying with the same key succeeds while the factor is present.
     ///
     /// # Errors
-    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent,
-    /// `expected_factor_kind` is no longer present, a conflicting key of the same kind exists, or
-    /// the put fails.
+    /// Fails if the backup, factor, or `ETag` is missing, a different key of the same type exists,
+    /// or the storage operation fails.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -384,9 +377,6 @@ impl BackupStorage {
             return Err(BackupManagerError::ETagNotFound);
         };
 
-        // Ownership is only implied by the kind today, so "some factor of this kind exists" is the
-        // strongest check available; #276 tracks tying each key to its owning factor so this
-        // becomes structural rather than a scan.
         if !metadata
             .factors
             .iter()
@@ -1406,13 +1396,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Exact same key — idempotent success.
         backup_storage
             .add_encryption_key_only(&test_backup_id, &factor.kind, existing_key.clone())
             .await
             .unwrap();
 
-        // Same type, different material — conflict.
         let mismatched = BackupEncryptionKey::Turnkey {
             encrypted_key: "DIFFERENT_KEY".to_string(),
             turnkey_account_id: "org_123".to_string(),
@@ -1444,8 +1432,7 @@ mod tests {
 
         let test_backup_id = gen_backup_id();
         let other_main_factor = Factor::new_ec_keypair("other_main_factor_pubkey".to_string());
-        // A backup with only the other main factor: the OIDC factor this key would belong to has
-        // already been deleted by a concurrent /delete-factor, as in the #265 race.
+        // Start after the OIDC factor has been deleted; another main factor keeps the backup alive.
         backup_storage
             .create(
                 vec![1, 2, 3].into(),
@@ -1483,7 +1470,6 @@ mod tests {
             other => panic!("Expected FactorNotFound, got {other:?}"),
         }
 
-        // The key must never have been appended — no orphan left behind.
         let (metadata, _) = backup_storage
             .get_metadata_by_backup_id(&test_backup_id)
             .await
@@ -1529,8 +1515,7 @@ mod tests {
             turnkey_private_key_id: "key_789".to_string(),
         };
 
-        // Concurrent writers: one succeeds; the other may see 412 / Unknown (retry is idempotent
-        // via the exact-match pre-check). We no longer reconcile ambiguous puts to Ok.
+        // The second write may lose the ETag race or find that the same key is already stored.
         let (a, b) = tokio::join!(
             backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
             backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
