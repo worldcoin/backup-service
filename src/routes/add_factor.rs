@@ -384,7 +384,7 @@ pub async fn handler(
     if let FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) = &write {
         if let Some(key) = request.encrypted_backup_key.clone() {
             backup_storage
-                .add_encryption_key_only(&backup_id, key)
+                .add_encryption_key_only(&backup_id, &new_factor.kind, key)
                 .await?;
         }
         let Some((metadata, _)) = backup_storage.get_metadata_by_backup_id(&backup_id).await?
