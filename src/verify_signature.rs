@@ -76,11 +76,11 @@ pub enum VerifySignatureError {
 mod tests {
     use super::*;
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+    use p256::elliptic_curve::Generate;
     use p256::SecretKey;
-    use rand::rngs::OsRng;
 
     fn generate_test_keypair() -> (SigningKey, VerifyingKey) {
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let signing_key = SigningKey::from(secret_key);
         let verifying_key = VerifyingKey::from(&signing_key);
 
