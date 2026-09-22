@@ -29,7 +29,7 @@ use base64::Engine;
 use ciborium::value::{Integer, Value as Cbor};
 use josekit::jwk::Jwk;
 use openidconnect::SubjectIdentifier;
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::SecretKey;
 use serde_json::json;
 use serial_test::serial;
@@ -448,7 +448,7 @@ async fn test_add_factor_accepts_hand_built_es256_passkey_registration() {
     let backup = create_oidc_backup().await;
     let challenges = passkey_registration_challenges().await;
 
-    let secret_key = SecretKey::random(&mut OsRng);
+    let secret_key = SecretKey::generate();
     let public_key_sec1: [u8; 65] = secret_key
         .public_key()
         .to_sec1_bytes()
