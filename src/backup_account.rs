@@ -8,7 +8,6 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use k256::ecdsa::signature::Verifier;
 use k256::ecdsa::{Signature, VerifyingKey};
-use k256::EncodedPoint;
 use types::ErrorCode;
 
 pub const BACKUP_ACCOUNT_ID_PREFIX: &str = "backup_account_";
@@ -67,10 +66,7 @@ pub fn parse_backup_account_id(
 ) -> Result<VerifyingKey, BackupAccountIdError> {
     let compressed_bytes = check_backup_account_id_format(backup_account_id)?;
 
-    let encoded_point = EncodedPoint::from_bytes(&compressed_bytes)
-        .map_err(|_| BackupAccountIdError::InvalidPublicKey)?;
-
-    VerifyingKey::from_encoded_point(&encoded_point)
+    VerifyingKey::from_sec1_bytes(&compressed_bytes)
         .map_err(|_| BackupAccountIdError::InvalidPublicKey)
 }
 
@@ -121,13 +117,12 @@ mod tests {
     use super::*;
     use k256::ecdsa::signature::Signer;
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
-    use k256::SecretKey;
+    use k256::elliptic_curve::Generate;
 
     fn generate_backup_account() -> (SigningKey, String) {
-        let signing_key = SigningKey::from(&SecretKey::random(&mut OsRng));
+        let signing_key = SigningKey::generate();
         let compressed_bytes = VerifyingKey::from(&signing_key)
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         let backup_account_id = format!(
