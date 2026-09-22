@@ -311,8 +311,8 @@ mod tests {
         get_mock_passkey_client, make_credential_from_passkey_challenge,
     };
     use base64::{engine::general_purpose::STANDARD, Engine};
+    use p256::elliptic_curve::Generate;
     use p256::SecretKey;
-    use rand::rngs::OsRng;
     use serde_json::json;
 
     use crate::environment::Environment;
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_factor_kind_comparison_keypair() {
-        let secret_key = SecretKey::random(&mut OsRng);
+        let secret_key = SecretKey::generate();
         let public_key = STANDARD.encode(secret_key.public_key().to_sec1_bytes());
         let factor_1 = FactorKind::EcKeypair {
             public_key: public_key.clone(),

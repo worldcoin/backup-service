@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
 use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::SecretKey;
 use serde_json::json;
 use std::sync::Arc;
@@ -110,7 +110,7 @@ async fn create_test_backup_with_backup_account_id(
     );
 
     // Create a sync factor - use same challenge as main factor (create challenge)
-    let sync_factor_secret_key = SecretKey::random(&mut OsRng);
+    let sync_factor_secret_key = SecretKey::generate();
     let sync_factor_signing_key = SigningKey::from(&sync_factor_secret_key);
     let sync_factor_public_key =
         STANDARD.encode(sync_factor_signing_key.verifying_key().to_sec1_bytes());
@@ -174,7 +174,7 @@ async fn test_reset_backup_happy_path() {
     let factor_lookup = FactorLookup::new(environment, dynamodb_client.clone());
 
     // Generate a keypair for the backup_account_id
-    let backup_account_secret_key = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key = k256::SecretKey::generate();
 
     // Create a backup with this backup_account_id
     let (backup_account_id, main_secret_key, sync_secret_key) =
@@ -248,7 +248,7 @@ async fn test_reset_backup_happy_path() {
 #[tokio::test]
 async fn test_reset_backup_with_incorrect_signature() {
     // Generate a keypair for the backup_account_id
-    let backup_account_secret_key = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key = k256::SecretKey::generate();
 
     // Create a backup with this backup_account_id
     let (backup_account_id, _, _) =
@@ -259,7 +259,7 @@ async fn test_reset_backup_with_incorrect_signature() {
     let challenge_response = get_reset_challenge(&backup_account_id).await;
 
     // Sign the challenge with a different keypair (incorrect signature)
-    let wrong_secret_key = k256::SecretKey::random(&mut OsRng);
+    let wrong_secret_key = k256::SecretKey::generate();
     let wrong_signature = sign_challenge_with_backup_key(
         &wrong_secret_key,
         challenge_response["challenge"].as_str().unwrap(),
@@ -297,7 +297,7 @@ async fn test_reset_backup_with_incorrect_signature() {
 #[tokio::test]
 async fn test_reset_backup_with_mismatched_public_key() {
     // Generate a keypair for the backup_account_id
-    let backup_account_secret_key = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key = k256::SecretKey::generate();
 
     // Create a backup with this backup_account_id
     let (backup_account_id, _, _) =
@@ -347,7 +347,7 @@ async fn test_reset_backup_with_mismatched_public_key() {
 #[tokio::test]
 async fn test_reset_backup_challenge_token_reuse() {
     // Generate a keypair for the backup_account_id
-    let backup_account_secret_key = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key = k256::SecretKey::generate();
 
     // Create first backup
     let (backup_account_id_1, _, _) =
@@ -376,7 +376,7 @@ async fn test_reset_backup_challenge_token_reuse() {
     assert_eq!(reset_response.status(), StatusCode::NO_CONTENT);
 
     // Create a second backup with a different backup_account_id
-    let backup_account_secret_key_2 = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key_2 = k256::SecretKey::generate();
     let (backup_account_id_2, _, _) =
         create_test_backup_with_backup_account_id(&backup_account_secret_key_2, b"TEST BACKUP 2")
             .await;
@@ -419,7 +419,7 @@ async fn test_reset_backup_challenge_token_reuse() {
 #[tokio::test]
 async fn test_reset_nonexistent_backup() {
     // Generate a keypair
-    let backup_account_secret_key = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key = k256::SecretKey::generate();
     let backup_account_id = derive_backup_account_id_from_keypair(&backup_account_secret_key);
 
     // Get a reset challenge (this should work even if backup doesn't exist)
@@ -449,9 +449,9 @@ async fn test_reset_nonexistent_backup() {
 #[tokio::test]
 async fn test_reset_backup_with_wrong_backup_account_id_in_token() {
     // Generate two keypairs for two different backup_account_ids
-    let backup_account_secret_key_1 = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key_1 = k256::SecretKey::generate();
 
-    let backup_account_secret_key_2 = k256::SecretKey::random(&mut OsRng);
+    let backup_account_secret_key_2 = k256::SecretKey::generate();
     let backup_account_id_2 = derive_backup_account_id_from_keypair(&backup_account_secret_key_2);
 
     // Create a backup with the first backup_account_id

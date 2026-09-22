@@ -344,7 +344,7 @@ impl MockOidcServer {
         // see `public_key_sec1_base64_to_expected_turnkey_nonce` for details.
         let public_key_bytes = STANDARD.decode(public_key_sec1_base64).unwrap();
         let public_key = VerifyingKey::from_sec1_bytes(&public_key_bytes).unwrap();
-        let public_key_hex = hex::encode(public_key.to_encoded_point(true));
+        let public_key_hex = hex::encode(public_key.to_sec1_point(true));
         let mut hasher = Sha256::new();
         hasher.update(public_key_hex.as_bytes());
         hex::encode(hasher.finalize())

@@ -77,7 +77,8 @@ pub fn public_key_sec1_base64_to_expected_turnkey_nonce(
     }
     let public_key = VerifyingKey::from_sec1_bytes(&public_key_bytes)
         .map_err(|_| "Invalid public key".to_string())?;
-    let public_key_hex = hex::encode(public_key.to_encoded_point(true)); // Turnkey expects a compressed point
+    // Turnkey expects a compressed point.
+    let public_key_hex = hex::encode(public_key.to_sec1_point(true));
 
     // Nonce should be equal to sha256 hash of the public key in hex format (as a string)
     let mut hasher = sha2::Sha256::new();
