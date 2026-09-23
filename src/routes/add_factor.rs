@@ -4,6 +4,7 @@ use crate::auth::{AuthError, AuthHandler};
 use crate::backup_metadata::{BackupMetadata, FactorKind};
 use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
+use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
@@ -32,6 +33,17 @@ const EXPECTED_TURNKEY_ACTIVITY_TYPE: &str = "ACTIVITY_TYPE_CREATE_API_KEYS_V2";
 
 const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 
+/// Rejection for an OIDC account offered as the existing main factor while
+/// [`Environment::add_factor_oidc_existing_enabled`] is off: the same `not_supported` answer that
+/// releases before #233 gave. Counted per route so a client hitting the gate is visible.
+pub(crate) fn oidc_existing_factor_not_enabled(route: &'static str) -> ErrorResponse {
+    metrics::counter!("add_factor_oidc_existing_gated_total", "route" => route).increment(1);
+    ErrorResponse::bad_request(
+        ErrorCode::NotSupported,
+        "OIDC account is not supported as an existing main factor for add-factor",
+    )
+}
+
 /// Adds a new factor to an existing backup.
 ///
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
@@ -41,6 +53,7 @@ const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 /// as a Main Factor for add-factor.
 #[allow(clippy::too_many_lines)] // the code is properly split out into steps
 pub async fn handler(
+    Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
@@ -48,6 +61,15 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
+    // Kill switch for the OIDC-existing path, checked before anything is read or consumed.
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) && !environment.add_factor_oidc_existing_enabled()
+    {
+        return Err(oidc_existing_factor_not_enabled("add_factor"));
+    }
+
     // Step 1: Check authorization for the existing factor and get the backup ID
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
         Authorization::Passkey { credential, .. } => {
