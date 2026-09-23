@@ -510,7 +510,11 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
                 "turnkeyAccountId": "org123",
                 "turnkeyUserId": "TURNKEY_USER_ID",
                 "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            }
+            },
+            // The new factor is verified before the Turnkey activity is inspected, so it must be
+            // complete: without the provider id the request would stop at
+            // `missing_turnkey_provider_id` and never reach the activity.
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )

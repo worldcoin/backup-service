@@ -326,6 +326,30 @@ pub async fn get_add_factor_challenges_for_oidc(
     .await
 }
 
+/// A `RedisCacheManager` on the same Redis the test router uses, for asserting on consumed
+/// challenge tokens and OIDC nonces (`is_challenge_token_used`, `is_oidc_nonce_used`).
+pub async fn get_test_redis_cache_manager() -> backup_service::redis_cache::RedisCacheManager {
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    backup_service::redis_cache::RedisCacheManager::new(
+        environment,
+        environment.cache_default_ttl(),
+    )
+    .await
+    .expect("redis")
+}
+
+/// The `nonce` claim of a compact JWT (payload segment decoded, no signature check) — the value
+/// the server tracks per provider for replay protection.
+pub fn oidc_nonce_from_jwt(jwt: &str) -> String {
+    let payload_b64 = jwt.split('.').nth(1).expect("compact JWT");
+    let payload = BASE64_URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .expect("base64url JWT payload");
+    let claims: serde_json::Value = serde_json::from_slice(&payload).expect("JSON claims");
+    claims["nonce"].as_str().expect("nonce claim").to_string()
+}
+
 /// Create a Turnkey activity JSON embedding the backup-service challenge and return (`activity_json`, `activity_hash_b64url`)
 pub fn create_turnkey_activity_and_hash(challenge_b64: &str) -> (String, String) {
     let turnkey_activity = json!({
