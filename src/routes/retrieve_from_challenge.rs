@@ -48,7 +48,9 @@ pub async fn handler(
 
     async move {
         // Step 2: Fetch the backup from S3
-        let backup = backup_storage.get_backup_by_backup_id(&backup_id).await?;
+        let backup = backup_storage
+            .get_backup_by_metadata(&backup_metadata)
+            .await?;
         let Some(backup) = backup else {
             tracing::error!(message = "No backup found for the verified backup ID.");
             return Err(ErrorResponse::internal_server_error());
