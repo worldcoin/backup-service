@@ -13,8 +13,10 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
-use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
-use crate::redis_cache::RedisCacheError;
+use crate::oidc_token_verifier::{
+    OidcClaims, OidcTokenVerifier, OidcTokenVerifierError, VerifiedOidcToken,
+};
+use crate::redis_cache::{BurnKey, RedisCacheError};
 use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
 use crate::{
@@ -95,6 +97,38 @@ pub enum AuthError {
 pub struct ValidationResult {
     pub factor: Factor,
     pub factor_to_lookup: FactorToLookup,
+}
+
+/// Single-use values a verified registration consumes once its caller commits: its challenge
+/// token and, for OIDC, the ID token's nonce. Nothing is written to Redis until these keys are
+/// passed to `RedisCacheManager::burn_all_or_nothing`.
+#[derive(Debug, Clone)]
+pub struct PendingCommit {
+    burn_keys: Vec<BurnKey>,
+}
+
+impl PendingCommit {
+    #[must_use]
+    pub fn burn_keys(&self) -> &[BurnKey] {
+        &self.burn_keys
+    }
+
+    #[must_use]
+    pub fn into_burn_keys(self) -> Vec<BurnKey> {
+        self.burn_keys
+    }
+}
+
+/// A challenge token the caller has already decrypted, so that a flow which needs the token's
+/// payload before verifying the factor (add-factor) pays for the KMS decrypt once.
+#[derive(Debug)]
+pub struct DecryptedChallengeToken {
+    /// The token as received; it is the single-use key that gets burned at commit.
+    pub token: String,
+    /// The decrypted payload (the challenge bytes or the `WebAuthn` registration state).
+    pub payload: Vec<u8>,
+    /// The context the token was minted for.
+    pub context: ChallengeContext,
 }
 
 /// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
@@ -213,13 +247,12 @@ impl AuthHandler {
         Ok((backup_id, backup_metadata))
     }
 
-    /// Validates a candidate **new** factor (`Sync` or `Main`) is valid for registration in the user's backup.
+    /// Validates a candidate **new** factor (`Sync` or `Main`) for registration in the user's backup
+    /// and immediately consumes its challenge token and, for OIDC, its nonce — all or nothing.
     ///
-    /// This is called when creating a new backup with fresh factors or when adding a new `Sync` or `Main` factor to an existing backup.
-    ///
-    /// `consume_oidc_nonce` should normally be `true`. Pass `false` when the same OIDC ID token /
-    /// session keypair already had its nonce marked used earlier in this request (same-account
-    /// add-factor upgrade using one sign-in).
+    /// This is called when creating a new backup with fresh factors or when adding a new `Sync`
+    /// factor to an existing backup. Flows that have more to check before anything may be consumed
+    /// (add-factor) use [`Self::verify_factor_registration`] and commit the returned keys themselves.
     ///
     /// # Errors
     /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
@@ -230,10 +263,71 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
-        consume_oidc_nonce: bool,
     ) -> Result<ValidationResult, AuthError> {
-        // Step 1: Verify that the authorization type is valid for the factor scope
-        // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
+        let (validation_result, pending_commit) = self
+            .verify_factor_registration(
+                authorization,
+                challenge_token,
+                expected_challenge_context,
+                turnkey_provider_id,
+                is_sync_factor,
+            )
+            .await?;
+
+        self.redis_cache_manager
+            .burn_all_or_nothing(pending_commit.burn_keys())
+            .await?;
+
+        Ok(validation_result)
+    }
+
+    /// Verifies a candidate **new** factor (`Sync` or `Main`) for registration without consuming
+    /// anything.
+    ///
+    /// Nothing is written to Redis: the challenge token (and, for OIDC, the nonce) come back in the
+    /// [`PendingCommit`] for the caller to burn once every other check it needs has passed, so a
+    /// rejection later in the caller's flow does not cost the user an approval.
+    ///
+    /// # Errors
+    /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
+    pub async fn verify_factor_registration(
+        &self,
+        authorization: &Authorization,
+        challenge_token: String,
+        expected_challenge_context: ChallengeContext,
+        turnkey_provider_id: Option<String>,
+        is_sync_factor: bool,
+    ) -> Result<(ValidationResult, PendingCommit), AuthError> {
+        // The kind check comes first so an unsupported sync-factor kind is reported as such rather
+        // than as a challenge-type mismatch from decrypting its token.
+        Self::ensure_sync_factor_kind(authorization, is_sync_factor)?;
+
+        // Extract and verify the challenge token. This ensures the challenge was issued by us and
+        // hasn't expired.
+        let (payload, context) = self
+            .challenge_manager
+            .extract_token_payload(authorization.into(), challenge_token.clone())
+            .await?;
+
+        self.verify_factor_registration_with_decrypted_token(
+            authorization,
+            DecryptedChallengeToken {
+                token: challenge_token,
+                payload,
+                context,
+            },
+            expected_challenge_context,
+            turnkey_provider_id,
+            is_sync_factor,
+        )
+        .await
+    }
+
+    /// Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors.
+    fn ensure_sync_factor_kind(
+        authorization: &Authorization,
+        is_sync_factor: bool,
+    ) -> Result<(), AuthError> {
         if is_sync_factor {
             match authorization {
                 Authorization::Passkey { .. } | Authorization::OidcAccount { .. } => {
@@ -243,22 +337,40 @@ impl AuthHandler {
                 Authorization::EcKeypair { .. } => {}
             }
         }
+        Ok(())
+    }
 
-        // Step 2: Extract and verify the challenge token
-        // This ensures the challenge was issued by us and hasn't expired
-        let (challenge_token_payload, challenge_context) = self
-            .challenge_manager
-            .extract_token_payload(authorization.into(), challenge_token.clone())
-            .await?;
+    /// [`Self::verify_factor_registration`] for a challenge token the caller has already
+    /// decrypted (each decrypt is a KMS call, so a flow that needs the payload beforehand should
+    /// not pay twice).
+    ///
+    /// # Errors
+    /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
+    pub async fn verify_factor_registration_with_decrypted_token(
+        &self,
+        authorization: &Authorization,
+        challenge_token: DecryptedChallengeToken,
+        expected_challenge_context: ChallengeContext,
+        turnkey_provider_id: Option<String>,
+        is_sync_factor: bool,
+    ) -> Result<(ValidationResult, PendingCommit), AuthError> {
+        // Step 1: Verify that the authorization type is valid for the factor scope
+        Self::ensure_sync_factor_kind(authorization, is_sync_factor)?;
 
-        // Step 3: Verify the challenge context matches what we expect
-        // This ensures the challenge was issued for the correct purpose (Create, AddSyncFactor, etc.)
+        // Step 2: The token's type was checked when it was decrypted; make sure it was also
+        // minted for the purpose being performed (Create, AddSyncFactor, etc.)
+        let DecryptedChallengeToken {
+            token: challenge_token,
+            payload: challenge_token_payload,
+            context: challenge_context,
+        } = challenge_token;
         if challenge_context != expected_challenge_context {
             return Err(AuthError::InvalidChallengeContext);
         }
 
         // Step 4: Validate the specific authorization type and create the factor
         // Each factor type has its own validation rules for registration
+        let mut burn_keys = vec![BurnKey::ChallengeToken(challenge_token)];
         let (factor, factor_to_lookup) = match authorization {
             Authorization::Passkey { credential, label } => self.validate_passkey_registration(
                 credential,
@@ -270,38 +382,41 @@ impl AuthHandler {
                 public_key,
                 signature,
             } => {
-                self.validate_oidc_registration(
-                    oidc_token,
-                    public_key,
-                    signature,
-                    &challenge_token_payload,
-                    turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
-                    consume_oidc_nonce,
-                )
-                .await?
+                let (factor, factor_to_lookup, verified_token) = self
+                    .verify_oidc_registration(
+                        oidc_token,
+                        public_key,
+                        signature,
+                        &challenge_token_payload,
+                        turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
+                    )
+                    .await?;
+                burn_keys.push(verified_token.burn_key());
+                (factor, factor_to_lookup)
             }
             Authorization::EcKeypair {
                 public_key,
                 signature,
-            } => Self::validate_ec_keypair_registration(
-                public_key,
-                signature,
-                &challenge_token_payload,
-            )?,
+            } => {
+                let (factor, factor_to_lookup) = Self::validate_ec_keypair_registration(
+                    public_key,
+                    signature,
+                    &challenge_token_payload,
+                )?;
+                (factor, factor_to_lookup)
+            }
         };
 
-        // Step 5: Mark the challenge token as used to prevent replay attacks
-        // This ensures each challenge can only be used once
-        self.redis_cache_manager
-            .use_challenge_token(challenge_token)
-            .await?;
-
-        // Step 6: Return the validated factor and its lookup key
-        // The caller will use these to store the factor in the backup metadata and lookup table
-        Ok(ValidationResult {
-            factor,
-            factor_to_lookup,
-        })
+        // Step 5: Return the validated factor, its lookup key, and the keys the caller must burn
+        // before persisting anything. The caller will use these to store the factor in the backup
+        // metadata and lookup table.
+        Ok((
+            ValidationResult {
+                factor,
+                factor_to_lookup,
+            },
+            PendingCommit { burn_keys },
+        ))
     }
 
     //------------------------------------------------------------------------------------------------
@@ -448,7 +563,8 @@ impl AuthHandler {
     // Internal: OIDC Account Validation
     //------------------------------------------------------------------------------------------------
 
-    /// Validates a **new** OIDC account is valid for registration as a factor.
+    /// Verifies a **new** OIDC account is valid for registration as a factor, without consuming
+    /// its nonce (the caller burns the returned token's nonce at its commit point).
     ///
     /// To allow a new OIDC account to be registered, we check:
     /// - The OIDC token is valid (following standard OIDC specs; signature, expiration, etc.)
@@ -456,19 +572,19 @@ impl AuthHandler {
     /// - The trusted challenge token we issued is properly signed by the private key of the ephemeral "OIDC Session Keypair".
     ///
     /// We use an ephemeral keypair so that the user can authenticate once with the OIDC provider for both this service and Turnkey.
-    async fn validate_oidc_registration(
+    async fn verify_oidc_registration(
         &self,
         oidc_token: &OidcToken,
         public_key: &str,
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
-        consume_oidc_nonce: bool,
-    ) -> Result<(Factor, FactorToLookup), AuthError> {
-        let claims = self
+    ) -> Result<(Factor, FactorToLookup, VerifiedOidcToken), AuthError> {
+        let verified_token = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string(), consume_oidc_nonce)
+            .verify_token_claims(oidc_token, public_key.to_string())
             .await?;
+        let claims = &verified_token.claims;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
 
@@ -494,7 +610,34 @@ impl AuthHandler {
             claims.subject().to_string(),
         );
 
-        Ok((factor, factor_to_lookup))
+        Ok((factor, factor_to_lookup, verified_token))
+    }
+
+    /// Authenticates an **existing** OIDC factor for add-factor without consuming anything and
+    /// without checking any signature: the ID token is verified (provider signature, nonce ↔
+    /// session keypair) and the account is resolved to the backup it is authorized on. The caller
+    /// verifies the session-keypair signature over the existing-factor challenge itself and burns
+    /// the returned token's nonce at its commit point.
+    ///
+    /// The only write this can perform is the pre-existing stale-`FactorLookup` garbage collection
+    /// (a lock plus a row delete) when the metadata no longer lists the account — a path that
+    /// always ends in an error, exactly as it does for every other OIDC-authenticated endpoint.
+    ///
+    /// # Errors
+    /// Returns error if the token is invalid or the account is not a factor on any backup.
+    pub async fn authenticate_existing_oidc_claims(
+        &self,
+        oidc_token: &OidcToken,
+        public_key: &str,
+    ) -> Result<(String, BackupMetadata, VerifiedOidcToken), AuthError> {
+        let verified_token = self
+            .oidc_token_verifier
+            .verify_token_claims(oidc_token, public_key.to_string())
+            .await?;
+        let (backup_id, backup_metadata) = self
+            .authorize_oidc_claims(&verified_token.claims, FactorScope::Main)
+            .await?;
+        Ok((backup_id, backup_metadata, verified_token))
     }
 
     /// Validates an action is authenticated and authorized for an **existing** backup with an OIDC account.
@@ -514,19 +657,26 @@ impl AuthHandler {
     ) -> Result<(String, BackupMetadata), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string(), true)
+            .verify_token(oidc_token, public_key.to_string())
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
 
-        let oidc_factor = match oidc_token {
-            OidcToken::Google { .. } | OidcToken::Apple { .. } => {
-                FactorToLookup::from_oidc_account(
-                    claims.issuer().to_string(),
-                    claims.subject().to_string(),
-                )
-            }
-        };
+        self.authorize_oidc_claims(&claims, expected_factor_scope)
+            .await
+    }
+
+    /// Resolves verified OIDC claims to the backup the account is a factor on, deleting a stale
+    /// `FactorLookup` row if the metadata (the source of truth) no longer lists the account.
+    async fn authorize_oidc_claims(
+        &self,
+        claims: &OidcClaims,
+        expected_factor_scope: FactorScope,
+    ) -> Result<(String, BackupMetadata), AuthError> {
+        let oidc_factor = FactorToLookup::from_oidc_account(
+            claims.issuer().to_string(),
+            claims.subject().to_string(),
+        );
 
         let not_verified_backup_id = self
             .factor_lookup

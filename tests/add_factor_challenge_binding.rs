@@ -100,7 +100,10 @@ async fn test_add_factor_challenge_binding_matrix() {
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash2)
             .await;
 
-    // 2) Mismatched requested new factor vs submitted (invalid_new_factor_type)
+    // 2) Requested an OIDC new factor but submitted a PASSKEY one, tokens as issued: both tokens
+    //    are decrypted before anything else, and the new-factor token was minted as a Keypair
+    //    (OIDC) challenge, which cannot be opened against a PASSKEY authorization
+    //    (unexpected_challenge_type).
     let mismatched_payload = json!({
         "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
         "existingFactorChallengeToken": challenges2["existingFactorToken"],
@@ -113,9 +116,38 @@ async fn test_add_factor_challenge_binding_matrix() {
             .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
     let body3 = parse_response_body(resp3).await;
-    assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
+    assert_eq!(body3["error"]["code"], "unexpected_challenge_type");
 
-    // Fresh challenges again (case 2 may have consumed existing-factor token on the passkey path).
+    // 2b) The same mismatch with a Passkey-type new-factor token (from a PASSKEY_REGISTRATION
+    //     ceremony) gets past decryption and is caught by the new-factor descriptor recorded in
+    //     the existing token (invalid_new_factor_type). Case 2 failed before the commit, so
+    //     round 2's existing token, activity and stamp are still unspent.
+    let registration_challenges = get_add_factor_challenges_generic(
+        json!({
+            "kind": "PASSKEY_REGISTRATION",
+            "platform": "IOS"
+        }),
+        Some("PASSKEY"),
+    )
+    .await;
+    let mismatched_type_payload = json!({
+        "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
+        "existingFactorChallengeToken": challenges2["existingFactorToken"],
+        "existingFactorTurnkeyActivity": turnkey_activity2,
+        "newFactorAuthorization": { "kind": "PASSKEY", "credential": json!({"dummy": true}) },
+        "newFactorChallengeToken": registration_challenges["newFactorToken"],
+    });
+    let resp3b = send_post_request_with_environment(
+        "/v1/add-factor",
+        mismatched_type_payload,
+        Some(environment),
+    )
+    .await;
+    assert_eq!(resp3b.status(), StatusCode::BAD_REQUEST);
+    let body3b = parse_response_body(resp3b).await;
+    assert_eq!(body3b["error"]["code"], "invalid_new_factor_type");
+
+    // Fresh challenges again so the swap below is the only fault.
     let challenges3 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",

@@ -1,6 +1,6 @@
 use crate::environment::Environment;
 use crate::oidc_nonce_verifier::OidcNonceVerifier;
-use crate::redis_cache::{RedisCacheError, RedisCacheManager};
+use crate::redis_cache::{BurnKey, RedisCacheError, RedisCacheManager};
 use chrono::{DateTime, Utc};
 use openidconnect::core::CoreGenderClaim;
 use openidconnect::core::{CoreIdToken, CoreIdTokenVerifier, CoreJsonWebKeySet};
@@ -12,10 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
-use types::OidcToken;
+use types::{OidcProvider, OidcToken};
 
 const TTL: Duration = Duration::from_hours(1);
 const STALE_AFTER: Duration = Duration::from_mins(1);
+
+/// The claims of a verified ID token.
+pub type OidcClaims = IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>;
 
 type JwkCacheEntry = (Arc<CoreJsonWebKeySet>, Instant);
 type JwkCache = Arc<RwLock<HashMap<JsonWebKeySetUrl, JwkCacheEntry>>>;
@@ -96,20 +99,39 @@ impl OidcTokenVerifier {
         self.fetch_remote_jwk_set(jwk_set_url).await
     }
 
-    /// Verifies an OIDC token. It also ensures that the nonce has not been used before.
+    /// Verifies an OIDC token and consumes its nonce, so the same token cannot be presented twice.
+    ///
+    /// Equivalent to [`Self::verify_token_claims`] followed by [`Self::burn_nonce`]; use those
+    /// directly when the nonce must only be consumed once other checks have passed.
     ///
     /// # Errors
     /// - `OidcTokenVerifierError`s will be raised if the token is not valid or the nonce has been used before.
-    ///
-    /// Set `consume_nonce` to `false` when the nonce was already marked used earlier in the same
-    /// request (e.g. same OIDC session authorizing both existing and new factor sides of add-factor).
-    /// Cryptographic nonce↔session-key binding is still verified.
     pub async fn verify_token(
         &self,
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
-        consume_nonce: bool,
-    ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
+    ) -> Result<OidcClaims, OidcTokenVerifierError> {
+        let verified = self
+            .verify_token_claims(token, expected_public_key_sec1_base64)
+            .await?;
+        self.burn_nonce(&verified).await?;
+        Ok(verified.claims)
+    }
+
+    /// Verifies an OIDC token without touching Redis: provider signature (JWKS), issuer,
+    /// audience, issue time, and that the nonce commits to the given session public key.
+    ///
+    /// Replay protection is *not* applied here. The caller must consume
+    /// [`VerifiedOidcToken::burn_key`] — via [`Self::burn_nonce`] or
+    /// `RedisCacheManager::burn_all_or_nothing` — before acting on the token.
+    ///
+    /// # Errors
+    /// - `OidcTokenVerifierError`s will be raised if the token is not valid.
+    pub async fn verify_token_claims(
+        &self,
+        token: &OidcToken,
+        expected_public_key_sec1_base64: String,
+    ) -> Result<VerifiedOidcToken, OidcTokenVerifierError> {
         // Step 1: Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
@@ -155,27 +177,54 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Step 6: Track the nonce to prevent replays. When the caller already consumed it
-        // earlier in this same request (`consume_nonce=false`), don't just trust that
-        // assumption — attempt the same NX-guarded mark and require it to report the nonce as
-        // already used, so a bug in the caller's reuse heuristic can't leave a nonce unconsumed
-        // and replayable.
+        // Step 6: Hand the nonce back so the caller can consume it at its own commit point.
         let nonce = claims
             .nonce()
             .ok_or(OidcTokenVerifierError::MissingNonce)?
-            .secret();
-        match self
-            .redis_cache_manager
-            .use_oidc_nonce(nonce, &token.into())
-            .await
-        {
-            Ok(()) if consume_nonce => {}
-            Ok(()) => return Err(OidcTokenVerifierError::NonceReuseAssumptionViolated),
-            Err(RedisCacheError::AlreadyUsed) if !consume_nonce => {}
-            Err(err) => return Err(err.into()),
-        }
+            .secret()
+            .clone();
 
-        Ok(claims.clone())
+        Ok(VerifiedOidcToken {
+            claims: claims.clone(),
+            provider: token.into(),
+            nonce,
+        })
+    }
+
+    /// Marks a verified token's nonce as used, so the token cannot be presented again.
+    ///
+    /// # Errors
+    /// - `RedisCacheError::AlreadyUsed` (wrapped) if the nonce was already consumed.
+    pub async fn burn_nonce(
+        &self,
+        verified: &VerifiedOidcToken,
+    ) -> Result<(), OidcTokenVerifierError> {
+        self.redis_cache_manager
+            .use_oidc_nonce(&verified.nonce, &verified.provider)
+            .await?;
+        Ok(())
+    }
+}
+
+/// An ID token whose claims have been verified but whose nonce has not yet been consumed.
+#[derive(Debug, Clone)]
+pub struct VerifiedOidcToken {
+    /// The verified claims.
+    pub claims: OidcClaims,
+    /// The provider that issued the token.
+    pub provider: OidcProvider,
+    /// The nonce claim, which commits to the ephemeral session keypair.
+    pub nonce: String,
+}
+
+impl VerifiedOidcToken {
+    /// The single-use key that consumes this token's nonce.
+    #[must_use]
+    pub fn burn_key(&self) -> BurnKey {
+        BurnKey::OidcNonce {
+            provider: self.provider,
+            nonce: self.nonce.clone(),
+        }
     }
 }
 
@@ -221,10 +270,6 @@ pub enum OidcTokenVerifierError {
     RedisCacheError(#[from] RedisCacheError),
     #[error("The aud provided is not valid")]
     InvalidAud,
-    /// `verify_token` was called with `consume_nonce=false` (the caller believes this nonce was
-    /// already marked used earlier in the same request) but it was not actually marked used.
-    #[error("Nonce was not already consumed as the caller's reuse assumption expected")]
-    NonceReuseAssumptionViolated,
 }
 
 /// If issued at is in the future or too far in the past, the token is invalid
@@ -279,13 +324,13 @@ mod tests {
         match provider {
             OidcProvider::Google => {
                 verifier
-                    .verify_token(&OidcToken::Google { token }, public_key, true)
+                    .verify_token(&OidcToken::Google { token }, public_key)
                     .await
             }
             OidcProvider::Apple => {
                 verifier
                     // Use the default
-                    .verify_token(&OidcToken::Apple { token, aud }, public_key, true)
+                    .verify_token(&OidcToken::Apple { token, aud }, public_key)
                     .await
             }
         }
@@ -375,7 +420,7 @@ mod tests {
         let oidc_token: OidcToken = serde_json::from_str(&json).unwrap();
         assert!(matches!(oidc_token, OidcToken::Apple { aud: None, .. }));
 
-        let result = verifier.verify_token(&oidc_token, public_key, true).await;
+        let result = verifier.verify_token(&oidc_token, public_key).await;
 
         assert!(result.is_ok());
     }
