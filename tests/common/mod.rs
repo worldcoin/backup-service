@@ -12,10 +12,14 @@ use backup_service::auth::AuthHandler;
 use backup_service::backup_storage::BackupStorage;
 use backup_service::challenge_manager::ChallengeManager;
 use backup_service::environment::Environment;
+use backup_service::factor_binding::{
+    existing_factor_signed_payload, NewFactorMaterial, NewFactorMaterialKind,
+    EXISTING_FACTOR_CHALLENGE_LEN,
+};
 use backup_service::kms_jwe::KmsJwe;
 use backup_service_test_utils::{
-    get_passkey_assertion, make_credential_from_passkey_challenge, MockOidcProvider,
-    MockOidcServer, MockPasskeyClient,
+    credential_id_from_credential, get_passkey_assertion, make_credential_from_passkey_challenge,
+    MockOidcProvider, MockOidcServer, MockPasskeyClient,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -324,6 +328,149 @@ pub async fn get_add_factor_challenges_for_oidc(
         existing_factor_kind,
     )
     .await
+}
+
+// ---------------------------------------------------------------------------------------------
+// Add-factor material binding (issue #253)
+//
+// The existing factor no longer signs the bare `existingFactorChallenge`: it signs
+// `existing_factor_challenge || SHA256(tag || new_factor_material)`, where the material covers the
+// new credential/token plus the request's `label`, `turnkeyProviderId` and `encryptedBackupKey`.
+// These helpers produce the standard-base64 form of that payload, which drops in exactly where
+// the bare challenge used to go: `create_turnkey_activity_and_hash(&payload)` for existing=Passkey
+// and `sign_keypair_challenge(&secret_key, &payload)` for existing=OIDC.
+// ---------------------------------------------------------------------------------------------
+
+/// Parses the `encryptedBackupKey` JSON a test puts in its request body into the typed key the
+/// digest needs (`None` for JSON `null`/missing).
+pub fn encrypted_backup_key_from_json(
+    value: &serde_json::Value,
+) -> Option<types::BackupEncryptionKey> {
+    if value.is_null() {
+        None
+    } else {
+        Some(serde_json::from_value(value.clone()).expect("valid encryptedBackupKey JSON"))
+    }
+}
+
+/// Standard base64 of `existing_factor_challenge || SHA256(tag || material)`.
+pub fn existing_factor_payload_b64(
+    existing_factor_challenge_b64: &str,
+    material: &NewFactorMaterial<'_>,
+) -> String {
+    let challenge: [u8; EXISTING_FACTOR_CHALLENGE_LEN] = STANDARD
+        .decode(existing_factor_challenge_b64)
+        .expect("existingFactorChallenge is standard base64")
+        .try_into()
+        .expect("existingFactorChallenge is 32 bytes");
+    STANDARD.encode(existing_factor_signed_payload(
+        &challenge,
+        &material.digest(),
+    ))
+}
+
+/// Decodes a `WebAuthn` byte field from a credential JSON: the mock authenticator emits byte
+/// arrays, real clients (and hand-built fixtures) emit unpadded base64url strings.
+pub fn webauthn_bytes(value: &serde_json::Value) -> Vec<u8> {
+    match value {
+        serde_json::Value::String(encoded) => BASE64_URL_SAFE_NO_PAD
+            .decode(encoded)
+            .expect("WebAuthn byte field is unpadded base64url"),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                u8::try_from(item.as_u64().expect("byte array element"))
+                    .expect("byte array element fits in u8")
+            })
+            .collect(),
+        other => panic!("unexpected WebAuthn byte field encoding: {other}"),
+    }
+}
+
+/// The payload the existing factor must sign when the new factor is an OIDC account.
+///
+/// `challenges` is the `/v1/add-factor/challenge` response; `encrypted_backup_key` is the exact
+/// JSON that will be sent as `encryptedBackupKey` (`json!(null)` when omitted).
+pub fn add_factor_payload_for_oidc_new(
+    challenges: &serde_json::Value,
+    raw_jwt: &str,
+    turnkey_provider_id: Option<&str>,
+    encrypted_backup_key: &serde_json::Value,
+) -> String {
+    let key = encrypted_backup_key_from_json(encrypted_backup_key);
+    let material = NewFactorMaterial {
+        kind: NewFactorMaterialKind::Oidc { raw_jwt },
+        turnkey_provider_id,
+        encrypted_backup_key: key.as_ref(),
+    };
+    existing_factor_payload_b64(
+        challenges["existingFactorChallenge"]
+            .as_str()
+            .expect("existingFactorChallenge"),
+        &material,
+    )
+}
+
+/// The payload the existing factor must sign when the new factor is a passkey registration.
+///
+/// `credential` is the registration response JSON that will be sent as
+/// `newFactorAuthorization.credential` (its `rawId`, `response.clientDataJSON` and
+/// `response.attestationObject` are bound verbatim); `public_key_sec1` comes from
+/// `registered_passkey_material` (test-utils) or the key the fixture was built with; `label` must be
+/// exactly the label sent in the request (empty when omitted).
+pub fn add_factor_payload_for_passkey_new(
+    challenges: &serde_json::Value,
+    credential: &serde_json::Value,
+    public_key_sec1: &[u8; 65],
+    label: &str,
+    turnkey_provider_id: Option<&str>,
+    encrypted_backup_key: &serde_json::Value,
+) -> String {
+    let key = encrypted_backup_key_from_json(encrypted_backup_key);
+    let credential_id = credential_id_from_credential(credential);
+    let client_data_json = webauthn_bytes(&credential["response"]["clientDataJSON"]);
+    let attestation_object = webauthn_bytes(&credential["response"]["attestationObject"]);
+    let material = NewFactorMaterial {
+        kind: NewFactorMaterialKind::Passkey {
+            credential_id: &credential_id,
+            public_key_sec1,
+            label,
+            client_data_json: &client_data_json,
+            attestation_object: &attestation_object,
+        },
+        turnkey_provider_id,
+        encrypted_backup_key: key.as_ref(),
+    };
+    existing_factor_payload_b64(
+        challenges["existingFactorChallenge"]
+            .as_str()
+            .expect("existingFactorChallenge"),
+        &material,
+    )
+}
+
+/// A `RedisCacheManager` on the same Redis the test router uses, for asserting on consumed
+/// challenge tokens and OIDC nonces (`is_challenge_token_used`, `is_oidc_nonce_used`).
+pub async fn get_test_redis_cache_manager() -> backup_service::redis_cache::RedisCacheManager {
+    dotenvy::from_path(".env.example").ok();
+    let environment = Environment::development(None);
+    backup_service::redis_cache::RedisCacheManager::new(
+        environment,
+        environment.cache_default_ttl(),
+    )
+    .await
+    .expect("redis")
+}
+
+/// The `nonce` claim of a compact JWT (payload segment decoded, no signature check) — the value
+/// the server tracks per provider for replay protection.
+pub fn oidc_nonce_from_jwt(jwt: &str) -> String {
+    let payload_b64 = jwt.split('.').nth(1).expect("compact JWT");
+    let payload = BASE64_URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .expect("base64url JWT payload");
+    let claims: serde_json::Value = serde_json::from_slice(&payload).expect("JSON claims");
+    claims["nonce"].as_str().expect("nonce claim").to_string()
 }
 
 /// Create a Turnkey activity JSON embedding the backup-service challenge and return (`activity_json`, `activity_hash_b64url`)
@@ -874,4 +1021,37 @@ pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> 
     let jwt = jwt::encode_with_signer(&payload, &header, &signer).unwrap();
 
     (jwk, jwt)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rollout bridge for the legacy existing=Passkey add-factor payload (#253)
+// ---------------------------------------------------------------------------------------------
+
+/// Sets (or clears) `ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET` for one test and clears it again on
+/// drop, panic included. The variable is process-global, so only use this from `#[serial]` tests.
+pub struct LegacyBridgeVar;
+
+impl LegacyBridgeVar {
+    const VAR: &str = "ADD_FACTOR_LEGACY_PASSKEY_PAYLOAD_SUNSET";
+
+    pub fn set(value: &str) -> Self {
+        std::env::set_var(Self::VAR, value);
+        Self
+    }
+
+    pub fn unset() -> Self {
+        std::env::remove_var(Self::VAR);
+        Self
+    }
+
+    /// A sunset already in the past: only the bound payload is accepted.
+    pub fn closed() -> Self {
+        Self::set("2000-01-01T00:00:00Z")
+    }
+}
+
+impl Drop for LegacyBridgeVar {
+    fn drop(&mut self) {
+        std::env::remove_var(Self::VAR);
+    }
 }

@@ -1,12 +1,18 @@
 mod common;
 
 use crate::common::{
-    create_test_backup, create_test_backup_with_oidc_account, create_turnkey_activity_and_hash,
-    get_add_factor_challenges_generic, get_passkey_retrieval_challenge, parse_response_body,
+    add_factor_payload_for_oidc_new, add_factor_payload_for_passkey_new, create_test_backup,
+    create_test_backup_with_oidc_account, create_turnkey_activity_and_hash,
+    get_add_factor_challenges_generic, get_passkey_retrieval_challenge,
+    get_test_redis_cache_manager, oidc_nonce_from_jwt, parse_response_body,
     send_post_request_with_environment, verify_s3_metadata_exists,
 };
 use axum::http::StatusCode;
-use backup_service_test_utils::{get_mock_passkey_client, make_credential_from_passkey_challenge};
+use backup_service_test_utils::{
+    get_mock_passkey_client, make_credential_from_passkey_challenge, registered_passkey_material,
+};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use http_body_util::BodyExt;
 use serde_json::json;
 use serial_test::serial;
@@ -37,6 +43,7 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     let registration_payload = json!({ "challenge": registration_state });
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &registration_payload).await;
+    let (new_credential_id, new_public_key_sec1) = registered_passkey_material(&passkey_client);
 
     // Use a fresh session keypair and OIDC token for existing-factor auth to avoid nonce replay
     let (existing_session_public_key, existing_session_secret_key) =
@@ -46,10 +53,20 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         Some(openidconnect::SubjectIdentifier::new(subject.clone())),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    // The existing factor signs `existingFactorChallenge || SHA256(tag || new_factor_material)`:
+    // the new passkey (credential id, public key and the verbatim registration response bytes)
+    // plus the request's label, turnkeyProviderId (absent) and encryptedBackupKey (null), exactly
+    // as sent below.
+    let existing_payload = add_factor_payload_for_passkey_new(
+        &challenges,
+        &credential,
+        &new_public_key_sec1,
+        "Test Passkey",
+        None,
+        &json!(null),
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
 
     let response = send_post_request_with_environment(
         "/v1/add-factor",
@@ -79,9 +96,20 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(add_factor_response["backupMetadata"].is_object());
+    // The exported metadata lists the new factor under the credential id the authenticator
+    // registered.
+    let expected_credential_id = URL_SAFE_NO_PAD.encode(&new_credential_id);
+    let exported_factors = add_factor_response["backupMetadata"]["factors"]
+        .as_array()
+        .unwrap();
+    assert!(
+        exported_factors.iter().any(|f| f["id"] == new_factor_id
+            && f["kind"]["kind"] == "PASSKEY"
+            && f["kind"]["credentialId"] == expected_credential_id),
+        "exported metadata lacks passkey factor {new_factor_id} for {expected_credential_id}: {add_factor_response}"
+    );
 
-    // Verify metadata now contains the new passkey factor
+    // Verify stored metadata now contains the new passkey factor
     let body = test
         .response
         .into_body()
@@ -97,7 +125,10 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     let passkey_found = factors
         .iter()
         .any(|f| f["id"].as_str().unwrap() == new_factor_id && f["kind"]["kind"] == "PASSKEY");
-    assert!(passkey_found);
+    assert!(
+        passkey_found,
+        "stored metadata lacks passkey factor {new_factor_id}: {metadata}"
+    );
 
     // Validate we can retrieve with passkey now
     let retrieve_challenge = get_passkey_retrieval_challenge().await;
@@ -154,8 +185,23 @@ async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
     )
     .await;
 
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // The stamped Turnkey activity carries `existingFactorChallenge || SHA256(tag ||
+    // new_factor_material)` as its metadata.challenge, covering the new OIDC token plus the
+    // request's turnkeyProviderId and encryptedBackupKey.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&existing_payload);
     let passkey_assertion =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
             .await;
@@ -178,13 +224,7 @@ async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "turnkeyProviderId": "turnkey_provider_id",
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
+            "encryptedBackupKey": encrypted_backup_key,
         }),
         Some(environment),
     )
@@ -237,10 +277,22 @@ async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
         Some(openidconnect::SubjectIdentifier::new(subject)),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // Existing factor signs `existingFactorChallenge || SHA256(tag || new_factor_material)`.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &new_oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
     let new_sig = crate::common::sign_keypair_challenge(
         &new_session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -264,13 +316,7 @@ async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "turnkeyProviderId": "turnkey_provider_id",
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
+            "encryptedBackupKey": encrypted_backup_key,
         }),
         Some(test.environment),
     )
@@ -334,10 +380,22 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
         Some(openidconnect::SubjectIdentifier::new(subject)),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // Existing factor signs `existingFactorChallenge || SHA256(tag || new_factor_material)`.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &new_oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
     let new_sig = crate::common::sign_keypair_challenge(
         &new_session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -361,13 +419,7 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "turnkeyProviderId": "turnkey_provider_id",
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
+            "encryptedBackupKey": encrypted_backup_key,
         }),
         Some(test.environment),
     )
@@ -417,10 +469,23 @@ async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
     )
     .await;
 
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // The one session keypair signs `existingFactorChallenge || SHA256(tag || new_factor_material)`
+    // on the existing side; the new-factor material is that same ID token.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&session_secret_key, &existing_payload);
     let new_sig = crate::common::sign_keypair_challenge(
         &session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -444,19 +509,36 @@ async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
             "turnkeyProviderId": "turnkey_provider_id",
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
+            "encryptedBackupKey": encrypted_backup_key,
         }),
         Some(test.environment),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
+
+    // One atomic commit consumed both challenge tokens and the single nonce shared by both sides.
+    let redis = get_test_redis_cache_manager().await;
+    assert!(
+        redis
+            .is_oidc_nonce_used(
+                &oidc_nonce_from_jwt(&oidc_token),
+                &types::OidcProvider::Google
+            )
+            .await
+            .unwrap(),
+        "the shared OIDC nonce should be consumed after a successful add-factor"
+    );
+    for token_field in ["existingFactorToken", "newFactorToken"] {
+        assert!(
+            redis
+                .is_challenge_token_used(challenges[token_field].as_str().unwrap())
+                .await
+                .unwrap(),
+            "{token_field} should be consumed after a successful add-factor"
+        );
+    }
+
     let metadata = verify_s3_metadata_exists(backup_id).await;
     assert!(metadata["keys"]
         .as_array()
@@ -510,10 +592,23 @@ async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() 
         Some(openidconnect::SubjectIdentifier::new(subject)),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // Existing factor signs `existingFactorChallenge || SHA256(tag || new_factor_material)`; the
+    // material commits to the turnkeyProviderId exactly as sent, i.e. the different one below.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &new_oidc_token,
+        Some("a-different-turnkey-provider-id"),
+        &encrypted_backup_key,
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
     let new_sig = crate::common::sign_keypair_challenge(
         &new_session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -538,13 +633,7 @@ async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() 
             "newFactorChallengeToken": challenges["newFactorToken"],
             // Different from create's "turnkey_provider_id" — must still be treated as the same factor.
             "turnkeyProviderId": "a-different-turnkey-provider-id",
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-            }
+            "encryptedBackupKey": encrypted_backup_key,
         }),
         Some(test.environment),
     )

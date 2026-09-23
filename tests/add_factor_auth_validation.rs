@@ -1,8 +1,8 @@
 mod common;
 
 use crate::common::{
-    create_test_backup_with_oidc_account, get_add_factor_challenges_generic, parse_response_body,
-    send_post_request_with_environment,
+    add_factor_payload_for_oidc_new, create_test_backup_with_oidc_account,
+    get_add_factor_challenges_generic, parse_response_body, send_post_request_with_environment,
 };
 use axum::http::StatusCode;
 use backup_service_test_utils::MockOidcProvider;
@@ -33,11 +33,12 @@ async fn test_add_factor_missing_turnkey_provider_id() {
     )
     .await;
 
-    // Existing OIDC auth for this challenge
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
-    );
+    // Existing OIDC auth for this challenge: the session key signs
+    // `existingFactorChallenge || SHA256(tag || new-factor material)`, bound to the request as
+    // sent below — no `turnkeyProviderId`, no `encryptedBackupKey`
+    let payload = add_factor_payload_for_oidc_new(&challenges, &new_oidc_token, None, &json!(null));
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &payload);
     let existing_oidc_token = test.oidc_server.generate_token(
         &MockOidcProvider::Google,
         Some(SubjectIdentifier::new("sig-mismatch".to_string())),
@@ -98,10 +99,16 @@ async fn test_add_factor_new_oidc_signature_mismatch() {
     )
     .await;
 
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    // The existing session key signs the material-bound payload for the request as sent (provider
+    // id present, no encrypted key), so the wrong new-factor signature is the only fault
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &new_oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &payload);
     let existing_oidc_token = test.oidc_server.generate_token(
         &MockOidcProvider::Google,
         Some(SubjectIdentifier::new("sig-mismatch".to_string())),
@@ -164,10 +171,15 @@ async fn test_add_factor_rejects_ec_existing_main_factor() {
     )
     .await;
 
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    // Even the (rejected) EC existing factor signs the material-bound payload for the request as
+    // sent, so `not_supported` is the only fault
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
     );
+    let existing_sig = crate::common::sign_keypair_challenge(&secret_key, &payload);
     let new_sig = crate::common::sign_keypair_challenge(
         &session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -220,6 +232,9 @@ async fn test_add_factor_rejects_ec_new_main_factor() {
     )
     .await;
 
+    // No binding payload is defined for an EC new factor (the codec has no EC kind), so the
+    // activity carries the bare challenge; the request is rejected as `not_supported` before the
+    // activity is read
     let (turnkey_activity, challenge_hash) = crate::common::create_turnkey_activity_and_hash(
         challenges["existingFactorChallenge"].as_str().unwrap(),
     );

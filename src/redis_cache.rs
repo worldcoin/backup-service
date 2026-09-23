@@ -208,11 +208,6 @@ impl RedisCacheManager {
     ) -> Result<(), RedisCacheError> {
         let token_hash = hash_token(USED_OIDC_NONCE_PREFIX, &format!("{oidc_provider}:{nonce}"));
 
-        // Nonces may be indefinitely valid, in a regular OIDC flow, the nonce would be created by the RP and short-lived,
-        // but this nonce depends on Turnkey, so we can't depend on a server-side expiration.
-        // For the time being, we cache the hashed nonce with a very long TTL to prevent replay.
-        let long_ttl_seconds = 365 * 24 * 60 * 60; // 1 year
-
         // Try to set the nonce with NX (not exists) option to prevent duplicates
         let mut redis = self.redis.clone();
         let result = redis
@@ -220,7 +215,7 @@ impl RedisCacheManager {
                 &token_hash,
                 true,
                 SetOptions::default()
-                    .with_expiration(SetExpiry::EX(long_ttl_seconds))
+                    .with_expiration(SetExpiry::EX(OIDC_NONCE_TTL_SECONDS))
                     .conditional_set(ExistenceCheck::NX), // critical to ensure it's only used once
             )
             .await?;
@@ -230,6 +225,91 @@ impl RedisCacheManager {
         }
 
         Ok(())
+    }
+
+    /// Whether a challenge token has already been consumed. Read-only.
+    ///
+    /// # Errors
+    /// * `RedisCacheError::RedisError` - if Redis cannot be queried
+    pub async fn is_challenge_token_used(
+        &self,
+        challenge_token: &str,
+    ) -> Result<bool, RedisCacheError> {
+        let mut redis = self.redis.clone();
+        Ok(redis
+            .exists(hash_token(USED_CHALLENGE_PREFIX, challenge_token))
+            .await?)
+    }
+
+    /// Whether an OIDC nonce has already been consumed. Read-only.
+    ///
+    /// # Errors
+    /// * `RedisCacheError::RedisError` - if Redis cannot be queried
+    pub async fn is_oidc_nonce_used(
+        &self,
+        nonce: &str,
+        oidc_provider: &OidcProvider,
+    ) -> Result<bool, RedisCacheError> {
+        let mut redis = self.redis.clone();
+        Ok(redis
+            .exists(hash_token(
+                USED_OIDC_NONCE_PREFIX,
+                &format!("{oidc_provider}:{nonce}"),
+            ))
+            .await?)
+    }
+
+    /// Marks every key in `keys` as used, or none of them.
+    ///
+    /// Add-factor consumes two challenge tokens and up to two OIDC nonces at a single commit
+    /// point; burning them one by one would let a failure (or a dropped request) in between waste
+    /// an approval the user already gave. A Lua script runs atomically in Redis, so the
+    /// existence check and the writes cannot interleave with any other command. Keys and TTLs are
+    /// the same as [`Self::use_challenge_token`] / [`Self::use_oidc_nonce`], so a value burned
+    /// here is seen as used by every other flow and vice versa. Duplicate keys are rejected: two
+    /// different ID tokens carrying the same nonce must fail exactly as two sequential burns do.
+    ///
+    /// # Errors
+    /// * `RedisCacheError::AlreadyUsed` - if any key was already used, or two keys are identical;
+    ///   nothing was written
+    /// * `RedisCacheError::RedisError` - if the script cannot be run
+    pub async fn burn_all_or_nothing(&self, keys: &[BurnKey]) -> Result<(), RedisCacheError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let script = Script::new(BURN_ALL_OR_NOTHING_SCRIPT);
+        let mut invocation = script.prepare_invoke();
+        for key in keys {
+            invocation.key(key.redis_key());
+        }
+        for key in keys {
+            invocation.arg(key.ttl_seconds(self.default_ttl));
+        }
+
+        let mut redis = self.redis.clone();
+        let outcome: i64 = invocation.invoke_async(&mut redis).await?;
+        match outcome {
+            BURN_OUTCOME_OK => Ok(()),
+            BURN_OUTCOME_ALREADY_USED => Err(RedisCacheError::AlreadyUsed),
+            BURN_OUTCOME_DUPLICATE_KEY => {
+                // A client bug or misuse (e.g. two different ID tokens minted on one session
+                // keypair), not a replay — but it must fail the same way two sequential burns would.
+                tracing::warn!(
+                    message =
+                        "Rejected single-use commit: the same key appears twice in one request",
+                    key_count = keys.len(),
+                );
+                Err(RedisCacheError::AlreadyUsed)
+            }
+            other => {
+                tracing::error!(
+                    message = "Single-use commit script returned an unexpected outcome",
+                    outcome = other,
+                );
+                Err(RedisCacheError::EncodingError)
+            }
+        }
     }
 
     /// Attempts to acquire a Redis lock and returns a guard that releases it on drop.
@@ -316,6 +396,73 @@ impl SyncFactorTokenData {
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
 const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash";
 const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
+
+/// Nonces may be indefinitely valid: in a regular OIDC flow the nonce would be created by the RP
+/// and short-lived, but this nonce depends on Turnkey, so there is no server-side expiration to
+/// lean on. The hashed nonce is kept for a very long time instead.
+const OIDC_NONCE_TTL_SECONDS: u64 = 365 * 24 * 60 * 60;
+
+/// A single-use value consumed by [`RedisCacheManager::burn_all_or_nothing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BurnKey {
+    /// A challenge token, as passed to [`RedisCacheManager::use_challenge_token`].
+    ChallengeToken(String),
+    /// An OIDC ID token nonce, as passed to [`RedisCacheManager::use_oidc_nonce`].
+    OidcNonce {
+        /// The provider that issued the token.
+        provider: OidcProvider,
+        /// The token's nonce claim.
+        nonce: String,
+    },
+}
+
+impl BurnKey {
+    fn redis_key(&self) -> String {
+        match self {
+            Self::ChallengeToken(challenge_token) => {
+                hash_token(USED_CHALLENGE_PREFIX, challenge_token)
+            }
+            Self::OidcNonce { provider, nonce } => {
+                hash_token(USED_OIDC_NONCE_PREFIX, &format!("{provider}:{nonce}"))
+            }
+        }
+    }
+
+    fn ttl_seconds(&self, default_ttl: Duration) -> u64 {
+        match self {
+            Self::ChallengeToken(_) => default_ttl.as_secs(),
+            Self::OidcNonce { .. } => OIDC_NONCE_TTL_SECONDS,
+        }
+    }
+}
+
+const BURN_OUTCOME_OK: i64 = 0;
+const BURN_OUTCOME_ALREADY_USED: i64 = 1;
+const BURN_OUTCOME_DUPLICATE_KEY: i64 = 2;
+
+/// `KEYS[i]` is a hashed single-use key and `ARGV[i]` its TTL in seconds. Returns `1` if any key
+/// already exists, `2` if two keys are identical, `0` after writing all of them. Redis runs the
+/// whole script atomically, so a non-zero return means nothing was written.
+///
+/// The keys share no hash tag, which is fine on the single-node Redis this service uses; a move to
+/// cluster mode would make this multi-key script fail with `CROSSSLOT` and would need the key
+/// layout (shared with the single-key `use_*` methods) revisited first.
+const BURN_ALL_OR_NOTHING_SCRIPT: &str = "
+    for i = 1, #KEYS do
+        for j = 1, i - 1 do
+            if KEYS[j] == KEYS[i] then
+                return 2
+            end
+        end
+        if redis.call('EXISTS', KEYS[i]) == 1 then
+            return 1
+        end
+    end
+    for i = 1, #KEYS do
+        redis.call('SET', KEYS[i], '1', 'EX', ARGV[i])
+    end
+    return 0
+";
 
 #[derive(thiserror::Error, Debug)]
 pub enum RedisCacheError {
@@ -654,5 +801,117 @@ mod tests {
         ));
 
         current_guard.release().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod burn_tests {
+    use super::*;
+
+    async fn manager() -> RedisCacheManager {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        RedisCacheManager::new(environment, environment.cache_default_ttl())
+            .await
+            .unwrap()
+    }
+
+    fn fresh_token() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    #[tokio::test]
+    async fn burn_all_or_nothing_writes_every_key_and_is_visible_to_single_key_burns() {
+        let manager = manager().await;
+        let (token_a, token_b, nonce) = (fresh_token(), fresh_token(), fresh_token());
+        let keys = [
+            BurnKey::ChallengeToken(token_a.clone()),
+            BurnKey::ChallengeToken(token_b.clone()),
+            BurnKey::OidcNonce {
+                provider: OidcProvider::Google,
+                nonce: nonce.clone(),
+            },
+        ];
+
+        manager.burn_all_or_nothing(&keys).await.unwrap();
+
+        assert!(manager.is_challenge_token_used(&token_a).await.unwrap());
+        assert!(manager.is_challenge_token_used(&token_b).await.unwrap());
+        assert!(manager
+            .is_oidc_nonce_used(&nonce, &OidcProvider::Google)
+            .await
+            .unwrap());
+        // Same provider-qualified key layout as `use_oidc_nonce`: a different provider is a
+        // different nonce.
+        assert!(!manager
+            .is_oidc_nonce_used(&nonce, &OidcProvider::Apple)
+            .await
+            .unwrap());
+        assert!(matches!(
+            manager.use_challenge_token(token_a).await,
+            Err(RedisCacheError::AlreadyUsed)
+        ));
+        assert!(matches!(
+            manager.use_oidc_nonce(&nonce, &OidcProvider::Google).await,
+            Err(RedisCacheError::AlreadyUsed)
+        ));
+        assert!(matches!(
+            manager.burn_all_or_nothing(&keys[1..2]).await,
+            Err(RedisCacheError::AlreadyUsed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn burn_all_or_nothing_writes_nothing_when_any_key_is_already_used() {
+        let manager = manager().await;
+        let (fresh, used) = (fresh_token(), fresh_token());
+        manager.use_challenge_token(used.clone()).await.unwrap();
+
+        let result = manager
+            .burn_all_or_nothing(&[
+                BurnKey::ChallengeToken(fresh.clone()),
+                BurnKey::OidcNonce {
+                    provider: OidcProvider::Apple,
+                    nonce: fresh.clone(),
+                },
+                BurnKey::ChallengeToken(used),
+            ])
+            .await;
+
+        assert!(matches!(result, Err(RedisCacheError::AlreadyUsed)));
+        assert!(!manager.is_challenge_token_used(&fresh).await.unwrap());
+        assert!(!manager
+            .is_oidc_nonce_used(&fresh, &OidcProvider::Apple)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn burn_all_or_nothing_rejects_duplicate_keys_without_writing() {
+        let manager = manager().await;
+        let nonce = fresh_token();
+        let duplicate = BurnKey::OidcNonce {
+            provider: OidcProvider::Google,
+            nonce: nonce.clone(),
+        };
+
+        let result = manager
+            .burn_all_or_nothing(&[
+                BurnKey::ChallengeToken(fresh_token()),
+                duplicate.clone(),
+                duplicate,
+            ])
+            .await;
+
+        assert!(matches!(result, Err(RedisCacheError::AlreadyUsed)));
+        assert!(!manager
+            .is_oidc_nonce_used(&nonce, &OidcProvider::Google)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn burn_all_or_nothing_with_no_keys_is_a_noop() {
+        manager().await.burn_all_or_nothing(&[]).await.unwrap();
     }
 }

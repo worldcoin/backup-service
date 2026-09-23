@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::common::get_test_s3_client;
 use crate::common::{
-    create_test_backup, generate_keypair, get_keypair_retrieve_challenge,
+    add_factor_payload_for_oidc_new, create_test_backup, create_turnkey_activity_and_hash,
+    generate_keypair, get_keypair_retrieve_challenge,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
     verify_s3_metadata_exists,
 };
@@ -68,26 +69,17 @@ async fn get_add_factor_challenges(oidc_token: &str) -> Value {
     parse_response_body(challenge_response).await
 }
 
-/// Creates a Turnkey activity JSON with the given challenge
-fn create_turnkey_activity(challenge: &str) -> (String, String) {
-    let turnkey_activity = json!({
-        "type": "ACTIVITY_TYPE_CREATE_API_KEYS_V2",
-        "organizationId": "org123",
-        "timestampMs": Utc::now().timestamp_millis().to_string(),
-        "metadata": {
-            "challenge": challenge
-        }
+/// The `encryptedBackupKey` most tests send: a Turnkey key for `org123`, the organization the
+/// Turnkey activities below are issued for. The existing passkey's authorization commits to this
+/// JSON exactly as sent, so tests build the binding payload and the request from the same value.
+fn turnkey_encrypted_backup_key() -> Value {
+    json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
     })
-    .to_string();
-
-    let turnkey_activity_challenge = {
-        let mut hasher = Sha256::new();
-        hasher.update(turnkey_activity.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-        BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes())
-    };
-
-    (turnkey_activity, turnkey_activity_challenge)
 }
 
 /// Creates a new keypair and signs a challenge
@@ -120,8 +112,15 @@ async fn add_google_oidc_factor(
         &new_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // The passkey stamps `existingFactorChallenge || SHA256(tag || new-factor material)`, bound to
+    // the exact OIDC token, `turnkeyProviderId` and `encryptedBackupKey` sent below.
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(passkey_client, &challenge_hash).await;
 
     common::send_post_request_with_environment(
@@ -231,9 +230,16 @@ async fn test_add_factor_happy_path() {
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // Create Turnkey activity and get passkey assertion
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Create the Turnkey activity carrying the binding payload for this exact request and get
+    // the passkey assertion over it
+    let encrypted_backup_key = turnkey_encrypted_backup_key();
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Add the new factor
@@ -256,13 +262,7 @@ async fn test_add_factor_happy_path() {
                 "signature": new_factor_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            },
+            "encryptedBackupKey": encrypted_backup_key,
             "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
@@ -358,10 +358,12 @@ async fn test_add_factor_happy_path() {
     assert_eq!(metadata["id"].as_str().unwrap(), &backup_id);
 }
 
-// Mismatch between OIDC token when getting the challenge and when adding the factor
+// The ID token given to /add-factor/challenge is not binding; the one the existing factor signs is.
+// Requesting the challenges with token A and adding the factor with token B is accepted when the
+// existing passkey signed the payload for B (the descriptor written for older pods is ignored).
 #[tokio::test]
 #[serial]
-async fn test_add_factor_with_mismatched_oidc_token() {
+async fn test_add_factor_accepts_oidc_token_other_than_the_one_given_at_challenge_time() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
@@ -371,11 +373,14 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     // Generate two different OIDC tokens
     let original_oidc_token =
         oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
+    // A fresh subject: this request now succeeds and persists a factor, so a fixed subject would
+    // collide with the factor lookup left behind by a previous run.
     let different_oidc_token = oidc_server.generate_token(
         &MockOidcProvider::Google,
-        Some(openidconnect::SubjectIdentifier::new(
-            "different-subject".to_string(),
-        )),
+        Some(openidconnect::SubjectIdentifier::new(format!(
+            "different-subject-{}",
+            uuid::Uuid::new_v4()
+        ))),
         &new_public_key,
     );
 
@@ -388,12 +393,19 @@ async fn test_add_factor_with_mismatched_oidc_token() {
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // Create Turnkey activity and get passkey assertion
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Create Turnkey activity and get passkey assertion. The passkey authorizes exactly the request
+    // sent below, `different_oidc_token` included.
+    let encrypted_backup_key = turnkey_encrypted_backup_key();
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &different_oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
-    // Attempt to add the new factor but use a different OIDC token than what was used for the challenge
+    // Add the new factor with a different OIDC token than the one given at challenge time
     let response = common::send_post_request_with_environment(
         "/v1/add-factor",
         json!({
@@ -413,32 +425,23 @@ async fn test_add_factor_with_mismatched_oidc_token() {
                 "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            },
+            "encryptedBackupKey": encrypted_backup_key,
             "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
     .await;
 
-    // Verify the request was rejected with an error
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let status = response.status();
     let add_factor_response = parse_response_body(response).await;
-    assert_eq!(
-        add_factor_response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "oidc_token_mismatch",
-                "message": "OIDC Token mismatch",
-            }
-        })
-    );
+    assert_eq!(status, StatusCode::OK, "{add_factor_response}");
+    let added = add_factor_response["backupMetadata"]["factors"]
+        .as_array()
+        .expect("factors")
+        .iter()
+        .find(|factor| factor["id"] == add_factor_response["factorId"])
+        .expect("added factor in metadata");
+    assert_eq!(added["kind"]["kind"], "OIDC_ACCOUNT");
 }
 
 // No challenge in the Turnkey activity
@@ -504,13 +507,11 @@ async fn test_add_factor_without_challenge_in_turnkey_activity() {
                 "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            }
+            "encryptedBackupKey": turnkey_encrypted_backup_key(),
+            // The new factor is verified before the Turnkey activity is inspected, so it must be
+            // complete: without the provider id the server would stop at
+            // `missing_turnkey_provider_id` and never reach the activity check under test
+            "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
     )
@@ -543,16 +544,27 @@ async fn test_add_factor_with_modified_turnkey_activity() {
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // Create valid Turnkey activity with the challenge
-    let (_turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Create a valid Turnkey activity carrying the binding payload for this exact request
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
 
     // Sign the activity with the passkey
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
-    // Modify the activity AFTER signing it by generating it again with new timestamp
-    let (modified_activity, _) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Modify the activity AFTER signing it: bump the timestamp, so the submitted bytes are
+    // guaranteed to differ from the stamped ones (regenerating could land in the same millisecond)
+    let modified_activity = {
+        let mut activity: Value = serde_json::from_str(&turnkey_activity).unwrap();
+        let timestamp_ms: i64 = activity["timestampMs"].as_str().unwrap().parse().unwrap();
+        activity["timestampMs"] = json!((timestamp_ms + 1).to_string());
+        activity.to_string()
+    };
+    assert_ne!(modified_activity, turnkey_activity);
 
     // Attempt to add the new factor with the modified activity
     let response = common::send_post_request_with_environment(
@@ -607,9 +619,16 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
     let (_, _, new_incorrect_signature) =
         create_keypair_and_sign(challenges["newFactorChallenge"].as_str().unwrap());
 
-    // Create Turnkey activity and get passkey assertion
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Create Turnkey activity carrying the binding payload for this exact request and get the
+    // passkey assertion over it
+    let encrypted_backup_key = turnkey_encrypted_backup_key();
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Add the new factor
@@ -632,13 +651,7 @@ async fn test_add_factor_incorrectly_signed_challenge_for_new_keypair() {
                 "signature": new_incorrect_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            },
+            "encryptedBackupKey": encrypted_backup_key,
             "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
@@ -690,9 +703,16 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // Create Turnkey activity and get passkey assertion from user 1
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // Create Turnkey activity carrying the binding payload for this exact request and get the
+    // passkey assertion over it from user 1
+    let encrypted_backup_key = turnkey_encrypted_backup_key();
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let mut passkey_assertion = get_passkey_assertion(&mut passkey_client_1, &challenge_hash).await;
 
     // But replace credential ID with user 2's credential
@@ -719,13 +739,7 @@ async fn test_add_factor_with_passkey_credential_for_different_user() {
                 "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                "turnkeyAccountId": "org123",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            },
+            "encryptedBackupKey": encrypted_backup_key,
             "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),
@@ -791,9 +805,25 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
         challenges["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // Create Turnkey activity and get passkey assertion
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity(challenges["existingFactorChallenge"].as_str().unwrap());
+    // The encrypted backup key names a different account ID than the activity, and neither is
+    // `org_123` (the account already on the backup metadata)
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "different_account_id",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
+    });
+
+    // Create Turnkey activity carrying the binding payload for this exact request and get the
+    // passkey assertion over it
+    let payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
     // Attempt to add the new factor with a different account ID in the encrypted backup key
@@ -816,14 +846,7 @@ async fn test_add_factor_with_different_account_id_in_turnkey_activity_and_encry
                 "signature": new_signature,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            "encryptedBackupKey": {
-                "kind": "TURNKEY",
-                "encryptedKey": "ENCRYPTED_KEY",
-                // Different account ID than in the activity, not `org123` (doesn't match the existing backup metadata)
-                "turnkeyAccountId": "different_account_id",
-                "turnkeyUserId": "TURNKEY_USER_ID",
-                "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID",
-            },
+            "encryptedBackupKey": encrypted_backup_key,
             "turnkeyProviderId": "turnkey_provider_id",
         }),
         Some(environment),

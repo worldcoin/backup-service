@@ -6,6 +6,7 @@ pub mod backup_storage;
 pub mod challenge_manager;
 pub mod environment;
 pub mod error;
+pub mod factor_binding;
 pub mod factor_lookup;
 pub mod headers;
 pub mod kms_jwe;

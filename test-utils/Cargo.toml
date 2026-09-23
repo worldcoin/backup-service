@@ -11,6 +11,8 @@ version.workspace = true
 async-trait = "0.1.89"
 base64 = { workspace = true }
 chrono = { workspace = true }
+# Same version `passkey-types` 0.4.0 pulls in; needed to read `Passkey::key` (a `coset::CoseKey`).
+coset = "0.3.8"
 hex = { workspace = true }
 mockito = { workspace = true }
 openidconnect = { workspace = true }
@@ -23,3 +25,6 @@ sha2 = { workspace = true }
 uuid = { workspace = true }
 url = "2.5.4"
 p256 = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1.46.1", features = ["macros", "rt"] }

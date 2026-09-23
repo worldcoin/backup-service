@@ -1,17 +1,21 @@
 mod common;
 
 use crate::common::{
-    create_test_backup, create_turnkey_activity_and_hash, get_add_factor_challenges_generic,
-    parse_response_body, send_post_request_with_environment,
+    add_factor_payload_for_oidc_new, add_factor_payload_for_passkey_new, create_test_backup,
+    create_turnkey_activity_and_hash, get_add_factor_challenges_generic, parse_response_body,
+    send_post_request_with_environment,
 };
 use axum::http::StatusCode;
-use backup_service_test_utils::get_mock_passkey_client;
+use backup_service_test_utils::{get_mock_passkey_client, registered_passkey_material};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde_json::json;
 use serial_test::serial;
 
-// Token replay, mismatched new-factor type, swapped tokens (Passkey → OIDC)
+// Token replay, mismatched new-factor type, swapped tokens, stale approval (Passkey → OIDC)
 #[tokio::test]
 #[serial]
+#[allow(clippy::too_many_lines)] // end-to-end scenario, splitting it would hide the flow
 async fn test_add_factor_challenge_binding_matrix() {
     let mut passkey_client = get_mock_passkey_client();
     let (_cred, _create_response) = create_test_backup(&mut passkey_client, b"DATA").await;
@@ -36,8 +40,22 @@ async fn test_add_factor_challenge_binding_matrix() {
     )
     .await;
 
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
+    let encrypted_backup_key = json!({
+        "kind": "TURNKEY",
+        "encryptedKey": "ENCRYPTED_KEY",
+        "turnkeyAccountId": "org123",
+        "turnkeyUserId": "TURNKEY_USER_ID",
+        "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
+    });
+    // The existing passkey authorizes `existingFactorChallenge || SHA256(tag ||
+    // new_factor_material)` by stamping a Turnkey activity that carries it as metadata.challenge.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &encrypted_backup_key,
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&existing_payload);
     let passkey_assertion =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
             .await;
@@ -58,16 +76,11 @@ async fn test_add_factor_challenge_binding_matrix() {
         },
         "newFactorChallengeToken": challenges["newFactorToken"],
         "turnkeyProviderId": "turnkey_provider_id",
-        "encryptedBackupKey": {
-            "kind": "TURNKEY",
-            "encryptedKey": "ENCRYPTED_KEY",
-            "turnkeyAccountId": "org123",
-            "turnkeyUserId": "TURNKEY_USER_ID",
-            "turnkeyPrivateKeyId": "TURNKEY_PRIVATE_KEY_ID"
-        }
+        "encryptedBackupKey": encrypted_backup_key,
     });
 
-    // 1) Reuse same tokens (already_used)
+    // 1) Replaying the exact request: the first call's commit consumed both tokens and the nonce
+    //    (already_used).
     let resp1 = send_post_request_with_environment(
         "/v1/add-factor",
         base_payload.clone(),
@@ -85,7 +98,8 @@ async fn test_add_factor_challenge_binding_matrix() {
     let body2 = parse_response_body(resp2).await;
     assert_eq!(body2["error"]["code"], "already_used");
 
-    // Fresh challenges for cases below — tokens from case 1 are already spent.
+    // Fresh challenges for the cases below — tokens from case 1 are already spent. The activity is
+    // correct for the requested (OIDC) new factor, so the only fault is the one each case injects.
     let challenges2 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
@@ -94,13 +108,16 @@ async fn test_add_factor_challenge_binding_matrix() {
         Some("PASSKEY"),
     )
     .await;
-    let (turnkey_activity2, challenge_hash2) =
-        create_turnkey_activity_and_hash(challenges2["existingFactorChallenge"].as_str().unwrap());
+    let existing_payload2 =
+        add_factor_payload_for_oidc_new(&challenges2, &oidc_token, None, &json!(null));
+    let (turnkey_activity2, challenge_hash2) = create_turnkey_activity_and_hash(&existing_payload2);
     let passkey_assertion2 =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash2)
             .await;
 
-    // 2) Mismatched requested new factor vs submitted (invalid_new_factor_type)
+    // 2) Requested an OIDC new factor but submitted a PASSKEY one, tokens as issued.
+    //    unexpected_challenge_type: the new-factor token was minted as a Keypair (OIDC) challenge,
+    //    which cannot be opened against a PASSKEY authorization.
     let mismatched_payload = json!({
         "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
         "existingFactorChallengeToken": challenges2["existingFactorToken"],
@@ -113,9 +130,46 @@ async fn test_add_factor_challenge_binding_matrix() {
             .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
     let body3 = parse_response_body(resp3).await;
-    assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
+    assert_eq!(body3["error"]["code"], "unexpected_challenge_type");
 
-    // Fresh challenges again (case 2 may have consumed existing-factor token on the passkey path).
+    // 2b) The same stale approval with a Passkey-type new-factor token and a real credential from
+    //     a PASSKEY_REGISTRATION ceremony: both tokens decrypt and the registration verifies, but
+    //     the existing passkey stamped the payload for an OIDC new factor, so the material binding
+    //     rejects it. There is no descriptor check pairing tokens to a ceremony any more; the
+    //     signed material is what decides. Case 2 failed before the commit, so round 2's existing
+    //     token, activity and stamp are still unspent.
+    let registration_challenges = get_add_factor_challenges_generic(
+        json!({
+            "kind": "PASSKEY_REGISTRATION",
+            "platform": "IOS"
+        }),
+        Some("PASSKEY"),
+    )
+    .await;
+    let mut new_passkey_client = get_mock_passkey_client();
+    let registered_credential = backup_service_test_utils::make_credential_from_passkey_challenge(
+        &mut new_passkey_client,
+        &json!({ "challenge": registration_challenges["newFactorChallenge"].clone() }),
+    )
+    .await;
+    let stale_kind_payload = json!({
+        "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
+        "existingFactorChallengeToken": challenges2["existingFactorToken"],
+        "existingFactorTurnkeyActivity": turnkey_activity2,
+        "newFactorAuthorization": { "kind": "PASSKEY", "credential": registered_credential },
+        "newFactorChallengeToken": registration_challenges["newFactorToken"],
+    });
+    let resp3b =
+        send_post_request_with_environment("/v1/add-factor", stale_kind_payload, Some(environment))
+            .await;
+    assert_eq!(resp3b.status(), StatusCode::BAD_REQUEST);
+    let body3b = parse_response_body(resp3b).await;
+    assert_eq!(
+        body3b["error"]["code"],
+        "existing_factor_material_binding_mismatch"
+    );
+
+    // Fresh challenges again so the swap below is the only fault.
     let challenges3 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
@@ -124,8 +178,13 @@ async fn test_add_factor_challenge_binding_matrix() {
         Some("PASSKEY"),
     )
     .await;
-    let (turnkey_activity3, challenge_hash3) =
-        create_turnkey_activity_and_hash(challenges3["existingFactorChallenge"].as_str().unwrap());
+    let existing_payload3 = add_factor_payload_for_oidc_new(
+        &challenges3,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
+    );
+    let (turnkey_activity3, challenge_hash3) = create_turnkey_activity_and_hash(&existing_payload3);
     let passkey_assertion3 =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash3)
             .await;
@@ -134,7 +193,8 @@ async fn test_add_factor_challenge_binding_matrix() {
         challenges3["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // 3) Swapped tokens
+    // 3) Swapped tokens: the existing slot now holds the Keypair-type new-factor token, rejected
+    //    when decrypted against the PASSKEY authorization: unexpected_challenge_type.
     let swapped_tokens_payload = json!({
         "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion3 },
         "existingFactorChallengeToken": challenges3["newFactorToken"],
@@ -156,8 +216,38 @@ async fn test_add_factor_challenge_binding_matrix() {
     .await;
     assert_eq!(resp4.status(), StatusCode::BAD_REQUEST);
     let body4 = parse_response_body(resp4).await;
-    let code = body4["error"]["code"].as_str().unwrap_or("");
-    assert!(code == "unexpected_challenge_type" || code == "invalid_new_factor_type");
+    assert_eq!(body4["error"]["code"], "unexpected_challenge_type");
+
+    // 4) Stale approval: the activity + passkey stamp captured in round 1 (its payload embeds
+    //    round 1's challenge) replayed with round 3's still-unspent tokens. New factor and request
+    //    fields are identical to round 1, so only the challenge half of the signed payload is
+    //    wrong: existing_factor_material_binding_mismatch, reached after the stamp itself verified.
+    let stale_activity_payload = json!({
+        "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion },
+        "existingFactorChallengeToken": challenges3["existingFactorToken"],
+        "existingFactorTurnkeyActivity": turnkey_activity,
+        "newFactorAuthorization": {
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": { "kind": "GOOGLE", "token": oidc_token },
+            "publicKey": session_public_key,
+            "signature": signature3,
+        },
+        "newFactorChallengeToken": challenges3["newFactorToken"],
+        "turnkeyProviderId": "turnkey_provider_id",
+        "encryptedBackupKey": encrypted_backup_key,
+    });
+    let resp5 = send_post_request_with_environment(
+        "/v1/add-factor",
+        stale_activity_payload,
+        Some(environment),
+    )
+    .await;
+    assert_eq!(resp5.status(), StatusCode::BAD_REQUEST);
+    let body5 = parse_response_body(resp5).await;
+    assert_eq!(
+        body5["error"]["code"],
+        "existing_factor_material_binding_mismatch"
+    );
 }
 
 // Existing-factor kind mismatch: token is OIDC/Keypair but we submit PASSKEY
@@ -185,8 +275,14 @@ async fn test_add_factor_existing_kind_mismatch() {
     )
     .await;
 
-    let (turnkey_activity, challenge_hash) =
-        create_turnkey_activity_and_hash(challenges["existingFactorChallenge"].as_str().unwrap());
+    // The activity is right for the requested (OIDC) new factor; the only fault is the kind.
+    let existing_payload = add_factor_payload_for_oidc_new(
+        &challenges,
+        &oidc_token,
+        Some("turnkey_provider_id"),
+        &json!(null),
+    );
+    let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&existing_payload);
     let passkey_assertion =
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash)
             .await;
@@ -215,7 +311,8 @@ async fn test_add_factor_existing_kind_mismatch() {
     assert_eq!(body["error"]["code"], "unexpected_challenge_type");
 }
 
-// OIDC existing-factor challenge replay is rejected (AuthHandler::verify marks token used)
+// OIDC existing-factor challenge replay is rejected: the first call's atomic commit consumed both
+// challenge tokens (and the existing factor's nonce), so the identical second call is already_used.
 #[tokio::test]
 #[serial]
 async fn test_add_factor_oidc_existing_challenge_replay() {
@@ -238,6 +335,7 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
         &registration_payload,
     )
     .await;
+    let (_, new_public_key_sec1) = registered_passkey_material(&passkey_client);
 
     let (existing_session_public_key, existing_session_secret_key) =
         crate::common::generate_keypair();
@@ -246,10 +344,17 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
         Some(openidconnect::SubjectIdentifier::new(subject)),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges["existingFactorChallenge"].as_str().unwrap(),
+    // Existing factor signs `existingFactorChallenge || SHA256(tag || new_factor_material)`.
+    let existing_payload = add_factor_payload_for_passkey_new(
+        &challenges,
+        &credential,
+        &new_public_key_sec1,
+        "Replay Passkey",
+        None,
+        &json!(null),
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
 
     let payload = json!({
         "existingFactorAuthorization": {
@@ -283,17 +388,22 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
     assert_eq!(body2["error"]["code"], "already_used");
 }
 
-/// Existing-factor approval must not accept a swapped passkey registration ceremony.
+/// Tokens from two `/add-factor/challenge` calls may be combined. Each token is single-use on its
+/// own, and what the existing factor approves is the credential it signs, so which ceremony minted
+/// the registration state is irrelevant: here the existing account signs credential B's material
+/// against ceremony A's challenge, submits B's registration token, and the factor is added.
+/// (Signing A's credential and submitting B's is the authenticator swap covered in
+/// `add_factor_material_binding.rs`.)
 #[tokio::test]
 #[serial]
-async fn test_add_factor_rejects_swapped_passkey_registration_token() {
-    let subject = format!("swap-{}", uuid::Uuid::new_v4());
+async fn test_add_factor_accepts_tokens_from_two_ceremonies_for_the_signed_credential() {
+    let subject = format!("mix-{}", uuid::Uuid::new_v4());
     let test = crate::common::create_test_backup_with_oidc_account(&subject, b"DATA").await;
     assert_eq!(test.response.status(), StatusCode::OK);
 
     let mut passkey_client = get_mock_passkey_client();
 
-    // Ceremony A: existing factor will authorize this registration.
+    // Ceremony A: the existing factor signs against this call's challenge.
     let challenges_a = get_add_factor_challenges_generic(
         json!({
             "kind": "PASSKEY_REGISTRATION",
@@ -303,7 +413,7 @@ async fn test_add_factor_rejects_swapped_passkey_registration_token() {
     )
     .await;
 
-    // Ceremony B: attacker's alternate registration token/credential.
+    // Ceremony B: the credential is created for this call's registration options.
     let challenges_b = get_add_factor_challenges_generic(
         json!({
             "kind": "PASSKEY_REGISTRATION",
@@ -317,6 +427,8 @@ async fn test_add_factor_rejects_swapped_passkey_registration_token() {
         &json!({ "challenge": challenges_b["newFactorChallenge"].clone() }),
     )
     .await;
+    let (credential_b_id, credential_b_public_key_sec1) =
+        registered_passkey_material(&passkey_client);
 
     let (existing_session_public_key, existing_session_secret_key) =
         crate::common::generate_keypair();
@@ -325,10 +437,16 @@ async fn test_add_factor_rejects_swapped_passkey_registration_token() {
         Some(openidconnect::SubjectIdentifier::new(subject)),
         &existing_session_public_key,
     );
-    let existing_sig = crate::common::sign_keypair_challenge(
-        &existing_session_secret_key,
-        challenges_a["existingFactorChallenge"].as_str().unwrap(),
+    let existing_payload = add_factor_payload_for_passkey_new(
+        &challenges_a,
+        &credential_b,
+        &credential_b_public_key_sec1,
+        "Mixed Passkey",
+        None,
+        &json!(null),
     );
+    let existing_sig =
+        crate::common::sign_keypair_challenge(&existing_session_secret_key, &existing_payload);
 
     let resp = send_post_request_with_environment(
         "/v1/add-factor",
@@ -340,11 +458,10 @@ async fn test_add_factor_rejects_swapped_passkey_registration_token() {
                 "signature": existing_sig,
             },
             "existingFactorChallengeToken": challenges_a["existingFactorToken"],
-            // Swap: credential + token from ceremony B, while existing factor signed ceremony A.
             "newFactorAuthorization": {
                 "kind": "PASSKEY",
                 "credential": credential_b,
-                "label": "Attacker Passkey"
+                "label": "Mixed Passkey"
             },
             "newFactorChallengeToken": challenges_b["newFactorToken"],
             "encryptedBackupKey": null
@@ -353,7 +470,17 @@ async fn test_add_factor_rejects_swapped_passkey_registration_token() {
     )
     .await;
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
     let body = parse_response_body(resp).await;
-    assert_eq!(body["error"]["code"], "passkey_registration_mismatch");
+    let added = body["backupMetadata"]["factors"]
+        .as_array()
+        .expect("factors")
+        .iter()
+        .find(|factor| factor["id"] == body["factorId"])
+        .expect("added factor in metadata");
+    assert_eq!(added["kind"]["kind"], "PASSKEY");
+    assert_eq!(
+        added["kind"]["credentialId"],
+        URL_SAFE_NO_PAD.encode(&credential_b_id)
+    );
 }

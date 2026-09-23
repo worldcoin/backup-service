@@ -233,11 +233,18 @@ pub enum ChallengeContext {
     /// Used when access to all main and sync factors is lost.
     #[serde(rename_all = "camelCase")]
     Reset { backup_account_id: String },
-    /// Challenge used as part of adding a new factor to the backup. This challenge has to be
-    /// signed by the existing factor and include reference to the new factor. It allows to verify
-    /// that new factor has been "authorized" by the existing factor.
+    /// Challenge used as part of adding a new factor to the backup, signed by the existing factor.
+    /// What the existing factor authorizes is the new-factor material it signs in `/add-factor`
+    /// (see `factor_binding`), not anything carried here: `new_factor_type` only pairs this token
+    /// with the ceremony minted alongside it, which says nothing about the credential that comes
+    /// out of that ceremony. It is still written so that pods running the previous release, which
+    /// verify it, keep accepting tokens minted during a rolling deploy; this release ignores it.
+    /// Its removal is tracked in #277.
     #[serde(rename_all = "camelCase")]
-    AddFactor { new_factor_type: NewFactorType },
+    AddFactor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_factor_type: Option<NewFactorType>,
+    },
     /// Challenge used as part of adding a new factor to the backup. This challenge has to be
     /// signed by the new factor. It allows to verify that user has access to the new factor.
     #[serde(rename_all = "camelCase")]
@@ -247,14 +254,15 @@ pub enum ChallengeContext {
     VerifyFactor {},
 }
 
+/// Descriptor of the new factor a `/add-factor/challenge` call was made for. Written into the
+/// existing-factor token only for pods running the previous release; see
+/// [`ChallengeContext::AddFactor`] and #277.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
-    /// Registering a new passkey (`WebAuthn` credential creation).
-    ///
-    /// `registration_hash` is produced by
-    /// [`registration_state_hash`](crate::routes::add_factor_challenge::registration_state_hash);
-    /// see its doc comment for what it binds and why.
+    /// Registering a new passkey (`WebAuthn` credential creation). `registration_hash` is
+    /// [`registration_state_hash`](crate::factor_binding::registration_state_hash) of the
+    /// registration state stored in the new-factor token.
     #[serde(rename_all = "camelCase")]
     PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]
