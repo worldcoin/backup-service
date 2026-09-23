@@ -16,6 +16,9 @@ use types::{OidcProvider, OidcToken};
 
 const TTL: Duration = Duration::from_hours(1);
 const STALE_AFTER: Duration = Duration::from_mins(1);
+/// Upper bound on a JWKS fetch. The request-level timeout does not cover the background refresh
+/// spawned by `get_jwk_set`, so the client needs its own.
+const JWK_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The claims of a verified ID token.
 pub type OidcClaims = IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>;
@@ -35,11 +38,18 @@ pub struct OidcTokenVerifier {
 }
 
 impl OidcTokenVerifier {
+    /// # Panics
+    /// If the HTTP client cannot be built, which only happens when the TLS backend fails to
+    /// initialise — a startup failure, not a request-time one.
     pub fn new(environment: Environment, redis_cache_manager: Arc<RedisCacheManager>) -> Self {
+        let reqwest_client = reqwest::Client::builder()
+            .timeout(JWK_FETCH_TIMEOUT)
+            .build()
+            .expect("failed to build the JWKS HTTP client");
         OidcTokenVerifier {
             environment,
             redis_cache_manager,
-            reqwest_client: reqwest::Client::new(),
+            reqwest_client,
             cached_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }

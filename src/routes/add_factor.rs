@@ -15,7 +15,7 @@ use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
 use crate::verify_signature::verify_signature;
-use crate::webauthn::TryFromValue;
+use crate::webauthn::{is_es256_p256, TryFromValue};
 use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -209,6 +209,29 @@ pub async fn handler(
             false, // not a sync factor
         )
         .await?;
+
+    // Step 4b: Only ES256 / P-256 passkeys can be added as a factor (see `is_es256_p256`). The
+    // registration options advertise ES256 only for the same reason; this is the server-side
+    // guarantee for an authenticator or client that ignores them. Reachable before the existing
+    // factor is authenticated, so logged at info rather than warn.
+    if let FactorKind::Passkey {
+        webauthn_credential,
+        ..
+    } = &validation_result.factor.kind
+    {
+        let key = webauthn_credential.get_public_key();
+        if !is_es256_p256(key) {
+            tracing::info!(
+                message = "Rejected add-factor passkey registration: not an ES256/P-256 credential",
+                algorithm = ?key.type_,
+                credential_id = URL_SAFE_NO_PAD.encode(webauthn_credential.cred_id()),
+            );
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::UnsupportedPasskeyAlgorithm,
+                "Only ES256 (P-256) passkeys can be added as a factor",
+            ));
+        }
+    }
 
     // Step 5: Verify the existing factor against the challenge we issued for it. Nothing has been
     // consumed yet, so a rejection here costs the user nothing.

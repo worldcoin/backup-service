@@ -111,6 +111,8 @@ webauthn-rs = { version = "0.5.2", features = [
 
 
 [dev-dependencies]
+# Hand-built WebAuthn attestation objects / COSE keys in integration tests.
+ciborium = "0.2.2"
 backup-service-test-utils = { path = "test-utils/" }
 chrono = "0.4.40"
 http-body-util = "0.1.3"

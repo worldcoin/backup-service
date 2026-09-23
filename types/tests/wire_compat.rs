@@ -391,6 +391,7 @@ const ERROR_CODES: &[&str] = &[
     "unauthorized",
     "unauthorized_factor",
     "unexpected_challenge_type",
+    "unsupported_passkey_algorithm",
     "webauthn_error",
     "webauthn_invalid_payload",
     "webauthn_prf_results_not_allowed",
