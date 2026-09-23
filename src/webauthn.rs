@@ -2,7 +2,7 @@
 
 use crate::auth::AuthError;
 use serde_json::Value;
-use webauthn_rs::prelude::PublicKeyCredential;
+use webauthn_rs::prelude::{COSEAlgorithm, COSEKey, COSEKeyType, ECDSACurve, PublicKeyCredential};
 
 pub trait TryFromValue: Sized {
     /// Deserializes a passkey credential if it passes security checks (e.g. no PRF extension misuse).
@@ -32,6 +32,16 @@ impl TryFromValue for PublicKeyCredential {
             AuthError::WebauthnInvalidPayload
         })
     }
+}
+
+/// Whether `key` is an ES256 credential on P-256 (`EC_EC2`, curve `SECP256R1`), the only kind of
+/// passkey that can be added as a factor: an existing passkey authorizes add-factor through a
+/// Turnkey stamp, which `turnkey_activity` verifies for ES256 only, so a credential of any other
+/// algorithm would be a factor that can never authorize the next add-factor.
+#[must_use]
+pub fn is_es256_p256(key: &COSEKey) -> bool {
+    key.type_ == COSEAlgorithm::ES256
+        && matches!(&key.key, COSEKeyType::EC_EC2(ec2) if ec2.curve == ECDSACurve::SECP256R1)
 }
 
 #[cfg(test)]
@@ -81,5 +91,38 @@ mod tests {
         let raw = json!({ "some": "invalid" });
         let result = PublicKeyCredential::try_from_value(&raw);
         assert!(matches!(result, Err(AuthError::WebauthnInvalidPayload)));
+    }
+}
+
+#[cfg(test)]
+mod es256_tests {
+    use super::*;
+    use webauthn_rs::prelude::COSEEC2Key;
+
+    fn ec2_key(type_: COSEAlgorithm, curve: ECDSACurve) -> COSEKey {
+        COSEKey {
+            type_,
+            key: COSEKeyType::EC_EC2(COSEEC2Key {
+                curve,
+                x: vec![1u8; 32].into(),
+                y: vec![2u8; 32].into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn accepts_es256_on_p256_only() {
+        assert!(is_es256_p256(&ec2_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP256R1
+        )));
+        assert!(!is_es256_p256(&ec2_key(
+            COSEAlgorithm::ES256,
+            ECDSACurve::SECP384R1
+        )));
+        assert!(!is_es256_p256(&ec2_key(
+            COSEAlgorithm::RS256,
+            ECDSACurve::SECP256R1
+        )));
     }
 }

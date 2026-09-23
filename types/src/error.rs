@@ -116,6 +116,9 @@ pub enum ErrorCode {
     /// The passkey registration being completed does not match the one the existing factor
     /// authorized (bound by its registration-state hash).
     PasskeyRegistrationMismatch,
+    /// The registered passkey is not an ES256 (P-256) credential, the only kind that can be
+    /// added as a factor.
+    UnsupportedPasskeyAlgorithm,
 
     // SECTION: Encryption keys
     /// The encryption key was not found on the backup.
