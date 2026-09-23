@@ -39,7 +39,6 @@ use uuid::Uuid;
 
 const BINDING_MISMATCH: &str = "existing_factor_material_binding_mismatch";
 const ALREADY_USED: &str = "already_used";
-const OIDC_TOKEN_MISMATCH: &str = "oidc_token_mismatch";
 
 /// The label the user approved for the new passkey in the swap scenarios.
 const APPROVED_LABEL: &str = "Victim's phone";
@@ -1442,13 +1441,14 @@ async fn test_attestation_object_tamper_rejected_with_passkey_existing_factor() 
 }
 
 // ---------------------------------------------------------------------------------------------
-// 8. New-factor descriptor swap: the ceremony was minted for another account's ID token
+// 8. New OIDC token swap: the existing account signed the payload for another account's ID token
 // ---------------------------------------------------------------------------------------------
 
-/// The existing factor's challenge token is minted for the new-factor descriptor — here ID token
-/// A — and the existing account signs the payload for A. Submitting another account's token B in
-/// `newFactorAuthorization` trips the cross-ceremony descriptor check, which runs before any
-/// signature or ID-token verification, so nothing is verified and nothing is consumed.
+/// The challenges were requested for ID token A and the existing account signs the payload for A.
+/// Submitting another account's token B in `newFactorAuthorization` fails the material binding:
+/// the token given at challenge time is not binding, the signed one is. B's ID token and
+/// signature verify first, then the existing factor's signature turns out not to cover B, and
+/// nothing is consumed.
 #[tokio::test]
 #[serial]
 async fn test_new_oidc_token_swap_rejected_with_oidc_existing_factor() {
@@ -1481,7 +1481,7 @@ async fn test_new_oidc_token_swap_rejected_with_oidc_existing_factor() {
         &swapped,
         Some(backup.environment),
         &backup.backup_id,
-        OIDC_TOKEN_MISMATCH,
+        BINDING_MISMATCH,
     )
     .await;
     for token in [

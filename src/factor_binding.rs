@@ -32,9 +32,11 @@ const ENCRYPTION_KEY_VARIANT_ICLOUD: u8 = 0x02;
 const ENCRYPTION_KEY_VARIANT_TURNKEY: u8 = 0x03;
 
 /// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
-/// token. Binding this into the existing-factor token (see
-/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
-/// prevents swapping a different registration ceremony after the old factor has signed.
+/// token, written into the existing-factor token as
+/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration)
+/// for pods running the previous release, which still verify it. This release does not: the
+/// existing factor's approval is bound to the credential itself by [`NewFactorMaterial`], and a
+/// ceremony hash says nothing about which credential a ceremony produced. Removal: #277.
 #[must_use]
 pub fn registration_state_hash(registration_bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(registration_bytes))

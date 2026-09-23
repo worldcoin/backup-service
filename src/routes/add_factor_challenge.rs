@@ -37,8 +37,10 @@ pub async fn handler(
         ExistingFactorKind::OidcAccount => ChallengeType::Keypair,
     };
 
-    // For passkey registration: mint the registration ceremony first so its hash can be bound
-    // into the existing-factor token (same security property as OIDC token binding).
+    // The new-factor descriptor minted here is written into the existing-factor token only for
+    // pods running the previous release, which still verify it (#277); `/add-factor` binds the
+    // existing factor's approval to the submitted new-factor material instead. That is the only
+    // reason the registration ceremony is still minted before the existing-factor token.
     let (new_factor_type, new_factor_challenge_value, new_factor_token) = match &request.new_factor
     {
         NewFactor::PasskeyRegistration { platform } => {
@@ -110,12 +112,13 @@ pub async fn handler(
         }
     };
 
-    // Existing-factor token embeds the exact new-factor descriptor the old factor is authorizing.
     let existing_factor_token = challenge_manager
         .create_challenge_token(
             existing_challenge_type,
             &existing_factor_challenge,
-            ChallengeContext::AddFactor { new_factor_type },
+            ChallengeContext::AddFactor {
+                new_factor_type: Some(new_factor_type),
+            },
         )
         .await?;
 

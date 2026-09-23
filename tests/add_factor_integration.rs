@@ -358,10 +358,12 @@ async fn test_add_factor_happy_path() {
     assert_eq!(metadata["id"].as_str().unwrap(), &backup_id);
 }
 
-// Mismatch between OIDC token when getting the challenge and when adding the factor
+// The ID token given to /add-factor/challenge is not binding; the one the existing factor signs is.
+// Requesting the challenges with token A and adding the factor with token B is accepted when the
+// existing passkey signed the payload for B (the descriptor written for older pods is ignored).
 #[tokio::test]
 #[serial]
-async fn test_add_factor_with_mismatched_oidc_token() {
+async fn test_add_factor_accepts_oidc_token_other_than_the_one_given_at_challenge_time() {
     // Setup test environment
     let (oidc_server, environment, _, mut passkey_client) = setup_test_environment().await;
 
@@ -371,11 +373,14 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     // Generate two different OIDC tokens
     let original_oidc_token =
         oidc_server.generate_token(&MockOidcProvider::Google, None, &new_public_key);
+    // A fresh subject: this request now succeeds and persists a factor, so a fixed subject would
+    // collide with the factor lookup left behind by a previous run.
     let different_oidc_token = oidc_server.generate_token(
         &MockOidcProvider::Google,
-        Some(openidconnect::SubjectIdentifier::new(
-            "different-subject".to_string(),
-        )),
+        Some(openidconnect::SubjectIdentifier::new(format!(
+            "different-subject-{}",
+            uuid::Uuid::new_v4()
+        ))),
         &new_public_key,
     );
 
@@ -389,8 +394,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     );
 
     // Create Turnkey activity and get passkey assertion. The passkey authorizes exactly the request
-    // sent below (`different_oidc_token` included), so the only fault is that the token differs
-    // from the one the challenge was issued for
+    // sent below, `different_oidc_token` included.
     let encrypted_backup_key = turnkey_encrypted_backup_key();
     let payload = add_factor_payload_for_oidc_new(
         &challenges,
@@ -401,7 +405,7 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     let (turnkey_activity, challenge_hash) = create_turnkey_activity_and_hash(&payload);
     let passkey_assertion = get_passkey_assertion(&mut passkey_client, &challenge_hash).await;
 
-    // Attempt to add the new factor but use a different OIDC token than what was used for the challenge
+    // Add the new factor with a different OIDC token than the one given at challenge time
     let response = common::send_post_request_with_environment(
         "/v1/add-factor",
         json!({
@@ -428,19 +432,16 @@ async fn test_add_factor_with_mismatched_oidc_token() {
     )
     .await;
 
-    // Verify the request was rejected with an error
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let status = response.status();
     let add_factor_response = parse_response_body(response).await;
-    assert_eq!(
-        add_factor_response,
-        json!({
-            "allowRetry": false,
-            "error": {
-                "code": "oidc_token_mismatch",
-                "message": "OIDC Token mismatch",
-            }
-        })
-    );
+    assert_eq!(status, StatusCode::OK, "{add_factor_response}");
+    let added = add_factor_response["backupMetadata"]["factors"]
+        .as_array()
+        .expect("factors")
+        .iter()
+        .find(|factor| factor["id"] == add_factor_response["factorId"])
+        .expect("added factor in metadata");
+    assert_eq!(added["kind"]["kind"], "OIDC_ACCOUNT");
 }
 
 // No challenge in the Turnkey activity
