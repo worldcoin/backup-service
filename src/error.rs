@@ -443,6 +443,13 @@ impl From<OidcTokenVerifierError> for ErrorResponse {
                 )
             }
             OidcTokenVerifierError::RedisCacheError(e) => e.into(),
+            OidcTokenVerifierError::NonceReuseAssumptionViolated => {
+                tracing::error!(
+                    message = "Caller assumed an OIDC nonce was already consumed this request, but it was not",
+                    error = ?err
+                );
+                ErrorResponse::internal_server_error()
+            }
         }
     }
 }
