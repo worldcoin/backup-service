@@ -12,16 +12,13 @@ use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
 
-// OIDC (existing) → Passkey (new)
 #[tokio::test]
 #[serial]
 async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
-    // Create a backup with an OIDC account
     let subject = format!("subject-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
     assert_eq!(test.response.status(), StatusCode::OK);
 
-    // Request challenges for adding a new Passkey with existing OIDC
     let challenges = get_add_factor_challenges_generic(
         json!({
             "kind": "PASSKEY_REGISTRATION",
@@ -31,14 +28,12 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     )
     .await;
 
-    // Complete passkey registration from challenge
     let mut passkey_client = get_mock_passkey_client();
     let registration_state = challenges["newFactorChallenge"].clone();
     let registration_payload = json!({ "challenge": registration_state });
     let credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &registration_payload).await;
 
-    // Use a fresh session keypair and OIDC token for existing-factor auth to avoid nonce replay
     let (existing_session_public_key, existing_session_secret_key) =
         crate::common::generate_keypair();
     let fresh_existing_oidc_token = test.oidc_server.generate_token(
@@ -81,7 +76,6 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         .to_string();
     assert!(add_factor_response["backupMetadata"].is_object());
 
-    // Verify metadata now contains the new passkey factor
     let body = test
         .response
         .into_body()
@@ -99,7 +93,6 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
         .any(|f| f["id"].as_str().unwrap() == new_factor_id && f["kind"]["kind"] == "PASSKEY");
     assert!(passkey_found);
 
-    // Validate we can retrieve with passkey now
     let retrieve_challenge = get_passkey_retrieval_challenge().await;
     let passkey_assertion = backup_service_test_utils::authenticate_with_passkey_challenge(
         &mut passkey_client,
@@ -118,7 +111,6 @@ async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     assert_eq!(retrieve_response.status(), StatusCode::OK);
 }
 
-// Passkey (existing) → OIDC (new) regression of the classic path
 #[tokio::test]
 #[serial]
 async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
@@ -196,7 +188,6 @@ async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
     assert!(factors.iter().any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT"));
 }
 
-// OIDC (existing) → OIDC (new, different subject)
 #[tokio::test]
 #[serial]
 async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
@@ -289,7 +280,6 @@ async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
     assert_eq!(oidc_count, 2);
 }
 
-// Same OIDC account again with a new TURNKEY wrapped key (metadata-only upgrade)
 #[tokio::test]
 #[serial]
 async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
@@ -377,7 +367,6 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
     let metadata = verify_s3_metadata_exists(backup_id).await;
     let keys = metadata["keys"].as_array().unwrap();
     assert!(keys.iter().any(|k| k["kind"] == "TURNKEY"));
-    // Factor list should still be a single OIDC account (no duplicate factor row).
     let oidc_count = metadata["factors"]
         .as_array()
         .unwrap()
@@ -387,7 +376,6 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
     assert_eq!(oidc_count, 1);
 }
 
-// Same-account Turnkey upgrade with one OIDC ID token + session keypair for both sides.
 #[tokio::test]
 #[serial]
 async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
@@ -472,7 +460,6 @@ async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
     assert_eq!(oidc_count, 1);
 }
 
-// Same OIDC account with a different Turnkey provider id must not create a duplicate factor.
 #[tokio::test]
 #[serial]
 async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() {
@@ -536,7 +523,7 @@ async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() 
                 "signature": new_sig,
             },
             "newFactorChallengeToken": challenges["newFactorToken"],
-            // Different from create's "turnkey_provider_id" — must still be treated as the same factor.
+            // Different from create's "turnkey_provider_id"; must still be treated as the same factor.
             "turnkeyProviderId": "a-different-turnkey-provider-id",
             "encryptedBackupKey": {
                 "kind": "TURNKEY",
@@ -564,7 +551,6 @@ async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() 
         .unwrap()
         .iter()
         .any(|k| k["kind"] == "TURNKEY"));
-    // Original Turnkey provider id is preserved (no duplicate row / no overwrite).
     let provider_ids: Vec<_> = metadata["factors"]
         .as_array()
         .unwrap()
