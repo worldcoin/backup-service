@@ -12,22 +12,14 @@ use types::{
 };
 use uuid::Uuid;
 
-/// Hex-encoded SHA-256 of the `WebAuthn` registration state stored in the new-factor challenge
-/// token. Binding this into the existing-factor token (see
-/// [`NewFactorType::PasskeyRegistration`](crate::challenge_manager::NewFactorType::PasskeyRegistration))
-/// prevents swapping a different registration ceremony after the old factor has signed.
 pub(crate) fn registration_state_hash(registration_bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(registration_bytes))
 }
 
-/// Request to get challenges for adding a new factor.
+/// Issues the existing-factor approval challenge and the new-factor ownership challenge.
 ///
-/// This endpoint generates two challenges:
-/// 1. For the existing Main Factor (Passkey or OIDC) to prove ownership over the backup.
-///    Passkey existing uses a Turnkey activity with extra metadata — see `turnkey_activity.rs`.
-/// 2. For the new Main Factor (Passkey registration or OIDC) to prove ownership of the new factor.
-///
-/// Both challenges are required to add a factor in the /add-factor endpoint.
+/// # Errors
+/// Returns an error if registration setup or challenge token creation fails.
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
@@ -44,20 +36,10 @@ pub async fn handler(
         ExistingFactorKind::OidcAccount => ChallengeType::Keypair,
     };
 
-    // For passkey registration: mint the registration ceremony first so its hash can be bound
-    // into the existing-factor token (same security property as OIDC token binding).
     let (new_factor_type, new_factor_challenge_value, new_factor_token) = match &request.new_factor
     {
         NewFactor::PasskeyRegistration { platform } => {
-            // `start_passkey_registration` sets `residentKey: discouraged` with no
-            // authenticator-attachment constraint, so registration can succeed on a
-            // non-discoverable credential (e.g. a security key). Recovery only ever runs a
-            // discoverable-only authentication ceremony (no `allowCredentials`), which would
-            // leave such a factor impossible to select. webauthn-rs 0.5.2's only non-attested
-            // helper that requires a resident/discoverable credential is this Android-named
-            // one; the WebAuthn options it produces (platform attachment + resident key
-            // required + user verification required) are exactly what we need on iOS too, and
-            // Apple platforms honor them the same way — it's just not named for that.
+            // Recovery requires a discoverable credential; this helper requires a resident key.
             let (challenge, registration) = match platform {
                 Platform::Ios | Platform::Android => environment
                     .webauthn_config()
@@ -85,10 +67,7 @@ pub async fn handler(
             )
         }
         NewFactor::OidcAccount { oidc_token } => {
-            // Proof of possession for an OIDC factor is done via the EC keypair bound into the
-            // OIDC token's nonce, not the token itself — there's no dedicated OIDC challenge
-            // type because verification never happens by "signing via OIDC", only by signing
-            // this raw challenge with that keypair (see `ChallengeType::from(&Authorization)`).
+            // OIDC ownership is proved by the session key bound to the token's nonce.
             let mut new_factor_challenge = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut new_factor_challenge);
             let token = challenge_manager
@@ -108,7 +87,6 @@ pub async fn handler(
         }
     };
 
-    // Existing-factor token embeds the exact new-factor descriptor the old factor is authorizing.
     let existing_factor_token = challenge_manager
         .create_challenge_token(
             existing_challenge_type,
