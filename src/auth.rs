@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use openidconnect::core::CoreIdTokenClaims;
+
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential, WebauthnError,
@@ -13,7 +15,9 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
-use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
+use crate::oidc_token_verifier::{
+    get_and_validate_apple_client_id, OidcTokenVerifier, OidcTokenVerifierError,
+};
 use crate::redis_cache::RedisCacheError;
 use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
@@ -97,6 +101,58 @@ pub struct ValidationResult {
     pub factor_to_lookup: FactorToLookup,
 }
 
+pub struct AuthenticationResult {
+    pub backup_id: String,
+    pub backup_metadata: BackupMetadata,
+    pub oidc_session: Option<VerifiedOidcSession>,
+}
+
+/// Proof of OIDC authentication, consumed when validating the second factor in the same request.
+pub struct VerifiedOidcSession {
+    token: OidcToken,
+    public_key: String,
+    claims: CoreIdTokenClaims,
+}
+
+impl VerifiedOidcSession {
+    fn into_claims_for(
+        self,
+        token: &OidcToken,
+        public_key: &str,
+        environment: &Environment,
+    ) -> Result<Option<CoreIdTokenClaims>, OidcTokenVerifierError> {
+        if self.public_key != public_key {
+            return Ok(None);
+        }
+        let same_token = match (&self.token, token) {
+            (OidcToken::Google { token: existing }, OidcToken::Google { token: new }) => {
+                existing == new
+            }
+            (
+                OidcToken::Apple {
+                    token: existing, ..
+                },
+                OidcToken::Apple { token: new, aud },
+            ) if existing == new => {
+                let client_id = get_and_validate_apple_client_id(environment, aud.as_ref())?;
+                if !self
+                    .claims
+                    .audiences()
+                    .iter()
+                    .any(|aud| aud.as_str() == client_id.as_str())
+                {
+                    return Err(OidcTokenVerifierError::TokenVerificationError);
+                }
+                true
+            }
+            (OidcToken::Apple { .. }, OidcToken::Apple { .. })
+            | (OidcToken::Apple { .. }, OidcToken::Google { .. })
+            | (OidcToken::Google { .. }, OidcToken::Apple { .. }) => false,
+        };
+        Ok(same_token.then_some(self.claims))
+    }
+}
+
 /// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
 /// `FactorLookup` rows that no longer match backup metadata (the source of truth). `FactorLookup` is
 /// only a convenience index and the two stores are written non-atomically, so this is the only
@@ -144,7 +200,7 @@ impl AuthHandler {
         expected_factor_scope: FactorScope,
         expected_challenge_context: ChallengeContext,
         challenge_token: String,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<AuthenticationResult, AuthError> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
         if expected_factor_scope == FactorScope::Sync {
@@ -168,6 +224,7 @@ impl AuthHandler {
         }
 
         // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
+        let mut oidc_session = None;
         let (backup_id, backup_metadata) = match authorization {
             Authorization::Passkey { credential, .. } => {
                 self.validate_passkey_authentication(
@@ -182,14 +239,17 @@ impl AuthHandler {
                 public_key,
                 signature,
             } => {
-                self.validate_oidc_authentication(
-                    oidc_token,
-                    public_key,
-                    signature,
-                    &challenge_token_payload,
-                    expected_factor_scope,
-                )
-                .await?
+                let (backup_id, metadata, session) = self
+                    .validate_oidc_authentication(
+                        oidc_token,
+                        public_key,
+                        signature,
+                        &challenge_token_payload,
+                        expected_factor_scope,
+                    )
+                    .await?;
+                oidc_session = Some(session);
+                (backup_id, metadata)
             }
             Authorization::EcKeypair {
                 public_key,
@@ -210,11 +270,14 @@ impl AuthHandler {
             .use_challenge_token(challenge_token)
             .await?;
 
-        Ok((backup_id, backup_metadata))
+        Ok(AuthenticationResult {
+            backup_id,
+            backup_metadata,
+            oidc_session,
+        })
     }
 
     /// Validates ownership of a new main or sync factor.
-    /// Set `consume_oidc_nonce=false` only when this request already consumed the same OIDC session.
     ///
     /// # Errors
     /// Rejects unsupported factors, invalid or replayed proofs, and failed dependency calls.
@@ -225,7 +288,7 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
-        consume_oidc_nonce: bool,
+        verified_oidc_session: Option<VerifiedOidcSession>,
     ) -> Result<ValidationResult, AuthError> {
         // Step 1: Verify that the authorization type is valid for the factor scope
         // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
@@ -271,7 +334,7 @@ impl AuthHandler {
                     signature,
                     &challenge_token_payload,
                     turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
-                    consume_oidc_nonce,
+                    verified_oidc_session,
                 )
                 .await?
             }
@@ -458,12 +521,20 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
-        consume_oidc_nonce: bool,
+        verified_oidc_session: Option<VerifiedOidcSession>,
     ) -> Result<(Factor, FactorToLookup), AuthError> {
-        let claims = self
-            .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string(), consume_oidc_nonce)
-            .await?;
+        let claims = match verified_oidc_session {
+            Some(session) => session.into_claims_for(oidc_token, public_key, &self.environment)?,
+            None => None,
+        };
+        let claims = match claims {
+            Some(claims) => claims,
+            None => {
+                self.oidc_token_verifier
+                    .verify_token(oidc_token, public_key.to_string())
+                    .await?
+            }
+        };
 
         verify_signature(public_key, signature, challenge_token_payload)?;
 
@@ -506,10 +577,10 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, VerifiedOidcSession), AuthError> {
         let claims = self
             .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string(), true)
+            .verify_token(oidc_token, public_key.to_string())
             .await?;
 
         verify_signature(public_key, signature, challenge_token_payload)?;
@@ -568,7 +639,15 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
-        Ok((verified_backup_id, backup_metadata))
+        Ok((
+            verified_backup_id,
+            backup_metadata,
+            VerifiedOidcSession {
+                token: oidc_token.clone(),
+                public_key: public_key.to_string(),
+                claims,
+            },
+        ))
     }
 
     //------------------------------------------------------------------------------------------------
@@ -714,5 +793,116 @@ impl AuthHandler {
         }
 
         let _ = lock_guard.release().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::auth::VerifiedOidcSession;
+    use crate::environment::Environment;
+    use crate::oidc_token_verifier::OidcTokenVerifierError;
+    use chrono::{Duration, Utc};
+    use openidconnect::core::CoreIdTokenClaims;
+    use openidconnect::{
+        Audience, EmptyAdditionalClaims, IssuerUrl, StandardClaims, SubjectIdentifier,
+    };
+    use types::OidcToken;
+
+    fn apple_session(aud: Option<String>) -> VerifiedOidcSession {
+        VerifiedOidcSession {
+            token: OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud,
+            },
+            public_key: "session-key".to_string(),
+            claims: CoreIdTokenClaims::new(
+                IssuerUrl::new("https://appleid.apple.com".to_string()).unwrap(),
+                vec![Audience::new("org.worldcoin.insight.staging".to_string())],
+                Utc::now() + Duration::minutes(5),
+                Utc::now(),
+                StandardClaims::new(SubjectIdentifier::new("subject".to_string())),
+                EmptyAdditionalClaims {},
+            ),
+        }
+    }
+
+    #[test]
+    fn verified_session_accepts_default_apple_audience_aliases() {
+        let explicit_aud = Some("org.worldcoin.insight.staging".to_string());
+        for (existing_aud, new_aud) in [(None, explicit_aud.clone()), (explicit_aud, None)] {
+            let claims = apple_session(existing_aud)
+                .into_claims_for(
+                    &OidcToken::Apple {
+                        token: "verified-token".to_string(),
+                        aud: new_aud,
+                    },
+                    "session-key",
+                    &Environment::development(None),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(claims.subject().as_str(), "subject");
+        }
+    }
+
+    #[test]
+    fn verified_session_rejects_invalid_apple_audience() {
+        let result = apple_session(None).into_claims_for(
+            &OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud: Some("untrusted".to_string()),
+            },
+            "session-key",
+            &Environment::development(None),
+        );
+        let Err(OidcTokenVerifierError::InvalidAud) = result else {
+            panic!("Expected invalid audience, got {result:?}");
+        };
+    }
+
+    #[test]
+    fn verified_session_rejects_allowed_audience_missing_from_token() {
+        let result = apple_session(None).into_claims_for(
+            &OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud: Some("org.world.staging.id".to_string()),
+            },
+            "session-key",
+            &Environment::development(None),
+        );
+        let Err(OidcTokenVerifierError::TokenVerificationError) = result else {
+            panic!("Expected token verification failure, got {result:?}");
+        };
+    }
+
+    #[test]
+    fn verified_session_does_not_authenticate_a_different_token_provider_or_key() {
+        for (token, public_key) in [
+            (
+                OidcToken::Apple {
+                    token: "other-token".to_string(),
+                    aud: None,
+                },
+                "session-key",
+            ),
+            (
+                OidcToken::Google {
+                    token: "verified-token".to_string(),
+                },
+                "session-key",
+            ),
+            (
+                OidcToken::Apple {
+                    token: "verified-token".to_string(),
+                    aud: None,
+                },
+                "other-key",
+            ),
+        ] {
+            assert!(apple_session(None)
+                .into_claims_for(&token, public_key, &Environment::development(None),)
+                .unwrap()
+                .is_none());
+        }
     }
 }
