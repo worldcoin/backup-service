@@ -96,21 +96,18 @@ impl OidcTokenVerifier {
         self.fetch_remote_jwk_set(jwk_set_url).await
     }
 
-    /// Verifies an OIDC token. It also ensures that the nonce has not been used before.
+    /// Verifies the token and its nonce binding to the session key.
+    /// With `consume_nonce=false`, the nonce must already have been consumed in this request.
     ///
     /// # Errors
-    /// - `OidcTokenVerifierError`s will be raised if the token is not valid or the nonce has been used before.
-    ///
-    /// Set `consume_nonce` to `false` when the nonce was already marked used earlier in the same
-    /// request (e.g. same OIDC session authorizing both existing and new factor sides of add-factor).
-    /// Cryptographic nonce↔session-key binding is still verified.
+    /// Rejects invalid tokens, unexpected nonce state, and provider or Redis failures.
     pub async fn verify_token(
         &self,
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
+        // FIXME: This introduces a footgun, and nonce replay prevention could be forgotten. Refactor.
         consume_nonce: bool,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
-        // Step 1: Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
                 token,
@@ -126,21 +123,17 @@ impl OidcTokenVerifier {
             ),
         };
 
-        // Load the public keys from the OIDC provider
         let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
 
-        // Step 3: Create the token verifier.
         let token_verifier =
             CoreIdTokenVerifier::new_public_client(client_id, issuer_url.clone(), signature_keys)
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
-        // Step 4: Parse the OIDC token
         let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
             tracing::info!(message = "Failed to parse OIDC token", err = ?err);
             OidcTokenVerifierError::TokenParseError
         })?;
 
-        // Step 5: Verify the nonce and extract the claims
         let claims = oidc_token
             .claims(
                 &token_verifier,
@@ -155,11 +148,7 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Step 6: Track the nonce to prevent replays. When the caller already consumed it
-        // earlier in this same request (`consume_nonce=false`), don't just trust that
-        // assumption — attempt the same NX-guarded mark and require it to report the nonce as
-        // already used, so a bug in the caller's reuse heuristic can't leave a nonce unconsumed
-        // and replayable.
+        // Reuse requires Redis to confirm consumption, even when the caller expects it.
         let nonce = claims
             .nonce()
             .ok_or(OidcTokenVerifierError::MissingNonce)?
@@ -221,8 +210,7 @@ pub enum OidcTokenVerifierError {
     RedisCacheError(#[from] RedisCacheError),
     #[error("The aud provided is not valid")]
     InvalidAud,
-    /// `verify_token` was called with `consume_nonce=false` (the caller believes this nonce was
-    /// already marked used earlier in the same request) but it was not actually marked used.
+    /// The caller expected a previously consumed nonce, but Redis accepted it as unused.
     #[error("Nonce was not already consumed as the caller's reuse assumption expected")]
     NonceReuseAssumptionViolated,
 }

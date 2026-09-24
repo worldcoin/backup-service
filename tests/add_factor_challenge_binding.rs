@@ -9,7 +9,6 @@ use backup_service_test_utils::get_mock_passkey_client;
 use serde_json::json;
 use serial_test::serial;
 
-// Token replay, mismatched new-factor type, swapped tokens (Passkey → OIDC)
 #[tokio::test]
 #[serial]
 async fn test_add_factor_challenge_binding_matrix() {
@@ -67,7 +66,6 @@ async fn test_add_factor_challenge_binding_matrix() {
         }
     });
 
-    // 1) Reuse same tokens (already_used)
     let resp1 = send_post_request_with_environment(
         "/v1/add-factor",
         base_payload.clone(),
@@ -85,7 +83,7 @@ async fn test_add_factor_challenge_binding_matrix() {
     let body2 = parse_response_body(resp2).await;
     assert_eq!(body2["error"]["code"], "already_used");
 
-    // Fresh challenges for cases below — tokens from case 1 are already spent.
+    // Fresh challenges for cases below; tokens from case 1 are already spent.
     let challenges2 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
@@ -100,7 +98,6 @@ async fn test_add_factor_challenge_binding_matrix() {
         backup_service_test_utils::get_passkey_assertion(&mut passkey_client, &challenge_hash2)
             .await;
 
-    // 2) Mismatched requested new factor vs submitted (invalid_new_factor_type)
     let mismatched_payload = json!({
         "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion2 },
         "existingFactorChallengeToken": challenges2["existingFactorToken"],
@@ -134,7 +131,6 @@ async fn test_add_factor_challenge_binding_matrix() {
         challenges3["newFactorChallenge"].as_str().unwrap(),
     );
 
-    // 3) Swapped tokens
     let swapped_tokens_payload = json!({
         "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion3 },
         "existingFactorChallengeToken": challenges3["newFactorToken"],
@@ -160,7 +156,6 @@ async fn test_add_factor_challenge_binding_matrix() {
     assert!(code == "unexpected_challenge_type" || code == "invalid_new_factor_type");
 }
 
-// Existing-factor kind mismatch: token is OIDC/Keypair but we submit PASSKEY
 #[tokio::test]
 #[serial]
 async fn test_add_factor_existing_kind_mismatch() {
@@ -175,7 +170,6 @@ async fn test_add_factor_existing_kind_mismatch() {
         &session_public_key,
     );
 
-    // Issue existing-factor challenge as OIDC (Keypair), but authorize with Passkey
     let challenges = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
@@ -215,7 +209,6 @@ async fn test_add_factor_existing_kind_mismatch() {
     assert_eq!(body["error"]["code"], "unexpected_challenge_type");
 }
 
-// OIDC existing-factor challenge replay is rejected (AuthHandler::verify marks token used)
 #[tokio::test]
 #[serial]
 async fn test_add_factor_oidc_existing_challenge_replay() {
@@ -283,7 +276,6 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
     assert_eq!(body2["error"]["code"], "already_used");
 }
 
-/// Existing-factor approval must not accept a swapped passkey registration ceremony.
 #[tokio::test]
 #[serial]
 async fn test_add_factor_rejects_swapped_passkey_registration_token() {
