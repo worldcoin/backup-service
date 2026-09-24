@@ -213,16 +213,11 @@ impl AuthHandler {
         Ok((backup_id, backup_metadata))
     }
 
-    /// Validates a candidate **new** factor (`Sync` or `Main`) is valid for registration in the user's backup.
-    ///
-    /// This is called when creating a new backup with fresh factors or when adding a new `Sync` or `Main` factor to an existing backup.
-    ///
-    /// `consume_oidc_nonce` should normally be `true`. Pass `false` when the same OIDC ID token /
-    /// session keypair already had its nonce marked used earlier in this request (same-account
-    /// add-factor upgrade using one sign-in).
+    /// Validates ownership of a new main or sync factor.
+    /// Set `consume_oidc_nonce=false` only when this request already consumed the same OIDC session.
     ///
     /// # Errors
-    /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
+    /// Rejects unsupported factors, invalid or replayed proofs, and failed dependency calls.
     pub async fn validate_factor_registration(
         &self,
         authorization: &Authorization,
