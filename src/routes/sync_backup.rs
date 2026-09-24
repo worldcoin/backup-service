@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::auth::AuthHandler;
+use crate::auth::{AuthHandler, AuthenticationResult};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::environment::Environment;
@@ -69,7 +69,11 @@ pub async fn handler(
     }
 
     // Step 2: Auth. Verify the solved challenge in the authorization parameter
-    let (backup_id, backup_metadata) = auth_handler
+    let AuthenticationResult {
+        backup_id,
+        backup_metadata,
+        ..
+    } = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Sync,

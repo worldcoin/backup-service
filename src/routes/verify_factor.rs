@@ -1,4 +1,4 @@
-use crate::auth::AuthHandler;
+use crate::auth::{AuthHandler, AuthenticationResult};
 use crate::challenge_manager::ChallengeContext;
 use crate::error::ErrorResponse;
 use crate::headers::CLIENT_VERSION;
@@ -21,7 +21,7 @@ pub async fn handler(
     headers: HeaderMap,
     request: Json<VerifyFactorRequest>,
 ) -> Result<Json<VerifyFactorResponse>, ErrorResponse> {
-    let (backup_id, _backup_metadata) = auth_handler
+    let AuthenticationResult { backup_id, .. } = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Main,
