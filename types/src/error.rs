@@ -63,6 +63,8 @@ pub enum ErrorCode {
     EmptyBackupFile,
     /// The requested operation is not supported for this factor or backup.
     NotSupported,
+    /// The requested operation is not implemented yet.
+    NotImplemented,
 
     // SECTION: Challenges and tokens
     /// The challenge token is malformed, expired, or could not be decrypted.

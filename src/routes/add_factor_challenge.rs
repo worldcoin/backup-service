@@ -33,13 +33,19 @@ pub async fn handler(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<AddFactorChallengeRequest>,
 ) -> Result<Json<AddFactorChallengeResponse>, ErrorResponse> {
+    let existing_factor_kind = request
+        .existing_factor_kind
+        .unwrap_or(ExistingFactorKind::Passkey);
+
+    if existing_factor_kind == ExistingFactorKind::OidcAccount {
+        // This feature is not ready for use.
+        return Err(ErrorResponse::not_implemented());
+    }
+
     let mut existing_factor_challenge = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut existing_factor_challenge);
 
-    let existing_challenge_type = match request
-        .existing_factor_kind
-        .unwrap_or(ExistingFactorKind::Passkey)
-    {
+    let existing_challenge_type = match existing_factor_kind {
         ExistingFactorKind::Passkey => ChallengeType::Passkey,
         ExistingFactorKind::OidcAccount => ChallengeType::Keypair,
     };

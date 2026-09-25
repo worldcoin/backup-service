@@ -39,7 +39,10 @@ const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 ///
 /// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
 /// as a Main Factor for add-factor.
-#[allow(clippy::too_many_lines)] // the code is properly split out into steps
+#[expect(
+    clippy::too_many_lines,
+    reason = "the code is properly split out into steps"
+)]
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
@@ -48,6 +51,14 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) {
+        // This feature is not ready for use.
+        return Err(ErrorResponse::not_supported());
+    }
+
     // Step 1: Check authorization for the existing factor and get the backup ID
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
         Authorization::Passkey { credential, .. } => {
