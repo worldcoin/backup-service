@@ -1,7 +1,6 @@
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
-use crate::routes::add_factor::oidc_existing_factor_not_enabled;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -37,11 +36,10 @@ pub async fn handler(
     let existing_factor_kind = request
         .existing_factor_kind
         .unwrap_or(ExistingFactorKind::Passkey);
-    // Kill switch for the OIDC-existing path, checked before any token is minted.
-    if existing_factor_kind == ExistingFactorKind::OidcAccount
-        && !environment.add_factor_oidc_existing_enabled()
-    {
-        return Err(oidc_existing_factor_not_enabled("add_factor_challenge"));
+
+    if existing_factor_kind == ExistingFactorKind::OidcAccount {
+        // This feature is not ready for use.
+        return Err(ErrorResponse::not_implemented());
     }
 
     let mut existing_factor_challenge = [0u8; 32];

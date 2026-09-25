@@ -374,6 +374,7 @@ const ERROR_CODES: &[&str] = &[
     "missing_turnkey_provider_id",
     "multipart_error",
     "not_found",
+    "not_implemented",
     "not_supported",
     "oidc_token_invalid_aud",
     "oidc_token_invalid_nonce",

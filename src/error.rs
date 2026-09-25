@@ -102,6 +102,24 @@ impl ErrorResponse {
         }
     }
 
+    #[must_use]
+    pub fn not_supported() -> Self {
+        Self {
+            code: ErrorCode::NotSupported,
+            message: "The requested operation is not supported".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        }
+    }
+
+    #[must_use]
+    pub fn not_implemented() -> Self {
+        Self {
+            code: ErrorCode::NotImplemented,
+            message: "The requested operation is not implemented".to_string(),
+            status: StatusCode::NOT_IMPLEMENTED,
+        }
+    }
+
     /// A client-side authentication failure, logged at debug because it is not actionable by us.
     fn client_side_auth_failure(code: ErrorCode, err: &AuthError) -> Self {
         tracing::debug!(message = "Client-side auth failure", error = ?err);

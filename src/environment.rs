@@ -327,20 +327,6 @@ impl Environment {
             Self::Production => env_bool("ENFORCE_BACKUP_ACCOUNT_PROOF", false),
         }
     }
-
-    /// **Roll-out flag / kill switch**. Whether `/add-factor` and `/add-factor/challenge` accept an
-    /// OIDC account as the *existing* main factor. That path landed (#233) before the existing
-    /// factor's authorization is bound to the new factor's material (#271); until that binding has
-    /// shipped, production keeps answering `not_supported` for it, exactly as releases before #233
-    /// did. `ADD_FACTOR_OIDC_EXISTING_ENABLED` overrides the default in any environment: on for
-    /// staging and development, off for production.
-    #[must_use]
-    pub fn add_factor_oidc_existing_enabled(&self) -> bool {
-        env_bool(
-            "ADD_FACTOR_OIDC_EXISTING_ENABLED",
-            !matches!(self, Self::Production),
-        )
-    }
 }
 
 /// Parses a boolean flag env value.
@@ -434,30 +420,6 @@ mod tests {
         env::set_var("ENFORCE_BACKUP_ACCOUNT_PROOF", "false");
         assert!(!Environment::Production.enforce_backup_account_proof());
         env::remove_var("ENFORCE_BACKUP_ACCOUNT_PROOF");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_add_factor_oidc_existing_enabled() {
-        const VAR: &str = "ADD_FACTOR_OIDC_EXISTING_ENABLED";
-        env::remove_var(VAR);
-
-        // Defaults: on where the path is being tested, off where a release could go live.
-        assert!(Environment::Staging.add_factor_oidc_existing_enabled());
-        assert!(Environment::development(None).add_factor_oidc_existing_enabled());
-        assert!(!Environment::Production.add_factor_oidc_existing_enabled());
-
-        // The variable overrides in both directions, in any environment.
-        env::set_var(VAR, "true");
-        assert!(Environment::Production.add_factor_oidc_existing_enabled());
-        env::set_var(VAR, "false");
-        assert!(!Environment::Staging.add_factor_oidc_existing_enabled());
-        assert!(!Environment::development(None).add_factor_oidc_existing_enabled());
-        // An unrecognized value falls back to the environment's default.
-        env::set_var(VAR, "maybe");
-        assert!(!Environment::Production.add_factor_oidc_existing_enabled());
-        assert!(Environment::Staging.add_factor_oidc_existing_enabled());
-        env::remove_var(VAR);
     }
 
     #[test]

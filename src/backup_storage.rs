@@ -949,7 +949,7 @@ mod tests {
             .await
             .unwrap();
 
-        let e_tag = backup_storage
+        backup_storage
             .backup_object_e_tag(&test_backup_id)
             .await
             .unwrap()
