@@ -12,11 +12,11 @@ use types::endpoints::{
     AddSyncFactorRequest, BackupStatusRequest, CreateBackupRequest, CreateChallengeKeypairRequest,
     CreateChallengePasskeyRequest, DeleteBackupChallengeKeypairRequest, DeleteBackupRequest,
     DeleteFactorChallengeKeypairRequest, DeleteFactorRequest, Endpoint,
-    ResetChallengeKeypairRequest, ResetRequest, RetrieveBackupFromChallengeRequest,
-    RetrieveChallengeKeypairRequest, RetrieveMetadataChallengeKeypairRequest,
-    RetrieveMetadataRequest, SyncBackupRequest, SyncChallengeKeypairRequest,
-    VerifyFactorChallengeKeypairRequest, VerifyFactorRequest, HEALTH_PATH, READY_PATH,
-    RETRIEVE_CHALLENGE_PASSKEY_PATH, VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH,
+    ReclaimSyncFactorSlotRequest, ResetChallengeKeypairRequest, ResetRequest,
+    RetrieveBackupFromChallengeRequest, RetrieveChallengeKeypairRequest,
+    RetrieveMetadataChallengeKeypairRequest, RetrieveMetadataRequest, SyncBackupRequest,
+    SyncChallengeKeypairRequest, VerifyFactorChallengeKeypairRequest, VerifyFactorRequest,
+    HEALTH_PATH, READY_PATH, RETRIEVE_CHALLENGE_PASSKEY_PATH, VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH,
 };
 
 mod add_factor;
@@ -33,6 +33,7 @@ mod docs;
 mod health;
 mod keypair_challenge;
 mod ready;
+mod reclaim_sync_factor_slot;
 mod reset;
 mod retrieve_challenge_passkey;
 mod retrieve_from_challenge;
@@ -64,23 +65,7 @@ pub fn handler(environment: Environment) -> ApiRouter {
                 .route_layer(middleware::from_fn(validate_content_length))
                 .layer(DefaultBodyLimit::max(environment.max_request_size())),
         )
-        // Recovery
-        .api_route(
-            RETRIEVE_CHALLENGE_PASSKEY_PATH,
-            post(retrieve_challenge_passkey::handler),
-        )
-        .api_route(
-            RetrieveChallengeKeypairRequest::PATH,
-            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
-        )
-        .api_route(
-            RetrieveBackupFromChallengeRequest::PATH,
-            post_with(
-                retrieve_from_challenge::handler,
-                retrieve_from_challenge::docs,
-            )
-            .route_layer(middleware::from_fn(AttestationGateway::validator)),
-        )
+        .merge(recovery_routes())
         // Verify factor (authenticate a main factor without retrieving the backup)
         .api_route(
             VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH,
@@ -149,4 +134,35 @@ pub fn handler(environment: Environment) -> ApiRouter {
             post(keypair_challenge::handler::<ResetChallengeKeypairRequest>),
         )
         .api_route(ResetRequest::PATH, post(reset::handler))
+}
+
+// Recovery capabilities share the Main-factor retrieval and attestation boundary.
+fn recovery_routes() -> ApiRouter {
+    ApiRouter::new()
+        // Recovery
+        .api_route(
+            RETRIEVE_CHALLENGE_PASSKEY_PATH,
+            post(retrieve_challenge_passkey::handler),
+        )
+        .api_route(
+            RetrieveChallengeKeypairRequest::PATH,
+            post(keypair_challenge::handler::<RetrieveChallengeKeypairRequest>),
+        )
+        .api_route(
+            RetrieveBackupFromChallengeRequest::PATH,
+            post_with(
+                retrieve_from_challenge::handler,
+                retrieve_from_challenge::docs,
+            )
+            .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
+        // Bounded stale sync-factor cleanup after a Main-factor-authenticated recovery.
+        .api_route(
+            ReclaimSyncFactorSlotRequest::PATH,
+            post_with(
+                reclaim_sync_factor_slot::handler,
+                reclaim_sync_factor_slot::docs,
+            )
+            .route_layer(middleware::from_fn(AttestationGateway::validator)),
+        )
 }

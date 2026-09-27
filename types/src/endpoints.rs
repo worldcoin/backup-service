@@ -133,6 +133,7 @@ pub const ALL_ENDPOINTS: &[EndpointInfo] = &[
     EndpointInfo::passkey_challenge(RETRIEVE_CHALLENGE_PASSKEY_PATH),
     EndpointInfo::of::<RetrieveChallengeKeypairRequest>(),
     EndpointInfo::of::<RetrieveBackupFromChallengeRequest>(),
+    EndpointInfo::of::<ReclaimSyncFactorSlotRequest>(),
     EndpointInfo::passkey_challenge(VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH),
     EndpointInfo::of::<VerifyFactorChallengeKeypairRequest>(),
     EndpointInfo::of::<VerifyFactorRequest>(),
@@ -395,6 +396,42 @@ pub struct RetrieveBackupFromChallengeResponse {
     pub metadata: ExportedBackupMetadata,
     /// Single-use token for registering a sync factor on this backup afterwards.
     pub sync_factor_token: String,
+    /// Single-use token that permits reclaiming one stale sync-factor slot after this authenticated
+    /// recovery. It cannot be used to add, retrieve, or delete main factors. Absent on older
+    /// servers or when maintenance is temporarily unavailable; registration can still proceed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_factor_maintenance_token: Option<String>,
+}
+
+// SECTION: Sync factor maintenance
+
+/// Request body of `POST /v1/reclaim-sync-factor-slot`.
+///
+/// The token is issued only after a Main-factor-authenticated recovery. The endpoint removes at
+/// most one sync factor created at least 365 days ago, and only when the backup already has at
+/// least 25 sync factors. Ties are broken by factor ID after selecting the oldest creation time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ReclaimSyncFactorSlotRequest {
+    /// The `sync_factor_maintenance_token` from [`RetrieveBackupFromChallengeResponse`].
+    pub sync_factor_maintenance_token: String,
+}
+
+impl Endpoint for ReclaimSyncFactorSlotRequest {
+    type Response = ReclaimSyncFactorSlotResponse;
+    const PATH: &'static str = "/v1/reclaim-sync-factor-slot";
+    const REQUIRES_ATTESTATION: bool = true;
+}
+
+/// Response body of `POST /v1/reclaim-sync-factor-slot`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ReclaimSyncFactorSlotResponse {
+    /// Whether one stale sync factor was removed. `false` means the backup was below the cap or
+    /// did not contain a factor at least as old as the retention period.
+    pub reclaimed: bool,
 }
 
 // SECTION: Verify factor

@@ -3,7 +3,8 @@
 
 use backup_service_types::endpoints::{
     AddFactorRequest, BodyKind, CreateBackupRequest, Endpoint, Method, NewFactor, Platform,
-    ResetRequest, SyncBackupRequest, ALL_ENDPOINTS,
+    ReclaimSyncFactorSlotRequest, ReclaimSyncFactorSlotResponse, ResetRequest, SyncBackupRequest,
+    ALL_ENDPOINTS,
 };
 use backup_service_types::{
     Authorization, BackupEncryptionKey, ErrorBody, ErrorCode, ErrorObject, ExportedBackupMetadata,
@@ -89,6 +90,30 @@ fn authorization_ec_keypair() {
             "signature": "c2ln",
         }),
     );
+}
+
+#[test]
+fn reclaim_sync_factor_slot_wire() {
+    assert_wire(
+        &ReclaimSyncFactorSlotRequest {
+            sync_factor_maintenance_token: "maintenance-token".to_string(),
+        },
+        &json!({"syncFactorMaintenanceToken": "maintenance-token"}),
+    );
+    assert_wire(
+        &ReclaimSyncFactorSlotResponse { reclaimed: true },
+        &json!({"reclaimed": true}),
+    );
+    assert_eq!(
+        ReclaimSyncFactorSlotRequest::PATH,
+        "/v1/reclaim-sync-factor-slot"
+    );
+    let endpoint = ALL_ENDPOINTS
+        .iter()
+        .find(|endpoint| endpoint.path == ReclaimSyncFactorSlotRequest::PATH)
+        .expect("reclaim endpoint is registered");
+    assert!(endpoint.requires_attestation);
+    assert_eq!(endpoint.method, Method::Post);
 }
 
 #[test]
@@ -516,4 +541,45 @@ fn multipart_endpoints() {
     assert_eq!(SyncBackupRequest::BODY, BodyKind::Multipart);
     assert_eq!(AddFactorRequest::BODY, BodyKind::Json);
     assert_eq!(AddFactorRequest::METHOD, Method::Post);
+}
+
+#[test]
+fn recovery_maintenance_token_is_optional_and_separate_from_registration() {
+    use backup_service_types::RetrieveBackupFromChallengeResponse;
+
+    let legacy = json!({
+        "backup": "Yml0cw==",
+        "metadata": {
+            "id": "backup", "factors": [], "syncFactors": [], "keys": [],
+            "manifestHash": "hash"
+        },
+        "syncFactorToken": "registration"
+    });
+    let mut decoded: RetrieveBackupFromChallengeResponse =
+        serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(decoded.sync_factor_token, "registration");
+    assert_eq!(decoded.sync_factor_maintenance_token, None);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), legacy);
+
+    decoded.sync_factor_maintenance_token = Some("maintenance".to_string());
+    let mut current = legacy;
+    current["syncFactorMaintenanceToken"] = json!("maintenance");
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), current);
+    let roundtrip: RetrieveBackupFromChallengeResponse = serde_json::from_value(current).unwrap();
+    assert_eq!(roundtrip.sync_factor_token, "registration");
+    assert_eq!(
+        roundtrip.sync_factor_maintenance_token.as_deref(),
+        Some("maintenance")
+    );
+}
+
+#[test]
+fn reclaim_requires_its_own_token_field() {
+    for invalid in [
+        json!({}),
+        json!({"syncFactorToken": "registration"}),
+        json!({"syncFactorMaintenanceToken": null}),
+    ] {
+        assert!(serde_json::from_value::<ReclaimSyncFactorSlotRequest>(invalid).is_err());
+    }
 }

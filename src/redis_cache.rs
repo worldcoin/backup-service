@@ -52,27 +52,46 @@ impl RedisCacheManager {
         &self,
         backup_id: String,
     ) -> Result<String, RedisCacheError> {
-        // Generate a random token
-        let mut token_bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut token_bytes);
-        let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
+        self.create_scoped_token(SYNC_FACTOR_TOKEN_PREFIX, backup_id)
+            .await
+    }
 
-        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
+    /// Creates a single-use token permitting bounded sync-factor maintenance after recovery.
+    ///
+    /// It intentionally has a distinct Redis prefix from `sync_factor_token`: possession grants
+    /// only the maintenance operation, never registration of an arbitrary sync factor.
+    ///
+    /// # Errors
+    /// Returns an error if Redis cannot store the capability.
+    pub async fn create_sync_factor_maintenance_token(
+        &self,
+        backup_id: String,
+    ) -> Result<String, RedisCacheError> {
+        self.create_scoped_token(SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX, backup_id)
+            .await
+    }
 
-        let ttl_seconds = self.default_ttl.as_secs();
-        let token_data = SyncFactorTokenData::new(backup_id);
-        let mut redis = self.redis.clone();
-        redis
-            .set_options(
-                &token_hash,
-                token_data.into_bytes(),
-                SetOptions::default()
-                    .with_expiration(SetExpiry::EX(ttl_seconds))
-                    .conditional_set(ExistenceCheck::NX),
-            )
-            .await?;
-
-        Ok(token)
+    /// Mints recovery capabilities. Registration remains available when optional maintenance
+    /// cannot be issued.
+    ///
+    /// # Errors
+    /// Returns an error if the required registration token cannot be issued.
+    pub async fn create_recovery_tokens(
+        &self,
+        backup_id: String,
+    ) -> Result<(String, Option<String>), RedisCacheError> {
+        let registration = self.create_sync_factor_token(backup_id.clone()).await?;
+        let maintenance = self
+            .create_sync_factor_maintenance_token(backup_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Recovery succeeded but sync factor maintenance is unavailable"
+                );
+            })
+            .ok();
+        Ok((registration, maintenance))
     }
 
     /// Verifies the token and returns the backup ID, unless it was already used.
@@ -97,7 +116,51 @@ impl RedisCacheManager {
     /// * `RedisCacheError::TokenExpired` - if the token has expired
     /// * `RedisCacheError::ParseError` - if the token data cannot be parsed
     pub async fn use_sync_factor_token(&self, token: String) -> Result<String, RedisCacheError> {
-        let token_hash = hash_token(SYNC_FACTOR_TOKEN_PREFIX, &token);
+        self.use_scoped_token(SYNC_FACTOR_TOKEN_PREFIX, token).await
+    }
+
+    /// Consumes a recovery-issued sync-factor-maintenance token and returns its backup ID.
+    ///
+    /// # Errors
+    /// Rejects missing, expired, already-used or malformed tokens, and Redis failures.
+    pub async fn use_sync_factor_maintenance_token(
+        &self,
+        token: String,
+    ) -> Result<String, RedisCacheError> {
+        self.use_scoped_token(SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX, token)
+            .await
+    }
+
+    async fn create_scoped_token(
+        &self,
+        prefix: &str,
+        backup_id: String,
+    ) -> Result<String, RedisCacheError> {
+        let mut token_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut token_bytes);
+        let token = BASE64_URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash = hash_token(prefix, &token);
+        let ttl_seconds = self.default_ttl.as_secs();
+        let token_data = SyncFactorTokenData::new(backup_id);
+        let mut redis = self.redis.clone();
+        redis
+            .set_options(
+                &token_hash,
+                token_data.into_bytes(),
+                SetOptions::default()
+                    .with_expiration(SetExpiry::EX(ttl_seconds))
+                    .conditional_set(ExistenceCheck::NX),
+            )
+            .await?;
+        Ok(token)
+    }
+
+    async fn use_scoped_token(
+        &self,
+        prefix: &str,
+        token: String,
+    ) -> Result<String, RedisCacheError> {
+        let token_hash = hash_token(prefix, &token);
         let mut redis = self.redis.clone();
 
         // Lua script for atomic check-and-set operation
@@ -314,6 +377,7 @@ impl SyncFactorTokenData {
 }
 
 const SYNC_FACTOR_TOKEN_PREFIX: &str = "syncFactorToken";
+const SYNC_FACTOR_MAINTENANCE_TOKEN_PREFIX: &str = "syncFactorMaintenanceToken";
 const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash";
 const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
@@ -444,6 +508,221 @@ impl Drop for RedisLockGuard {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    use futures::FutureExt;
+    use std::{future::Future, panic::AssertUnwindSafe};
+
+    async fn with_registration_only_user<T>(
+        admin: &mut ConnectionManager,
+        username: &str,
+        operation: impl Future<Output = Result<T, RedisCacheError>>,
+    ) -> Result<T, RedisCacheError> {
+        // Unique dummy test user: permit only connection setup and registration SETs.
+        redis::cmd("ACL")
+            .arg("SETUSER")
+            .arg(username)
+            .arg("reset")
+            .arg("on")
+            .arg(">test")
+            .arg("+set")
+            .arg("+ping")
+            .arg("+hello")
+            .arg("+client|setinfo")
+            .arg("~syncFactorToken#*")
+            .query_async::<()>(admin)
+            .await?;
+        // Cover both fallible connection setup and assertions; cleanup completes before
+        // returning an error or resuming a panic, rather than racing runtime shutdown in Drop.
+        let outcome = AssertUnwindSafe(operation).catch_unwind().await;
+        redis::cmd("ACL")
+            .arg("DELUSER")
+            .arg(username)
+            .query_async::<usize>(admin)
+            .await?;
+        match outcome {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    async fn assert_user_removed(admin: &mut ConnectionManager, username: &str) {
+        let user: redis::Value = redis::cmd("ACL")
+            .arg("GETUSER")
+            .arg(username)
+            .query_async(admin)
+            .await
+            .unwrap();
+        assert_eq!(user, redis::Value::Nil);
+    }
+
+    #[tokio::test]
+    async fn maintenance_mint_failure_preserves_recovery_registration_token() {
+        let environment = Environment::development(None);
+        let manager = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let mut admin = manager.redis.clone();
+        let username = format!("reclaim-test-{}", uuid::Uuid::new_v4());
+        let result = with_registration_only_user(&mut admin, &username, async {
+            let client = redis::Client::open(format!("redis://{username}:test@localhost:6379"))?;
+            let restricted = RedisCacheManager {
+                default_ttl: Duration::from_mins(1),
+                redis: ConnectionManager::new(client).await?,
+            };
+            restricted
+                .create_recovery_tokens("backup".to_string())
+                .await
+        })
+        .await;
+        assert_user_removed(&mut admin, &username).await;
+        let (registration, maintenance) = result.unwrap();
+        assert_eq!(maintenance, None);
+        assert_eq!(
+            manager.use_sync_factor_token(registration).await.unwrap(),
+            "backup"
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_test_acl_user_is_removed_after_connection_setup_failure() {
+        let manager =
+            RedisCacheManager::new(Environment::development(None), Duration::from_mins(1))
+                .await
+                .unwrap();
+        let mut admin = manager.redis.clone();
+        let username = format!("reclaim-test-{}", uuid::Uuid::new_v4());
+        let result = with_registration_only_user(&mut admin, &username, async {
+            // Wrong dummy password forces a failure AFTER the ACL user was created.
+            let client = redis::Client::open(format!(
+                "redis://{username}:wrong-test-password@localhost:6379"
+            ))?;
+            ConnectionManager::new_with_config(
+                client,
+                ConnectionManagerConfig::new().set_number_of_retries(0),
+            )
+            .await?;
+            Ok(())
+        })
+        .await;
+        assert_user_removed(&mut admin, &username).await;
+        assert!(matches!(result, Err(RedisCacheError::RedisError(_))));
+    }
+
+    #[tokio::test]
+    async fn maintenance_test_acl_user_is_removed_before_resuming_panic() {
+        let manager =
+            RedisCacheManager::new(Environment::development(None), Duration::from_mins(1))
+                .await
+                .unwrap();
+        let mut admin = manager.redis.clone();
+        let username = format!("reclaim-test-{}", uuid::Uuid::new_v4());
+        let result = AssertUnwindSafe(with_registration_only_user::<()>(
+            &mut admin,
+            &username,
+            async { panic!("injected post-creation test setup panic") },
+        ))
+        .catch_unwind()
+        .await;
+        assert_user_removed(&mut admin, &username).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn maintenance_tokens_reject_wrong_purpose_without_consuming_registration() {
+        let manager =
+            RedisCacheManager::new(Environment::development(None), Duration::from_mins(1))
+                .await
+                .unwrap();
+        let registration = manager
+            .create_sync_factor_token("backup-a".to_string())
+            .await
+            .unwrap();
+        let maintenance = manager
+            .create_sync_factor_maintenance_token("backup-b".to_string())
+            .await
+            .unwrap();
+        for invalid in [
+            String::new(),
+            "missing-token".to_string(),
+            registration.clone(),
+        ] {
+            assert!(matches!(
+                manager.use_sync_factor_maintenance_token(invalid).await,
+                Err(RedisCacheError::TokenNotFound)
+            ));
+        }
+        assert!(matches!(
+            manager.use_sync_factor_token(maintenance.clone()).await,
+            Err(RedisCacheError::TokenNotFound)
+        ));
+        assert_eq!(
+            manager.use_sync_factor_token(registration).await.unwrap(),
+            "backup-a"
+        );
+        assert_eq!(
+            manager
+                .use_sync_factor_maintenance_token(maintenance.clone())
+                .await
+                .unwrap(),
+            "backup-b"
+        );
+        // Registration's rollback API cannot resurrect the separate maintenance capability.
+        assert!(matches!(
+            manager.unuse_sync_factor_token(maintenance.clone()).await,
+            Err(RedisCacheError::TokenNotFound)
+        ));
+        assert!(matches!(
+            manager.use_sync_factor_maintenance_token(maintenance).await,
+            Err(RedisCacheError::AlreadyUsed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn maintenance_token_has_one_winner_under_concurrent_use() {
+        let manager =
+            RedisCacheManager::new(Environment::development(None), Duration::from_mins(1))
+                .await
+                .unwrap();
+        let token = manager
+            .create_sync_factor_maintenance_token("scoped-backup".to_string())
+            .await
+            .unwrap();
+        let results = futures::future::join_all(
+            (0..20).map(|_| manager.use_sync_factor_maintenance_token(token.clone())),
+        )
+        .await;
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Ok(id) if id == "scoped-backup"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Err(RedisCacheError::AlreadyUsed)))
+                .count(),
+            19
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_token_expires() {
+        let manager =
+            RedisCacheManager::new(Environment::development(None), Duration::from_secs(1))
+                .await
+                .unwrap();
+        let token = manager
+            .create_sync_factor_maintenance_token("backup".to_string())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(matches!(
+            manager.use_sync_factor_maintenance_token(token).await,
+            Err(RedisCacheError::TokenNotFound)
+        ));
+    }
 
     #[tokio::test]
     async fn test_create_and_use_token() {
