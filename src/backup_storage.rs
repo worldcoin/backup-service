@@ -5,7 +5,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use std::sync::Arc;
-use types::BackupEncryptionKey;
+use types::{BackupEncryptionKey, SyncFactorReplacement};
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks.
 ///
@@ -454,14 +454,32 @@ impl BackupStorage {
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
-    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
-    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the key is a Main factor. An existing Sync
+    ///   key is idempotent; opposite-scope duplicates are `NotInserted`, permitting lookup rollback.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
     ) -> FactorMetadataWrite<()> {
+        match self
+            .register_sync_factor(backup_id, sync_factor, None)
+            .await
+        {
+            FactorMetadataWrite::Inserted(_) => FactorMetadataWrite::Inserted(()),
+            FactorMetadataWrite::NotInserted(error) => FactorMetadataWrite::NotInserted(error),
+            FactorMetadataWrite::Unknown(error) => FactorMetadataWrite::Unknown(error),
+        }
+    }
+
+    /// Registers a recovery key, optionally swapping the exact user-confirmed sync access.
+    /// One conditional metadata write preserves all other factors, keys and backup contents.
+    /// The caller must authenticate a Main-issued token and prove possession of the new key.
+    pub async fn register_sync_factor(
+        &self,
+        backup_id: &str,
+        sync_factor: Factor,
+        replacement: Option<&SyncFactorReplacement>,
+    ) -> FactorMetadataWrite<Option<Factor>> {
         // Sync factor must be a keypair
         match sync_factor.kind {
             FactorKind::EcKeypair { .. } => {}
@@ -485,6 +503,16 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
+        // A fresh Main recovery may resolve a lost successful replacement response with the
+        // same durable private key. Never revoke another access on this idempotent path.
+        if metadata
+            .sync_factors
+            .iter()
+            .any(|f| f.kind == sync_factor.kind)
+        {
+            return FactorMetadataWrite::Inserted(None);
+        }
+
         // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
         if let Some(duplicate) =
             Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
@@ -492,14 +520,33 @@ impl BackupStorage {
             return duplicate;
         }
 
-        if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
-            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
-                limit: MAX_SYNC_FACTORS_PER_BACKUP,
-            });
-        }
-
-        // Add the sync factor to the metadata
-        metadata.sync_factors.push(sync_factor);
+        let removed = if let Some(replacement) = replacement {
+            if replacement.metadata_etag != e_tag
+                || metadata.sync_factors.len() < MAX_SYNC_FACTORS_PER_BACKUP
+            {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
+            }
+            let Some(index) = metadata
+                .sync_factors
+                .iter()
+                .position(|factor| factor.id == replacement.factor_id)
+            else {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
+            };
+            // Replacing one entry preserves legacy over-cap counts without revoking extra keys.
+            Some(std::mem::replace(
+                &mut metadata.sync_factors[index],
+                sync_factor,
+            ))
+        } else {
+            if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
+                    limit: MAX_SYNC_FACTORS_PER_BACKUP,
+                });
+            }
+            metadata.sync_factors.push(sync_factor);
+            None
+        };
 
         let body = match serde_json::to_vec(&metadata) {
             Ok(body) => body,
@@ -516,7 +563,14 @@ impl BackupStorage {
             .send()
             .await
         {
-            Ok(_) => FactorMetadataWrite::Inserted(()),
+            Ok(_) => FactorMetadataWrite::Inserted(removed),
+            // A conflict can be an SDK retry after an ambiguous successful PUT. Keep the lookup
+            // and reconcile the same key via fresh Main recovery; never choose another target.
+            Err(SdkError::ServiceError(ref err))
+                if replacement.is_some() && err.raw().status().as_u16() == 412 =>
+            {
+                FactorMetadataWrite::Unknown(BackupManagerError::ConfirmationStale)
+            }
             Err(err) => Self::classify_put_object_error(err),
         }
     }
@@ -838,6 +892,9 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
+    #[error("The selected sync access or metadata changed; confirm again")]
+    ConfirmationStale,
+
     #[error("Maximum number of factors ({limit}) for this backup has been reached")]
     TooManyFactors { limit: usize },
     #[error("Factor not found")]
@@ -1632,15 +1689,12 @@ mod tests {
             keypair_factor.kind
         );
 
-        // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
+        // The same durable recovery key is already present: no additional mutation is required.
         let result = backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await;
         assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
-            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
-        }
+        assert!(matches!(result, FactorMetadataWrite::Inserted(())));
 
         // Same key as a main factor must reject sync add with rollback (opposite scope).
         let main_only_backup_id = gen_backup_id();

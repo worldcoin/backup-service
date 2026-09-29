@@ -909,24 +909,41 @@ impl AuthHandler {
             }
         };
 
-        match self.factor_lookup.delete(scope, factor).await {
-            Ok(()) => {
-                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "deleted").increment(1);
-                tracing::info!(
-                    message = "Deleted stale FactorLookup not authorized in backup metadata",
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+        let cleanup = async {
+            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+                return Ok::<&str, AuthError>("missing");
+            };
+            let metadata = self
+                .backup_storage
+                .get_metadata_by_backup_id(&owner)
+                .await?;
+            let present = metadata.is_some_and(|(metadata, _)| {
+                let factors = match scope {
+                    FactorScope::Main => metadata.factors,
+                    FactorScope::Sync => metadata.sync_factors,
+                };
+                factors.iter().any(|current| {
+                    current.as_factor_to_lookup(&self.environment).primary_key()
+                        == factor.primary_key()
+                })
+            });
+            if present {
+                return Ok("active_skip");
+            }
+            self.factor_lookup
+                .delete_if_maps_to(scope, factor, &owner)
+                .await?;
+            Ok("deleted")
+        }
+        .await;
+        match cleanup {
+            Ok(result) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => result).increment(1);
             }
             Err(err) => {
                 metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "delete_failed")
                     .increment(1);
-                tracing::error!(
-                    message = "Failed to delete stale FactorLookup during authentication",
-                    error = ?err,
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+                tracing::error!(?err, scope = %scope, "Failed to reconcile stale FactorLookup during authentication");
             }
         }
 

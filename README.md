@@ -60,3 +60,26 @@ python3 tests/e2e/create-and-retrieve-backup.py \
   --url "https://tfh-backup-api.dev-nethermind.xyz" \
   --attestation-token "$ATTESTATION_TOKEN"
 ```
+
+### Recovery when sync access is full
+
+Authenticated retrieval returns `metadataEtag` alongside the existing single-use `syncFactorToken`.
+At or above 25 sync factors, a client may ask the user to select one existing sync access and send
+`replacement: {"factorId": "<selected ID>", "metadataEtag": "<returned version>"}` in the existing
+`/v1/add-sync-factor` request. The signed new key and Main-issued token are still required. One
+conditional metadata write replaces exactly that access, preserving every other factor, encryption
+key and backup blob. A legacy account above 25 stays at its existing count; this operation never
+silently removes additional accesses. Unmodified clients retain the existing capacity error.
+
+Persist the new private key securely **before** sending registration. On an uncertain response,
+retain that key and selection, obtain fresh Main-authenticated metadata, and check whether the exact
+new public key is a member. Repeating replacement with that same current key and a fresh token is
+idempotent and can repair its lookup; it never removes another factor. A changed snapshot returns
+`confirmation_stale`. Reconfirm the same target and reuse the pending key; only offer another target
+if the original target ID is absent. Do not infer that a request never committed from a transport
+error or token expiry. Cancelling before registration makes no remote change.
+
+This uses the existing storage schema and requires no account migration. Metadata membership is
+authoritative even if best-effort lookup cleanup fails. Replacement revokes future authentication;
+it does not cancel a sync request that was already authenticated and in flight. The existing
+non-atomic blob/metadata sync behavior is unchanged.
