@@ -97,6 +97,8 @@ pub enum ErrorCode {
     FactorAlreadyExists,
     /// The backup already has the maximum number of factors.
     TooManyFactors,
+    /// The user-confirmed sync factor or metadata version has changed.
+    ConfirmationStale,
     /// The factor exists but is no longer authorized for the backup.
     UnauthorizedFactor,
     /// The authorization kind is not accepted by this endpoint.

@@ -54,9 +54,20 @@ pub async fn handler(
             return Err(ErrorResponse::internal_server_error());
         };
 
+        // Bind the advertised version to the authenticated metadata. A concurrent mutation
+        // requires another Main authentication rather than showing a mismatched confirmation.
+        let Some((current, metadata_etag)) =
+            backup_storage.get_metadata_by_backup_id(&backup_id).await?
+        else {
+            return Err(ErrorResponse::internal_server_error());
+        };
+        if current != backup_metadata {
+            return Err(crate::backup_storage::BackupManagerError::ConfirmationStale.into());
+        }
+
         // Step 3: Create a sync factor token to allow the user to add a new sync factor later
-        let (sync_factor_token, sync_factor_maintenance_token) = redis_cache_manager
-            .create_recovery_tokens(backup_id.clone())
+        let sync_factor_token = redis_cache_manager
+            .create_sync_factor_token(backup_metadata.id.clone())
             .await?;
 
         // Step 4: Return the backup and metadata
@@ -64,7 +75,7 @@ pub async fn handler(
             backup: STANDARD.encode(backup),
             metadata: backup_metadata.exported(),
             sync_factor_token,
-            sync_factor_maintenance_token,
+            metadata_etag,
         }))
     }
     .instrument(span)

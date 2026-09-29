@@ -4,9 +4,8 @@ use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
-use chrono::Utc;
 use std::sync::Arc;
-use types::BackupEncryptionKey;
+use types::{BackupEncryptionKey, SyncFactorReplacement};
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks.
 ///
@@ -62,11 +61,6 @@ pub const MAX_MAIN_FACTORS_PER_BACKUP: usize = 10;
 /// This limit is also consistent with client-side enforcement for Sync Factors and is
 /// below Turnkey's hard limit of 100.
 pub const MAX_SYNC_FACTORS_PER_BACKUP: usize = 25;
-
-/// The metadata does not record a sync factor's last use, so age is the only lifecycle signal
-/// available to this service. The maintenance endpoint removes at most one older factor, and only
-/// after the cap has blocked a recovery, making this a deliberately conservative escape hatch.
-pub const STALE_SYNC_FACTOR_RETENTION_DAYS: i64 = 365;
 
 /// Which factor list in [`BackupMetadata`] an add/reconcile operation targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,14 +454,32 @@ impl BackupStorage {
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
-    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
-    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// - `BackupManagerError::FactorAlreadyExists` - if the key is a Main factor. An existing Sync
+    ///   key is idempotent; opposite-scope duplicates are `NotInserted`, permitting lookup rollback.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
     ) -> FactorMetadataWrite<()> {
+        match self
+            .register_sync_factor(backup_id, sync_factor, None)
+            .await
+        {
+            FactorMetadataWrite::Inserted(_) => FactorMetadataWrite::Inserted(()),
+            FactorMetadataWrite::NotInserted(error) => FactorMetadataWrite::NotInserted(error),
+            FactorMetadataWrite::Unknown(error) => FactorMetadataWrite::Unknown(error),
+        }
+    }
+
+    /// Registers a recovery key, optionally swapping the exact user-confirmed sync access.
+    /// One conditional metadata write preserves all other factors, keys and backup contents.
+    /// The caller must authenticate a Main-issued token and prove possession of the new key.
+    pub async fn register_sync_factor(
+        &self,
+        backup_id: &str,
+        sync_factor: Factor,
+        replacement: Option<&SyncFactorReplacement>,
+    ) -> FactorMetadataWrite<Option<Factor>> {
         // Sync factor must be a keypair
         match sync_factor.kind {
             FactorKind::EcKeypair { .. } => {}
@@ -491,6 +503,16 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
+        // A fresh Main recovery may resolve a lost successful replacement response with the
+        // same durable private key. Never revoke another access on this idempotent path.
+        if metadata
+            .sync_factors
+            .iter()
+            .any(|f| f.kind == sync_factor.kind)
+        {
+            return FactorMetadataWrite::Inserted(None);
+        }
+
         // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
         if let Some(duplicate) =
             Self::duplicate_factor_outcome(&metadata, &sync_factor.kind, FactorListScope::Sync)
@@ -498,14 +520,33 @@ impl BackupStorage {
             return duplicate;
         }
 
-        if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
-            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
-                limit: MAX_SYNC_FACTORS_PER_BACKUP,
-            });
-        }
-
-        // Add the sync factor to the metadata
-        metadata.sync_factors.push(sync_factor);
+        let removed = if let Some(replacement) = replacement {
+            if replacement.metadata_etag != e_tag
+                || metadata.sync_factors.len() < MAX_SYNC_FACTORS_PER_BACKUP
+            {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
+            }
+            let Some(index) = metadata
+                .sync_factors
+                .iter()
+                .position(|factor| factor.id == replacement.factor_id)
+            else {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
+            };
+            // Replacing one entry preserves legacy over-cap counts without revoking extra keys.
+            Some(std::mem::replace(
+                &mut metadata.sync_factors[index],
+                sync_factor,
+            ))
+        } else {
+            if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
+                    limit: MAX_SYNC_FACTORS_PER_BACKUP,
+                });
+            }
+            metadata.sync_factors.push(sync_factor);
+            None
+        };
 
         let body = match serde_json::to_vec(&metadata) {
             Ok(body) => body,
@@ -522,7 +563,14 @@ impl BackupStorage {
             .send()
             .await
         {
-            Ok(_) => FactorMetadataWrite::Inserted(()),
+            Ok(_) => FactorMetadataWrite::Inserted(removed),
+            // A conflict can be an SDK retry after an ambiguous successful PUT. Keep the lookup
+            // and reconcile the same key via fresh Main recovery; never choose another target.
+            Err(SdkError::ServiceError(ref err))
+                if replacement.is_some() && err.raw().status().as_u16() == 412 =>
+            {
+                FactorMetadataWrite::Unknown(BackupManagerError::ConfirmationStale)
+            }
             Err(err) => Self::classify_put_object_error(err),
         }
     }
@@ -732,45 +780,6 @@ impl BackupStorage {
         Ok(metadata)
     }
 
-    /// Reclaims one stale sync-factor slot when the backup has reached its sync-factor cap.
-    ///
-    /// The metadata write is the source of truth. The caller must remove the returned factor from
-    /// the lookup table after this succeeds. The oldest eligible factor is chosen deterministically
-    /// to minimize the impact of a recovery that has accumulated abandoned device keys.
-    ///
-    /// # Errors
-    /// Rejects missing metadata or `ETags`, serialization failures and failed conditional S3 writes.
-    pub async fn reclaim_stale_sync_factor_slot(
-        &self,
-        backup_id: &str,
-    ) -> Result<Option<(Factor, BackupMetadata)>, BackupManagerError> {
-        let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
-        };
-        let Some(e_tag) = e_tag else {
-            return Err(BackupManagerError::ETagNotFound);
-        };
-
-        if metadata.sync_factors.len() < MAX_SYNC_FACTORS_PER_BACKUP {
-            return Ok(None);
-        }
-
-        let Some(index) = stale_sync_factor_index(&metadata.sync_factors, Utc::now()) else {
-            return Ok(None);
-        };
-
-        let removed = metadata.sync_factors.remove(index);
-        self.put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
-            .if_match(e_tag)
-            .body(ByteStream::from(serde_json::to_vec(&metadata)?))
-            .send()
-            .await?;
-
-        Ok(Some((removed, metadata)))
-    }
-
     /// Deletes a backup and its metadata from S3.
     ///
     /// # Errors
@@ -833,16 +842,6 @@ impl BackupStorage {
     }
 }
 
-fn stale_sync_factor_index(sync_factors: &[Factor], now: chrono::DateTime<Utc>) -> Option<usize> {
-    let stale_before = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS);
-    sync_factors
-        .iter()
-        .enumerate()
-        .filter(|(_, factor)| factor.created_at <= stale_before)
-        .min_by_key(|(_, factor)| (factor.created_at, &factor.id))
-        .map(|(index, _)| index)
-}
-
 pub struct FoundBackup {
     pub backup: Vec<u8>,
     pub metadata: BackupMetadata,
@@ -893,6 +892,9 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
+    #[error("The selected sync access or metadata changed; confirm again")]
+    ConfirmationStale,
+
     #[error("Maximum number of factors ({limit}) for this backup has been reached")]
     TooManyFactors { limit: usize },
     #[error("Factor not found")]
@@ -965,53 +967,6 @@ mod tests {
         let access_denied =
             BackupStorage::classify_put_object_error::<()>(put_object_service_error(403));
         assert!(access_denied.should_rollback_lookup());
-    }
-
-    #[test]
-    fn stale_sync_factor_index_chooses_the_oldest_eligible_factor() {
-        let now = Utc::now();
-        let mut oldest = Factor::new_ec_keypair("oldest".to_string());
-        oldest.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS + 1);
-        let mut newer_stale = Factor::new_ec_keypair("newer-stale".to_string());
-        newer_stale.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS);
-        let mut recent = Factor::new_ec_keypair("recent".to_string());
-        recent.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS - 1);
-
-        assert_eq!(
-            stale_sync_factor_index(&[newer_stale, recent, oldest], now),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn stale_sync_factor_index_ignores_recent_factors() {
-        let now = Utc::now();
-        let mut recent = Factor::new_ec_keypair("recent".to_string());
-        recent.created_at = now - chrono::Duration::days(STALE_SYNC_FACTOR_RETENTION_DAYS - 1);
-
-        assert_eq!(stale_sync_factor_index(&[recent], now), None);
-    }
-
-    #[test]
-    fn stale_sync_factor_boundary_and_ties_are_stable() {
-        let now = Utc::now();
-        let boundary = now - chrono::Duration::days(365);
-        let mut a = Factor::new_ec_keypair("a".to_string());
-        a.id = "a".to_string();
-        a.created_at = boundary;
-        let mut b = Factor::new_ec_keypair("b".to_string());
-        b.id = "b".to_string();
-        b.created_at = boundary;
-        let mut recent = Factor::new_ec_keypair("recent".to_string());
-        recent.created_at = boundary + chrono::Duration::nanoseconds(1);
-        assert_eq!(stale_sync_factor_index(&[recent], now), None);
-        assert_eq!(stale_sync_factor_index(&[a.clone()], now), Some(0));
-        assert_eq!(
-            stale_sync_factor_index(&[a.clone(), b.clone()], now),
-            Some(0)
-        );
-        assert_eq!(stale_sync_factor_index(&[b, a], now), Some(1));
-        assert_eq!(stale_sync_factor_index(&[], now), None);
     }
 
     #[test]
@@ -1734,15 +1689,12 @@ mod tests {
             keypair_factor.kind
         );
 
-        // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
+        // The same durable recovery key is already present: no additional mutation is required.
         let result = backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone())
             .await;
         assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
-            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
-        }
+        assert!(matches!(result, FactorMetadataWrite::Inserted(())));
 
         // Same key as a main factor must reject sync add with rollback (opposite scope).
         let main_only_backup_id = gen_backup_id();
