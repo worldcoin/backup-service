@@ -97,7 +97,7 @@ pub struct ValidationResult {
     pub factor_to_lookup: FactorToLookup,
 }
 
-/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
+/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the garbage collector for
 /// `FactorLookup` rows that no longer match backup metadata (the source of truth). `FactorLookup` is
 /// only a convenience index and the two stores are written non-atomically, so this is the only
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
@@ -660,11 +660,15 @@ impl AuthHandler {
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
-    /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
+    /// (or the backup is gone). Best-effort: errors are logged without changing the caller's result.
     ///
     /// Skips the delete when the factor mutate lock is held (create/add write in flight) so we do
     /// not remove a lookup that is about to be authorized in metadata.
-    async fn delete_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+    pub(crate) async fn delete_stale_factor_lookup(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) {
         let mut lock_guard = match self
             .redis_cache_manager
             .try_acquire_lock_guard(
@@ -731,7 +735,7 @@ impl AuthHandler {
             Err(err) => {
                 metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "delete_failed")
                     .increment(1);
-                tracing::error!(?err, scope = %scope, "Failed to reconcile stale FactorLookup during authentication");
+                tracing::error!(?err, scope = %scope, "Failed to clean up stale FactorLookup");
             }
         }
 

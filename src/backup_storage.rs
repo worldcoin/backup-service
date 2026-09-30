@@ -455,8 +455,8 @@ impl BackupStorage {
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the key is a Main factor. An existing Sync
-    ///   key is idempotent; opposite-scope duplicates are `NotInserted`, permitting lookup rollback.
+    /// - `BackupManagerError::FactorAlreadyExists` - same-scope duplicates keep the lookup;
+    ///   opposite-scope duplicates permit lookup rollback.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
@@ -485,16 +485,6 @@ impl BackupStorage {
         let Some(e_tag) = e_tag else {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
-
-        // A retry after a lost successful response carries the same key. Never remove another
-        // sync factor on this idempotent path.
-        if metadata
-            .sync_factors
-            .iter()
-            .any(|f| f.kind == sync_factor.kind)
-        {
-            return FactorMetadataWrite::Inserted(None);
-        }
 
         // Reject duplicates by full `FactorKind` (includes credential identifier, e.g. public key).
         if let Some(duplicate) =
@@ -1656,12 +1646,14 @@ mod tests {
             keypair_factor.kind
         );
 
-        // The same durable recovery key is already present: no additional mutation is required.
         let result = backup_storage
             .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await;
         assert!(!result.should_rollback_lookup());
-        assert!(matches!(result, FactorMetadataWrite::Inserted(None)));
+        assert!(matches!(
+            result,
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
+        ));
 
         // Same key as a main factor must reject sync add with rollback (opposite scope).
         let main_only_backup_id = gen_backup_id();

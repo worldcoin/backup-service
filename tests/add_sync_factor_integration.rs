@@ -782,12 +782,12 @@ async fn replacement_at_cap_and_legacy_overcap_preserves_count_and_other_records
         let fresh = ok(recover(&fixture.main).await).await;
         assert_eq!(fresh["backup"], recovered["backup"]);
 
-        // Same-key retries are idempotent: a different target or the new key's own entry
-        // removes nothing.
         let own_id = after.sync_factors[4].id.clone();
         for retry_target in [&*fixture.metadata.sync_factors[0].id, &own_id] {
             let recovered = ok(recover(&fixture.main).await).await;
-            ok(register(&recovered, &new, Some(retry_target)).await).await;
+            let (status, body) = parsed(register(&recovered, &new, Some(retry_target)).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"]["code"], "factor_already_exists");
             assert_eq!(stored(id).await, after);
         }
     }
@@ -806,6 +806,23 @@ async fn replacement_below_cap_swaps_and_absent_target_adds() {
     assert!(!after.sync_factors.contains(target));
     assert_eq!(after.sync_factors[0], fixture.metadata.sync_factors[0]);
     assert_eq!(after.sync_factors[2], fixture.metadata.sync_factors[2]);
+    let environment = Environment::development(None);
+    let lookup = FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::new(
+            &environment.aws_config().await,
+        )),
+    );
+    assert_eq!(
+        lookup
+            .lookup_consistent(
+                FactorScope::Sync,
+                &FactorToLookup::from_ec_keypair(fixture.keys[1].0.clone()),
+            )
+            .await
+            .unwrap(),
+        None
+    );
     assert!(!sync_metadata(&fixture.keys[1]).await.status().is_success());
     ok(sync_metadata(&replacement).await).await;
 
@@ -945,7 +962,7 @@ async fn conditional_write_conflict_is_unknown_and_retains_lookup() {
 }
 
 #[tokio::test]
-async fn below_cap_recovery_reuses_same_owner_reservation_and_current_key() {
+async fn existing_lookup_reservation_and_registered_key_are_rejected() {
     let fixture = fixture(1).await;
     let new = common::generate_keypair();
     let environment = Environment::development(None);
@@ -964,22 +981,28 @@ async fn below_cap_recovery_reuses_same_owner_reservation_and_current_key() {
         )
         .await
         .unwrap();
-    let recovered = ok(recover(&fixture.main).await).await;
-    ok(register(&recovered, &new, None).await).await;
-    ok(sync_metadata(&new).await).await;
-    let after = common::verify_s3_metadata_exists(&fixture.metadata.id).await;
-    assert_eq!(after["syncFactors"].as_array().unwrap().len(), 2);
-    // A successful write with a lost client response resolves without adding a second key.
-    let recovered = ok(recover(&fixture.main).await).await;
-    ok(register(&recovered, &new, None).await).await;
-    assert_eq!(
-        common::verify_s3_metadata_exists(&fixture.metadata.id).await,
-        after
-    );
+    for key in [&new, &fixture.keys[0]] {
+        let recovered = ok(recover(&fixture.main).await).await;
+        let (status, body) = parsed(register(&recovered, key, None).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "factor_already_exists");
+        assert_eq!(stored(&fixture.metadata.id).await, fixture.metadata);
+        assert_eq!(
+            lookup
+                .lookup_consistent(
+                    FactorScope::Sync,
+                    &FactorToLookup::from_ec_keypair(key.0.clone()),
+                )
+                .await
+                .unwrap(),
+            Some(fixture.metadata.id.clone())
+        );
+    }
+    ok(sync_metadata(&fixture.keys[0]).await).await;
 }
 
 #[tokio::test]
-async fn ambiguous_committed_write_resolves_same_key_without_second_metadata_write() {
+async fn ambiguous_committed_write_retry_rejects_duplicate_without_second_metadata_write() {
     let mut server = Server::new_async().await;
     let before = BackupMetadata {
         id: "response-loss".to_string(),
@@ -1044,7 +1067,11 @@ async fn ambiguous_committed_write_resolves_same_key_without_second_metadata_wri
             Some(&target),
         )
         .await;
-    assert!(matches!(resolved, FactorMetadataWrite::Inserted(None)));
+    assert!(matches!(
+        resolved,
+        FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
+    ));
+    assert!(!resolved.should_rollback_lookup());
     assert_eq!(*state.lock().unwrap(), after);
     assert_eq!(after.sync_factors.len(), 25);
     assert_eq!(
@@ -1198,7 +1225,7 @@ async fn auth_cleanup_rereads_membership_and_changed_lookup_owner_under_lock() {
 }
 
 #[tokio::test]
-async fn ambiguous_lookup_insert_error_accepts_only_consistently_observed_same_owner() {
+async fn ambiguous_lookup_insert_error_does_not_update_metadata() {
     use axum::body::Body;
     use tower::ServiceExt;
 
@@ -1237,7 +1264,7 @@ async fn ambiguous_lookup_insert_error_accepts_only_consistently_observed_same_o
         .match_body(Matcher::PartialJson(json!({"ConsistentRead":true})))
         .with_header("content-type", "application/x-amz-json-1.0")
         .with_body(json!({"Item":{"BackupId":{"S":fixture.metadata.id}}}).to_string())
-        .expect(1)
+        .expect(0)
         .create_async()
         .await;
     let config = aws_sdk_dynamodb::Config::builder()
@@ -1260,7 +1287,85 @@ async fn ambiguous_lookup_insert_error_accepts_only_consistently_observed_same_o
         "syncFactor":{"kind":"EC_KEYPAIR","publicKey":key.0,
             "signature":common::sign_keypair_challenge(&key.1,challenge["challenge"].as_str().unwrap())}});
     let app = registration_router(lookup).await;
-    ok(app
+    let response = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri("/v1/add-sync-factor")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, body) = parsed(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["code"], "internal_server_error");
+    assert_eq!(stored(&fixture.metadata.id).await, fixture.metadata);
+    insert.assert_async().await;
+    read.assert_async().await;
+}
+
+#[tokio::test]
+async fn replacement_succeeds_when_old_lookup_delete_fails() {
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    let fixture = fixture(1).await;
+    let key = common::generate_keypair();
+    let recovered = ok(recover(&fixture.main).await).await;
+    let environment = Environment::development(None);
+    let mut server = Server::new_async().await;
+    let insert = server
+        .mock("POST", "/")
+        .match_header("x-amz-target", "DynamoDB_20120810.PutItem")
+        .with_header("content-type", "application/x-amz-json-1.0")
+        .with_body("{}")
+        .expect(1)
+        .create_async()
+        .await;
+    let read = server
+        .mock("POST", "/")
+        .match_header("x-amz-target", "DynamoDB_20120810.GetItem")
+        .with_header("content-type", "application/x-amz-json-1.0")
+        .with_body(json!({"Item":{"BackupId":{"S":fixture.metadata.id}}}).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    let delete = server
+        .mock("POST", "/")
+        .match_header("x-amz-target", "DynamoDB_20120810.DeleteItem")
+        .with_status(500)
+        .with_header("content-type", "application/x-amz-json-1.0")
+        .with_body(r#"{"__type":"InternalServerError","message":"injected delete failure"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let config = aws_sdk_dynamodb::Config::builder()
+        .behavior_version_latest()
+        .region(aws_sdk_dynamodb::config::Region::new("us-east-1"))
+        .credentials_provider(aws_sdk_dynamodb::config::Credentials::new(
+            "test", "test", None, None, "test",
+        ))
+        .endpoint_url(server.url())
+        .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
+        .build();
+    let lookup = Arc::new(FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::from_conf(config)),
+    ));
+    let challenge =
+        ok(common::send_post_request("/v1/add-sync-factor/challenge/keypair", json!({})).await)
+            .await;
+    let request = json!({
+        "syncFactorToken": recovered["syncFactorToken"], "challengeToken": challenge["token"],
+        "syncFactorToReplace": fixture.metadata.sync_factors[0].id,
+        "syncFactor": {"kind": "EC_KEYPAIR", "publicKey": key.0,
+            "signature": common::sign_keypair_challenge(
+                &key.1, challenge["challenge"].as_str().unwrap())}
+    });
+    ok(registration_router(lookup)
+        .await
         .oneshot(
             http::Request::builder()
                 .method("POST")
@@ -1272,16 +1377,21 @@ async fn ambiguous_lookup_insert_error_accepts_only_consistently_observed_same_o
         .await
         .unwrap())
     .await;
-    ok(sync_metadata(&key).await).await;
+    let after = stored(&fixture.metadata.id).await;
+    assert_eq!(after.sync_factors.len(), 1);
     assert_eq!(
-        common::verify_s3_metadata_exists(&fixture.metadata.id).await["syncFactors"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+        after.sync_factors[0].kind,
+        Factor::new_ec_keypair(key.0).kind
     );
+    assert_eq!(after.factors, fixture.metadata.factors);
+    assert_eq!(after.keys, fixture.metadata.keys);
+    assert_eq!(after.manifest_hash, fixture.metadata.manifest_hash);
+    let (status, body) = parsed(sync_metadata(&fixture.keys[0]).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "unauthorized_factor");
     insert.assert_async().await;
     read.assert_async().await;
+    delete.assert_async().await;
 }
 
 async fn registration_router(lookup: Arc<FactorLookup>) -> axum::Router {
