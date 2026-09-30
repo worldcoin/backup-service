@@ -321,10 +321,6 @@ impl From<BackupManagerError> for ErrorResponse {
                     "This factor already exists.",
                 )
             }
-            BackupManagerError::ConfirmationStale => ErrorResponse::conflict(
-                ErrorCode::ConfirmationStale,
-                "The selected sync access or metadata changed. Recover and confirm again.",
-            ),
             BackupManagerError::TooManyFactors { .. } => {
                 tracing::info!(message = "Maximum number of factors reached", error = ?err);
                 ErrorResponse::conflict(

@@ -70,9 +70,13 @@ pub async fn handler(
         }
     };
 
-    // Step 4: Insert, or atomically swap exactly the confirmed access at its original version.
+    // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
     let write = backup_storage
-        .register_sync_factor(&backup_id, sync_factor, request.replacement.as_ref())
+        .register_sync_factor(
+            &backup_id,
+            sync_factor,
+            request.sync_factor_to_replace.as_deref(),
+        )
         .await;
 
     // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land

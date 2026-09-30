@@ -395,9 +395,6 @@ pub struct RetrieveBackupFromChallengeResponse {
     pub metadata: ExportedBackupMetadata,
     /// Single-use token for registering a sync factor on this backup afterwards.
     pub sync_factor_token: String,
-    /// Opaque version of the returned metadata. Its presence advertises selected replacement.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata_etag: Option<String>,
 }
 
 // SECTION: Verify factor
@@ -483,21 +480,10 @@ pub struct AddSyncFactorRequest {
     /// The `sync_factor_token` from [`RetrieveBackupFromChallengeResponse`], which authorizes the
     /// request against a specific backup.
     pub sync_factor_token: String,
-    /// At capacity, atomically replace exactly the access selected and confirmed by the user.
-    /// Omit for ordinary registration. Older clients retain the existing capacity error.
+    /// ID of an existing sync factor on this backup to replace with `sync_factor`. When the
+    /// factor is present it is replaced regardless of capacity; otherwise this is a plain add.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replacement: Option<SyncFactorReplacement>,
-}
-
-/// The exact sync access and metadata version confirmed during Main-factor recovery.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SyncFactorReplacement {
-    /// ID of the existing sync access selected by the user.
-    pub factor_id: String,
-    /// Exact opaque metadata version returned by authenticated retrieval.
-    pub metadata_etag: String,
+    pub sync_factor_to_replace: Option<String>,
 }
 
 impl Endpoint for AddSyncFactorRequest {
