@@ -342,7 +342,6 @@ const ERROR_CODES: &[&str] = &[
     "backup_missing",
     "backup_not_found",
     "backup_untraceable",
-    "confirmation_stale",
     "conflicting_lock",
     "content_too_large",
     "empty_backup_file",
@@ -520,42 +519,29 @@ fn multipart_endpoints() {
 }
 
 #[test]
-fn selected_sync_factor_replacement_is_optional_and_explicit() {
-    use backup_service_types::{AddSyncFactorRequest, SyncFactorReplacement};
+fn add_sync_factor_to_replace_is_optional() {
+    use backup_service_types::AddSyncFactorRequest;
     let legacy = json!({
         "challengeToken":"challenge", "syncFactorToken":"main-recovery",
         "syncFactor":{"kind":"EC_KEYPAIR", "publicKey":"public", "signature":"signature"}
     });
     let mut request: AddSyncFactorRequest = serde_json::from_value(legacy.clone()).unwrap();
-    assert_eq!(request.replacement, None);
-    assert_eq!(serde_json::to_value(&request).unwrap(), legacy);
-    request.replacement = Some(SyncFactorReplacement {
-        factor_id: "selected-access".to_string(),
-        metadata_etag: "opaque-version".to_string(),
-    });
+    assert_eq!(request.sync_factor_to_replace, None);
+    assert_wire(&request, &legacy);
+    request.sync_factor_to_replace = Some("selected-sync-factor".to_string());
     let mut expected = legacy;
-    expected["replacement"] =
-        json!({"factorId":"selected-access", "metadataEtag":"opaque-version"});
-    assert_eq!(serde_json::to_value(&request).unwrap(), expected);
-    assert!(
-        serde_json::from_value::<SyncFactorReplacement>(json!({"factorId":"selected-access"}))
-            .is_err()
-    );
+    expected["syncFactorToReplace"] = json!("selected-sync-factor");
+    assert_wire(&request, &expected);
 }
 
 #[test]
-fn recovery_metadata_version_supports_rolling_clients_and_servers() {
+fn retrieve_from_challenge_response_has_no_metadata_etag() {
     use backup_service_types::RetrieveBackupFromChallengeResponse;
-    let legacy = json!({
+    let wire = json!({
         "backup":"dmF1bHQ=", "syncFactorToken":"main-recovery",
         "metadata":{"id":"backup", "factors":[], "syncFactors":[], "keys":[], "manifestHash":"hash"}
     });
-    let mut response: RetrieveBackupFromChallengeResponse =
-        serde_json::from_value(legacy.clone()).unwrap();
-    assert_eq!(response.metadata_etag, None);
-    assert_eq!(serde_json::to_value(&response).unwrap(), legacy);
-    response.metadata_etag = Some("opaque-version".to_string());
-    let mut current = legacy;
-    current["metadataEtag"] = json!("opaque-version");
-    assert_eq!(serde_json::to_value(response).unwrap(), current);
+    let response: RetrieveBackupFromChallengeResponse =
+        serde_json::from_value(wire.clone()).unwrap();
+    assert_wire(&response, &wire);
 }

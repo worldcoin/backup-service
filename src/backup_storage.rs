@@ -5,7 +5,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use std::sync::Arc;
-use types::{BackupEncryptionKey, SyncFactorReplacement};
+use types::BackupEncryptionKey;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks.
 ///
@@ -471,14 +471,15 @@ impl BackupStorage {
         }
     }
 
-    /// Registers a recovery key, optionally swapping the exact user-confirmed sync access.
-    /// One conditional metadata write preserves all other factors, keys and backup contents.
+    /// Registers a sync factor. If `sync_factor_to_replace` names a sync factor present on this
+    /// backup, that entry is swapped in place (regardless of capacity) and returned; otherwise
+    /// this is an ordinary add subject to [`MAX_SYNC_FACTORS_PER_BACKUP`].
     /// The caller must authenticate a Main-issued token and prove possession of the new key.
     pub async fn register_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
-        replacement: Option<&SyncFactorReplacement>,
+        sync_factor_to_replace: Option<&str>,
     ) -> FactorMetadataWrite<Option<Factor>> {
         // Sync factor must be a keypair
         match sync_factor.kind {
@@ -503,8 +504,8 @@ impl BackupStorage {
             return FactorMetadataWrite::NotInserted(BackupManagerError::ETagNotFound);
         };
 
-        // A fresh Main recovery may resolve a lost successful replacement response with the
-        // same durable private key. Never revoke another access on this idempotent path.
+        // A retry after a lost successful response carries the same key. Never remove another
+        // sync factor on this idempotent path.
         if metadata
             .sync_factors
             .iter()
@@ -520,20 +521,14 @@ impl BackupStorage {
             return duplicate;
         }
 
-        let removed = if let Some(replacement) = replacement {
-            if replacement.metadata_etag != e_tag
-                || metadata.sync_factors.len() < MAX_SYNC_FACTORS_PER_BACKUP
-            {
-                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
-            }
-            let Some(index) = metadata
+        let replace_index = sync_factor_to_replace.and_then(|id| {
+            metadata
                 .sync_factors
                 .iter()
-                .position(|factor| factor.id == replacement.factor_id)
-            else {
-                return FactorMetadataWrite::NotInserted(BackupManagerError::ConfirmationStale);
-            };
-            // Replacing one entry preserves legacy over-cap counts without revoking extra keys.
+                .position(|factor| factor.id == id)
+        });
+        let removed = if let Some(index) = replace_index {
+            // In-place swap keeps legacy over-cap counts from growing.
             Some(std::mem::replace(
                 &mut metadata.sync_factors[index],
                 sync_factor,
@@ -564,13 +559,6 @@ impl BackupStorage {
             .await
         {
             Ok(_) => FactorMetadataWrite::Inserted(removed),
-            // A conflict can be an SDK retry after an ambiguous successful PUT. Keep the lookup
-            // and reconcile the same key via fresh Main recovery; never choose another target.
-            Err(SdkError::ServiceError(ref err))
-                if replacement.is_some() && err.raw().status().as_u16() == 412 =>
-            {
-                FactorMetadataWrite::Unknown(BackupManagerError::ConfirmationStale)
-            }
             Err(err) => Self::classify_put_object_error(err),
         }
     }
@@ -892,9 +880,6 @@ pub enum BackupManagerError {
     BackupNotFound,
     #[error("Factor already exists")]
     FactorAlreadyExists,
-    #[error("The selected sync access or metadata changed; confirm again")]
-    ConfirmationStale,
-
     #[error("Maximum number of factors ({limit}) for this backup has been reached")]
     TooManyFactors { limit: usize },
     #[error("Factor not found")]

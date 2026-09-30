@@ -1,4 +1,4 @@
-//! Recovery at a fresh full cap: exact selected access, atomic mutation and same-key resolution.
+//! `syncFactorToReplace`: in-place swap of a selected sync factor, capacity and idempotency.
 mod common;
 
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use chrono::Utc;
 use http::StatusCode;
 use mockito::{Matcher, Server};
 use serde_json::{json, Value};
-use types::{FactorScope, SyncFactorReplacement};
+use types::FactorScope;
 
 async fn parsed(response: Response) -> (StatusCode, Value) {
     let status = response.status();
@@ -110,8 +110,7 @@ async fn register(
             "signature":common::sign_keypair_challenge(&key.1, challenge["challenge"].as_str().unwrap())}
     });
     if let Some(target) = target {
-        request["replacement"] =
-            json!({"factorId":target, "metadataEtag":recovered["metadataEtag"]});
+        request["syncFactorToReplace"] = json!(target);
     }
     common::send_post_request("/v1/add-sync-factor", request).await
 }
@@ -127,34 +126,41 @@ async fn sync_metadata(key: &(String, p256::SecretKey)) -> Response {
     })).await
 }
 
+async fn stored(id: &str) -> BackupMetadata {
+    serde_json::from_value(common::verify_s3_metadata_exists(id).await).unwrap()
+}
+
+fn too_many(body: &Value) -> bool {
+    body["error"]["code"] == "too_many_factors"
+}
+
 #[tokio::test]
-async fn selected_replacement_handles_recent_cap_and_legacy_overcap() {
+async fn replacement_at_cap_and_legacy_overcap_preserves_count_and_other_records() {
     for count in [25, 26] {
         let fixture = fixture(count).await;
-        let recovered = ok(recover(&fixture.main).await).await;
-        assert!(recovered["metadataEtag"].is_string());
+        let id = &fixture.metadata.id;
         let new = common::generate_keypair();
         let target = &fixture.metadata.sync_factors[4];
-        // An old client still gets its familiar cap error. No key is revoked to make room first.
-        assert_eq!(
-            parsed(register(&recovered, &new, None).await).await.1["error"]["code"],
-            "too_many_factors"
-        );
-        assert_eq!(
-            common::verify_s3_metadata_exists(&fixture.metadata.id).await,
-            serde_json::to_value(&fixture.metadata).unwrap()
-        );
+        // Old clients omitting the field, absent targets and Main factor ids are plain adds.
+        for absent in [
+            None,
+            Some("nonexistent"),
+            Some(&*fixture.metadata.factors[0].id),
+        ] {
+            let recovered = ok(recover(&fixture.main).await).await;
+            assert!(too_many(
+                &parsed(register(&recovered, &new, absent).await).await.1
+            ));
+        }
+        assert_eq!(stored(id).await, fixture.metadata);
+
+        let recovered = ok(recover(&fixture.main).await).await;
         ok(register(&recovered, &new, Some(&target.id)).await).await;
-        let after: BackupMetadata =
-            serde_json::from_value(common::verify_s3_metadata_exists(&fixture.metadata.id).await)
-                .unwrap();
+        let after = stored(id).await;
         assert_eq!(after.sync_factors.len(), count);
         for (index, factor) in fixture.metadata.sync_factors.iter().enumerate() {
-            if index != 4 {
-                assert!(after.sync_factors.contains(factor));
-            }
+            assert_eq!(after.sync_factors[index] == *factor, index != 4);
         }
-        assert!(!after.sync_factors.contains(target));
         assert_eq!(after.factors, fixture.metadata.factors);
         assert_eq!(after.keys, fixture.metadata.keys);
         assert_eq!(after.manifest_hash, fixture.metadata.manifest_hash);
@@ -163,21 +169,41 @@ async fn selected_replacement_handles_recent_cap_and_legacy_overcap() {
         ok(sync_metadata(&new).await).await;
         let fresh = ok(recover(&fixture.main).await).await;
         assert_eq!(fresh["backup"], recovered["backup"]);
-        // Simulate a lost successful response: retain the key and resolve through fresh Main auth.
-        ok(register(&fresh, &new, Some(&target.id)).await).await;
-        assert_eq!(
-            common::verify_s3_metadata_exists(&fixture.metadata.id).await,
-            serde_json::to_value(&after).unwrap()
-        );
-        assert!(!register(
-            &fresh,
-            &common::generate_keypair(),
-            Some(&fixture.metadata.sync_factors[0].id)
-        )
-        .await
-        .status()
-        .is_success());
+
+        // Same-key retries are idempotent: a different target or the new key's own entry
+        // removes nothing.
+        let own_id = after.sync_factors[4].id.clone();
+        for retry_target in [&*fixture.metadata.sync_factors[0].id, &own_id] {
+            let recovered = ok(recover(&fixture.main).await).await;
+            ok(register(&recovered, &new, Some(retry_target)).await).await;
+            assert_eq!(stored(id).await, after);
+        }
     }
+}
+
+#[tokio::test]
+async fn replacement_below_cap_swaps_and_absent_target_adds() {
+    let fixture = fixture(3).await;
+    let id = &fixture.metadata.id;
+    let target = &fixture.metadata.sync_factors[1];
+    let replacement = common::generate_keypair();
+    let recovered = ok(recover(&fixture.main).await).await;
+    ok(register(&recovered, &replacement, Some(&target.id)).await).await;
+    let after = stored(id).await;
+    assert_eq!(after.sync_factors.len(), 3);
+    assert!(!after.sync_factors.contains(target));
+    assert_eq!(after.sync_factors[0], fixture.metadata.sync_factors[0]);
+    assert_eq!(after.sync_factors[2], fixture.metadata.sync_factors[2]);
+    assert!(!sync_metadata(&fixture.keys[1]).await.status().is_success());
+    ok(sync_metadata(&replacement).await).await;
+
+    let added = common::generate_keypair();
+    let recovered = ok(recover(&fixture.main).await).await;
+    ok(register(&recovered, &added, Some(&target.id)).await).await;
+    let after_add = stored(id).await;
+    assert_eq!(after_add.sync_factors.len(), 4);
+    assert_eq!(after_add.sync_factors[..3], after.sync_factors[..]);
+    ok(sync_metadata(&added).await).await;
 }
 
 #[tokio::test]
@@ -218,27 +244,24 @@ async fn full_recovery_registration_uses_normal_api_and_new_key_can_sync() {
 }
 
 #[tokio::test]
-async fn selected_snapshot_conflicts_never_retarget_or_revoke_on_failure() {
+async fn concurrent_replacements_never_exceed_cap_or_revoke_on_failure() {
     for different_targets in [false, true] {
         let fixture = fixture(25).await;
         let a = ok(recover(&fixture.main).await).await;
         let b = ok(recover(&fixture.main).await).await;
-        let key_a = common::generate_keypair();
-        let key_b = common::generate_keypair();
         let target_a = &fixture.metadata.sync_factors[0].id;
         let target_b = &fixture.metadata.sync_factors[usize::from(different_targets)].id;
+        let (key_a, key_b) = (common::generate_keypair(), common::generate_keypair());
         let (a, b) = tokio::join!(
             register(&a, &key_a, Some(target_a)),
             register(&b, &key_b, Some(target_b))
         );
-        let a = parsed(a).await;
-        let b = parsed(b).await;
-        assert_ne!(a.0.is_success(), b.0.is_success());
-        let losing = if a.0.is_success() { b } else { a };
-        assert_eq!(losing.1["error"]["code"], "confirmation_stale");
-        let after: BackupMetadata =
-            serde_json::from_value(common::verify_s3_metadata_exists(&fixture.metadata.id).await)
-                .unwrap();
+        let successes = usize::from(a.status().is_success()) + usize::from(b.status().is_success());
+        assert!(successes >= 1);
+        if !different_targets {
+            assert_eq!(successes, 1);
+        }
+        let after = stored(&fixture.metadata.id).await;
         assert_eq!(after.sync_factors.len(), 25);
         assert_eq!(
             fixture
@@ -247,37 +270,13 @@ async fn selected_snapshot_conflicts_never_retarget_or_revoke_on_failure() {
                 .iter()
                 .filter(|f| !after.sync_factors.contains(f))
                 .count(),
-            1
+            successes
         );
     }
 }
 
 #[tokio::test]
-async fn wrong_scope_missing_target_and_wrong_snapshot_preserve_all_access() {
-    let fixture = fixture(25).await;
-    assert!(!recover(&fixture.keys[0]).await.status().is_success());
-    let new = common::generate_keypair();
-    for target in ["nonexistent-target", &fixture.metadata.factors[0].id] {
-        let recovered = ok(recover(&fixture.main).await).await;
-        let response = parsed(register(&recovered, &new, Some(target)).await).await;
-        assert_eq!(response.1["error"]["code"], "confirmation_stale");
-    }
-    let mut recovered = ok(recover(&fixture.main).await).await;
-    recovered["metadataEtag"] = json!("wrong-version");
-    assert_eq!(
-        parsed(register(&recovered, &new, Some(&fixture.metadata.sync_factors[0].id)).await)
-            .await
-            .1["error"]["code"],
-        "confirmation_stale"
-    );
-    assert_eq!(
-        common::verify_s3_metadata_exists(&fixture.metadata.id).await,
-        serde_json::to_value(fixture.metadata).unwrap()
-    );
-}
-
-#[tokio::test]
-async fn conditional_write_failure_retains_lookup_and_never_reports_replacement_success() {
+async fn conditional_write_conflict_is_unknown_and_retains_lookup() {
     let mut server = Server::new_async().await;
     let metadata = BackupMetadata {
         id: "cas-test".to_string(),
@@ -321,15 +320,12 @@ async fn conditional_write_failure_retains_lookup_and_never_reports_replacement_
         .register_sync_factor(
             "cas-test",
             Factor::new_ec_keypair("new".to_string()),
-            Some(&SyncFactorReplacement {
-                factor_id: target,
-                metadata_etag: "original-version".to_string(),
-            }),
+            Some(&target),
         )
         .await;
     assert!(matches!(
         result,
-        FactorMetadataWrite::Unknown(BackupManagerError::ConfirmationStale)
+        FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(_))
     ));
     assert!(!result.should_rollback_lookup());
     read.assert_async().await;
@@ -382,10 +378,7 @@ async fn ambiguous_committed_write_resolves_same_key_without_second_metadata_wri
             .map(|index| Factor::new_ec_keypair(format!("key-{index}")))
             .collect(),
     };
-    let confirmed = SyncFactorReplacement {
-        factor_id: before.sync_factors[3].id.clone(),
-        metadata_etag: "original-version".to_string(),
-    };
+    let target = before.sync_factors[3].id.clone();
     let state = Arc::new(std::sync::Mutex::new(before.clone()));
     let read_state = state.clone();
     let read = server
@@ -426,7 +419,7 @@ async fn ambiguous_committed_write_resolves_same_key_without_second_metadata_wri
         .register_sync_factor(
             "response-loss",
             Factor::new_ec_keypair("retained-private-key".to_string()),
-            Some(&confirmed),
+            Some(&target),
         )
         .await;
     assert!(matches!(initial, FactorMetadataWrite::Unknown(_)));
@@ -436,7 +429,7 @@ async fn ambiguous_committed_write_resolves_same_key_without_second_metadata_wri
         .register_sync_factor(
             "response-loss",
             Factor::new_ec_keypair("retained-private-key".to_string()),
-            Some(&confirmed),
+            Some(&target),
         )
         .await;
     assert!(matches!(resolved, FactorMetadataWrite::Inserted(None)));
