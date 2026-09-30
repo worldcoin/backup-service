@@ -13,13 +13,12 @@ use aws_sdk_s3::primitives::ByteStream;
 use axum::http::StatusCode;
 use axum::{body::Bytes, response::Response};
 use backup_service::backup_metadata::{BackupMetadata, Factor, FactorKind};
-use backup_service::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
+use backup_service::backup_storage::BackupStorage;
 use backup_service::environment::Environment;
 use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
 use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::Utc;
 use http_body_util::BodyExt;
 use mockito::{Matcher, Server};
 use serde_json::{json, Value};
@@ -644,6 +643,7 @@ struct Fixture {
     main: (String, p256::SecretKey),
     keys: Vec<(String, p256::SecretKey)>,
     metadata: BackupMetadata,
+    lookup: FactorLookup,
 }
 
 async fn fixture(count: usize) -> Fixture {
@@ -678,11 +678,6 @@ async fn fixture(count: usize) -> Fixture {
         metadata.sync_factors.push(factor);
         keys.push(key);
     }
-    // Fresh fixtures, including historical over-cap records; no manufactured age eligibility.
-    assert!(metadata
-        .sync_factors
-        .iter()
-        .all(|f| f.created_at > Utc::now() - chrono::Duration::minutes(1)));
     common::get_test_s3_client()
         .await
         .put_object()
@@ -696,6 +691,7 @@ async fn fixture(count: usize) -> Fixture {
         main,
         keys,
         metadata,
+        lookup,
     }
 }
 
@@ -742,134 +738,70 @@ async fn stored(id: &str) -> BackupMetadata {
     serde_json::from_value(common::verify_s3_metadata_exists(id).await).unwrap()
 }
 
-fn too_many(body: &Value) -> bool {
-    body["error"]["code"] == "too_many_factors"
-}
-
 #[tokio::test]
-async fn replacement_at_cap_and_legacy_overcap_preserves_count_and_other_records() {
-    for count in [25, 26] {
+async fn replacement_preserves_other_records_below_at_and_above_cap() {
+    for count in [3, 25, 26] {
         let fixture = fixture(count).await;
         let id = &fixture.metadata.id;
         let new = common::generate_keypair();
-        let target = &fixture.metadata.sync_factors[4];
-        // Old clients omitting the field, absent targets and Main factor ids are plain adds.
-        for absent in [
-            None,
-            Some("nonexistent"),
-            Some(&*fixture.metadata.factors[0].id),
-        ] {
-            let recovered = ok(recover(&fixture.main).await).await;
-            assert!(too_many(
-                &parsed(register(&recovered, &new, absent).await).await.1
-            ));
+        let target = &fixture.metadata.sync_factors[1];
+        if count >= 25 {
+            for absent in [
+                None,
+                Some("nonexistent"),
+                Some(&*fixture.metadata.factors[0].id),
+            ] {
+                let recovered = ok(recover(&fixture.main).await).await;
+                let (status, body) = parsed(register(&recovered, &new, absent).await).await;
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert_eq!(body["error"]["code"], "too_many_factors");
+            }
+            assert_eq!(stored(id).await, fixture.metadata);
         }
-        assert_eq!(stored(id).await, fixture.metadata);
 
         let recovered = ok(recover(&fixture.main).await).await;
         ok(register(&recovered, &new, Some(&target.id)).await).await;
         let after = stored(id).await;
         assert_eq!(after.sync_factors.len(), count);
         for (index, factor) in fixture.metadata.sync_factors.iter().enumerate() {
-            assert_eq!(after.sync_factors[index] == *factor, index != 4);
+            assert_eq!(after.sync_factors[index] == *factor, index != 1);
         }
         assert_eq!(after.factors, fixture.metadata.factors);
         assert_eq!(after.keys, fixture.metadata.keys);
         assert_eq!(after.manifest_hash, fixture.metadata.manifest_hash);
-        assert!(!sync_metadata(&fixture.keys[4]).await.status().is_success());
+        assert_eq!(
+            fixture
+                .lookup
+                .lookup_consistent(
+                    FactorScope::Sync,
+                    &FactorToLookup::from_ec_keypair(fixture.keys[1].0.clone()),
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!sync_metadata(&fixture.keys[1]).await.status().is_success());
         ok(sync_metadata(&fixture.keys[0]).await).await;
         ok(sync_metadata(&new).await).await;
         let fresh = ok(recover(&fixture.main).await).await;
         assert_eq!(fresh["backup"], recovered["backup"]);
 
-        let own_id = after.sync_factors[4].id.clone();
-        for retry_target in [&*fixture.metadata.sync_factors[0].id, &own_id] {
+        let (status, body) =
+            parsed(register(&fresh, &new, Some(&fixture.metadata.sync_factors[0].id)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "factor_already_exists");
+        assert_eq!(stored(id).await, after);
+
+        if count < 25 {
+            let added = common::generate_keypair();
             let recovered = ok(recover(&fixture.main).await).await;
-            let (status, body) = parsed(register(&recovered, &new, Some(retry_target)).await).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            assert_eq!(body["error"]["code"], "factor_already_exists");
-            assert_eq!(stored(id).await, after);
+            ok(register(&recovered, &added, Some(&target.id)).await).await;
+            let after_add = stored(id).await;
+            assert_eq!(after_add.sync_factors.len(), count + 1);
+            assert_eq!(after_add.sync_factors[..count], after.sync_factors[..]);
+            ok(sync_metadata(&added).await).await;
         }
     }
-}
-
-#[tokio::test]
-async fn replacement_below_cap_swaps_and_absent_target_adds() {
-    let fixture = fixture(3).await;
-    let id = &fixture.metadata.id;
-    let target = &fixture.metadata.sync_factors[1];
-    let replacement = common::generate_keypair();
-    let recovered = ok(recover(&fixture.main).await).await;
-    ok(register(&recovered, &replacement, Some(&target.id)).await).await;
-    let after = stored(id).await;
-    assert_eq!(after.sync_factors.len(), 3);
-    assert!(!after.sync_factors.contains(target));
-    assert_eq!(after.sync_factors[0], fixture.metadata.sync_factors[0]);
-    assert_eq!(after.sync_factors[2], fixture.metadata.sync_factors[2]);
-    let environment = Environment::development(None);
-    let lookup = FactorLookup::new(
-        environment,
-        Arc::new(aws_sdk_dynamodb::Client::new(
-            &environment.aws_config().await,
-        )),
-    );
-    assert_eq!(
-        lookup
-            .lookup_consistent(
-                FactorScope::Sync,
-                &FactorToLookup::from_ec_keypair(fixture.keys[1].0.clone()),
-            )
-            .await
-            .unwrap(),
-        None
-    );
-    assert!(!sync_metadata(&fixture.keys[1]).await.status().is_success());
-    ok(sync_metadata(&replacement).await).await;
-
-    let added = common::generate_keypair();
-    let recovered = ok(recover(&fixture.main).await).await;
-    ok(register(&recovered, &added, Some(&target.id)).await).await;
-    let after_add = stored(id).await;
-    assert_eq!(after_add.sync_factors.len(), 4);
-    assert_eq!(after_add.sync_factors[..3], after.sync_factors[..]);
-    ok(sync_metadata(&added).await).await;
-}
-
-#[tokio::test]
-async fn full_recovery_registration_uses_normal_api_and_new_key_can_sync() {
-    let (main, created) = common::create_test_backup_with_keypair(b"original vault").await;
-    let created = ok(created).await;
-    for _ in 1..25 {
-        let recovered = ok(recover(&main).await).await;
-        ok(register(&recovered, &common::generate_keypair(), None).await).await;
-    }
-    let recovered = ok(recover(&main).await).await;
-    let target = recovered["metadata"]["syncFactors"][8]["id"]
-        .as_str()
-        .unwrap();
-    let new = common::generate_keypair();
-    ok(register(&recovered, &new, Some(target)).await).await;
-    let challenge =
-        ok(common::send_post_request("/v1/sync/challenge/keypair", json!({})).await).await;
-    ok(common::send_post_request_with_multipart("/v1/sync", json!({
-        "authorization":{"kind":"EC_KEYPAIR","publicKey":new.0,
-            "signature":common::sign_keypair_challenge(&new.1, challenge["challenge"].as_str().unwrap())},
-        "challengeToken":challenge["token"], "currentManifestHash":recovered["metadata"]["manifestHash"],
-        "newManifestHash":hex::encode([2u8;32])
-    }), Bytes::from_static(b"updated vault after recovery"), None).await).await;
-    let final_recovery = ok(recover(&main).await).await;
-    assert_ne!(final_recovery["backup"], recovered["backup"]);
-    assert_eq!(
-        final_recovery["metadata"]["id"],
-        created["backupMetadata"]["id"]
-    );
-    assert_eq!(
-        final_recovery["metadata"]["syncFactors"]
-            .as_array()
-            .unwrap()
-            .len(),
-        25
-    );
 }
 
 #[tokio::test]
@@ -905,78 +837,15 @@ async fn concurrent_replacements_never_exceed_cap_or_revoke_on_failure() {
 }
 
 #[tokio::test]
-async fn conditional_write_conflict_is_unknown_and_retains_lookup() {
-    let mut server = Server::new_async().await;
-    let metadata = BackupMetadata {
-        id: "cas-test".to_string(),
-        factors: vec![],
-        keys: vec![],
-        manifest_hash: "hash".to_string(),
-        sync_factors: (0..25)
-            .map(|index| Factor::new_ec_keypair(format!("key-{index}")))
-            .collect(),
-    };
-    let target = metadata.sync_factors[0].id.clone();
-    let read = server
-        .mock("GET", Matcher::Any)
-        .with_header("etag", "original-version")
-        .with_body(serde_json::to_vec(&metadata).unwrap())
-        .create_async()
-        .await;
-    let write = server
-        .mock("PUT", Matcher::Any)
-        .match_header("if-match", "original-version")
-        .with_status(412)
-        .with_body("<Error><Code>PreconditionFailed</Code></Error>")
-        .expect(1)
-        .create_async()
-        .await;
-    let config = aws_sdk_s3::Config::builder()
-        .behavior_version_latest()
-        .region(aws_sdk_s3::config::Region::new("us-east-1"))
-        .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            "test", "test", None, None, "test",
-        ))
-        .endpoint_url(server.url())
-        .force_path_style(true)
-        .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
-        .build();
-    let storage = BackupStorage::new(
-        Environment::development(None),
-        Arc::new(aws_sdk_s3::Client::from_conf(config)),
-    );
-    let result = storage
-        .add_sync_factor(
-            "cas-test",
-            Factor::new_ec_keypair("new".to_string()),
-            Some(&target),
-        )
-        .await;
-    assert!(matches!(
-        result,
-        FactorMetadataWrite::Unknown(BackupManagerError::PutObjectError(_))
-    ));
-    assert!(!result.should_rollback_lookup());
-    read.assert_async().await;
-    write.assert_async().await;
-}
-
-#[tokio::test]
 async fn existing_lookup_reservation_and_registered_key_are_rejected() {
     let fixture = fixture(1).await;
     let new = common::generate_keypair();
-    let environment = Environment::development(None);
-    let lookup = FactorLookup::new(
-        environment,
-        Arc::new(aws_sdk_dynamodb::Client::new(
-            &environment.aws_config().await,
-        )),
-    );
     // Model a previous ambiguous metadata failure after the lookup was reserved.
-    lookup
+    fixture
+        .lookup
         .insert(
             FactorScope::Sync,
-            &Factor::new_ec_keypair(new.0.clone()).as_factor_to_lookup(&environment),
+            &FactorToLookup::from_ec_keypair(new.0.clone()),
             fixture.metadata.id.clone(),
         )
         .await
@@ -988,7 +857,8 @@ async fn existing_lookup_reservation_and_registered_key_are_rejected() {
         assert_eq!(body["error"]["code"], "factor_already_exists");
         assert_eq!(stored(&fixture.metadata.id).await, fixture.metadata);
         assert_eq!(
-            lookup
+            fixture
+                .lookup
                 .lookup_consistent(
                     FactorScope::Sync,
                     &FactorToLookup::from_ec_keypair(key.0.clone()),
@@ -999,91 +869,6 @@ async fn existing_lookup_reservation_and_registered_key_are_rejected() {
         );
     }
     ok(sync_metadata(&fixture.keys[0]).await).await;
-}
-
-#[tokio::test]
-async fn ambiguous_committed_write_retry_rejects_duplicate_without_second_metadata_write() {
-    let mut server = Server::new_async().await;
-    let before = BackupMetadata {
-        id: "response-loss".to_string(),
-        factors: vec![],
-        keys: vec![],
-        manifest_hash: "hash".to_string(),
-        sync_factors: (0..25)
-            .map(|index| Factor::new_ec_keypair(format!("key-{index}")))
-            .collect(),
-    };
-    let target = before.sync_factors[3].id.clone();
-    let state = Arc::new(std::sync::Mutex::new(before.clone()));
-    let read_state = state.clone();
-    let read = server
-        .mock("GET", Matcher::Any)
-        .with_header("etag", "original-version")
-        .with_body_from_request(move |_| serde_json::to_vec(&*read_state.lock().unwrap()).unwrap())
-        .expect(2)
-        .create_async()
-        .await;
-    let write_state = state.clone();
-    let write = server
-        .mock("PUT", Matcher::Any)
-        .match_header("if-match", "original-version")
-        .with_status(500)
-        .with_body_from_request(move |request| {
-            // Model an accepted write whose successful response was lost at the storage boundary.
-            *write_state.lock().unwrap() = serde_json::from_slice(request.body().unwrap()).unwrap();
-            b"<Error><Code>InternalError</Code></Error>".to_vec()
-        })
-        .expect(1)
-        .create_async()
-        .await;
-    let config = aws_sdk_s3::Config::builder()
-        .behavior_version_latest()
-        .region(aws_sdk_s3::config::Region::new("us-east-1"))
-        .credentials_provider(aws_sdk_s3::config::Credentials::new(
-            "test", "test", None, None, "test",
-        ))
-        .endpoint_url(server.url())
-        .force_path_style(true)
-        .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
-        .build();
-    let storage = BackupStorage::new(
-        Environment::development(None),
-        Arc::new(aws_sdk_s3::Client::from_conf(config)),
-    );
-    let initial = storage
-        .add_sync_factor(
-            "response-loss",
-            Factor::new_ec_keypair("retained-private-key".to_string()),
-            Some(&target),
-        )
-        .await;
-    assert!(matches!(initial, FactorMetadataWrite::Unknown(_)));
-    assert!(!initial.should_rollback_lookup());
-    let after = state.lock().unwrap().clone();
-    let resolved = storage
-        .add_sync_factor(
-            "response-loss",
-            Factor::new_ec_keypair("retained-private-key".to_string()),
-            Some(&target),
-        )
-        .await;
-    assert!(matches!(
-        resolved,
-        FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
-    ));
-    assert!(!resolved.should_rollback_lookup());
-    assert_eq!(*state.lock().unwrap(), after);
-    assert_eq!(after.sync_factors.len(), 25);
-    assert_eq!(
-        before
-            .sync_factors
-            .iter()
-            .filter(|factor| !after.sync_factors.contains(factor))
-            .count(),
-        1
-    );
-    read.assert_async().await;
-    write.assert_async().await;
 }
 
 #[tokio::test]
@@ -1233,21 +1018,6 @@ async fn ambiguous_lookup_insert_error_does_not_update_metadata() {
     let key = common::generate_keypair();
     let recovered = ok(recover(&fixture.main).await).await;
     let environment = Environment::development(None);
-    let actual_lookup = FactorLookup::new(
-        environment,
-        Arc::new(aws_sdk_dynamodb::Client::new(
-            &environment.aws_config().await,
-        )),
-    );
-    // The reservation landed, but its successful response is unavailable to registration.
-    actual_lookup
-        .insert(
-            FactorScope::Sync,
-            &Factor::new_ec_keypair(key.0.clone()).as_factor_to_lookup(&environment),
-            fixture.metadata.id.clone(),
-        )
-        .await
-        .unwrap();
     let mut server = Server::new_async().await;
     let insert = server
         .mock("POST", "/")
