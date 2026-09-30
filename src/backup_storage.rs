@@ -446,7 +446,8 @@ impl BackupStorage {
         }
     }
 
-    /// Adds a sync factor to the backup metadata in S3.
+    /// Adds a sync factor, replacing the selected sync factor in place if present.
+    /// Returns the replaced factor for lookup cleanup; otherwise applies the ordinary capacity limit.
     ///
     /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
     /// when the metadata write definitely did not land.
@@ -457,25 +458,6 @@ impl BackupStorage {
     /// - `BackupManagerError::FactorAlreadyExists` - if the key is a Main factor. An existing Sync
     ///   key is idempotent; opposite-scope duplicates are `NotInserted`, permitting lookup rollback.
     pub async fn add_sync_factor(
-        &self,
-        backup_id: &str,
-        sync_factor: Factor,
-    ) -> FactorMetadataWrite<()> {
-        match self
-            .register_sync_factor(backup_id, sync_factor, None)
-            .await
-        {
-            FactorMetadataWrite::Inserted(_) => FactorMetadataWrite::Inserted(()),
-            FactorMetadataWrite::NotInserted(error) => FactorMetadataWrite::NotInserted(error),
-            FactorMetadataWrite::Unknown(error) => FactorMetadataWrite::Unknown(error),
-        }
-    }
-
-    /// Registers a sync factor. If `sync_factor_to_replace` names a sync factor present on this
-    /// backup, that entry is swapped in place (regardless of capacity) and returned; otherwise
-    /// this is an ordinary add subject to [`MAX_SYNC_FACTORS_PER_BACKUP`].
-    /// The caller must authenticate a Main-issued token and prove possession of the new key.
-    pub async fn register_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
@@ -991,7 +973,7 @@ mod tests {
             .await
             .unwrap();
 
-        let e_tag = backup_storage
+        backup_storage
             .backup_object_e_tag(&test_backup_id)
             .await
             .unwrap()
@@ -1656,7 +1638,7 @@ mod tests {
         // Add the sync factor
         let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await
             .into_result()
             .unwrap();
@@ -1676,10 +1658,10 @@ mod tests {
 
         // The same durable recovery key is already present: no additional mutation is required.
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await;
         assert!(!result.should_rollback_lookup());
-        assert!(matches!(result, FactorMetadataWrite::Inserted(())));
+        assert!(matches!(result, FactorMetadataWrite::Inserted(None)));
 
         // Same key as a main factor must reject sync add with rollback (opposite scope).
         let main_only_backup_id = gen_backup_id();
@@ -1698,7 +1680,7 @@ mod tests {
             .await
             .unwrap();
         let result = backup_storage
-            .add_sync_factor(&main_only_backup_id, main_keypair)
+            .add_sync_factor(&main_only_backup_id, main_keypair, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1717,7 +1699,7 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, oidc_factor)
+            .add_sync_factor(&test_backup_id, oidc_factor, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1727,7 +1709,7 @@ mod tests {
 
         // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
-            .add_sync_factor("non_existent_backup", keypair_factor.clone())
+            .add_sync_factor("non_existent_backup", keypair_factor.clone(), None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1844,6 +1826,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-at-limit".to_string()),
+                None,
             )
             .await
             .into_result()
@@ -1854,6 +1837,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-over-limit".to_string()),
+                None,
             )
             .await;
         assert!(result.should_rollback_lookup());
@@ -2342,7 +2326,7 @@ mod tests {
         // Test 6: Add sync factor with SSE-KMS
         let sync_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, sync_factor.clone())
+            .add_sync_factor(&test_backup_id, sync_factor.clone(), None)
             .await
             .into_result()
             .unwrap();

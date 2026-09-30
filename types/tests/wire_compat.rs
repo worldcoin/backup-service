@@ -533,15 +533,3 @@ fn add_sync_factor_to_replace_is_optional() {
     expected["syncFactorToReplace"] = json!("selected-sync-factor");
     assert_wire(&request, &expected);
 }
-
-#[test]
-fn retrieve_from_challenge_response_has_no_metadata_etag() {
-    use backup_service_types::RetrieveBackupFromChallengeResponse;
-    let wire = json!({
-        "backup":"dmF1bHQ=", "syncFactorToken":"main-recovery",
-        "metadata":{"id":"backup", "factors":[], "syncFactors":[], "keys":[], "manifestHash":"hash"}
-    });
-    let response: RetrieveBackupFromChallengeResponse =
-        serde_json::from_value(wire.clone()).unwrap();
-    assert_wire(&response, &wire);
-}

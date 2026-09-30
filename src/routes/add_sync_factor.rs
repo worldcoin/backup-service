@@ -73,7 +73,7 @@ pub async fn handler(
 
     // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
     let write = backup_storage
-        .register_sync_factor(
+        .add_sync_factor(
             &backup_id,
             sync_factor,
             request.sync_factor_to_replace.as_deref(),
