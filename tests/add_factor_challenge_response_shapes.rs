@@ -1,6 +1,3 @@
-//! Response-shape checks for `/v1/add-factor/challenge` only (not the full add-factor
-//! completion flow, which lives in `add_factor_integration.rs`).
-
 mod common;
 
 use crate::common::send_post_request;
@@ -9,7 +6,6 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_add_factor_challenge_response_shapes() {
-    // OIDC new-factor returns string challenges
     let oidc_resp = send_post_request(
         "/v1/add-factor/challenge",
         json!({
@@ -25,7 +21,6 @@ async fn test_add_factor_challenge_response_shapes() {
     assert!(value["newFactorChallenge"].is_string());
     assert!(value["newFactorToken"].is_string());
 
-    // PASSKEY_REGISTRATION returns object challenge for new-factor (iOS)
     let passkey_resp = send_post_request(
         "/v1/add-factor/challenge",
         json!({
@@ -41,7 +36,6 @@ async fn test_add_factor_challenge_response_shapes() {
     assert!(value["newFactorChallenge"].is_object());
     assert!(value["newFactorToken"].is_string());
 
-    // Android uses the Google Password Manager registration path; challenge is still a JSON object.
     let android_resp = send_post_request(
         "/v1/add-factor/challenge",
         json!({
@@ -56,7 +50,6 @@ async fn test_add_factor_challenge_response_shapes() {
     assert!(value["newFactorChallenge"]["publicKey"].is_object());
     assert!(value["newFactorToken"].is_string());
 
-    // Android registration challenge must be completable by a WebAuthn client.
     let mut passkey_client = backup_service_test_utils::get_mock_passkey_client();
     let credential = backup_service_test_utils::make_credential_from_passkey_challenge(
         &mut passkey_client,

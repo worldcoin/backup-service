@@ -14,8 +14,7 @@ use backup_service::challenge_manager::ChallengeManager;
 use backup_service::environment::Environment;
 use backup_service::kms_jwe::KmsJwe;
 use backup_service_test_utils::{
-    get_passkey_assertion, make_credential_from_passkey_challenge, MockOidcProvider,
-    MockOidcServer, MockPasskeyClient,
+    make_credential_from_passkey_challenge, MockOidcProvider, MockOidcServer, MockPasskeyClient,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -296,7 +295,6 @@ pub async fn send_post_request_with_bypass_attestation_token(
     .unwrap()
 }
 
-/// Request challenges for adding a new factor. Allows specifying the `existingFactorKind`.
 pub async fn get_add_factor_challenges_generic(
     new_factor: serde_json::Value,
     existing_factor_kind: Option<&str>,
@@ -311,22 +309,7 @@ pub async fn get_add_factor_challenges_generic(
     parse_response_body(resp).await
 }
 
-/// Convenience helper to request OIDC-account new-factor challenges; defaults existing to PASSKEY unless overridden.
-pub async fn get_add_factor_challenges_for_oidc(
-    oidc_token: &str,
-    existing_factor_kind: Option<&str>,
-) -> serde_json::Value {
-    get_add_factor_challenges_generic(
-        json!({
-            "kind": "OIDC_ACCOUNT",
-            "oidcToken": oidc_token,
-        }),
-        existing_factor_kind,
-    )
-    .await
-}
-
-/// Create a Turnkey activity JSON embedding the backup-service challenge and return (`activity_json`, `activity_hash_b64url`)
+/// Returns the activity and its base64url-encoded hex hash, as expected by Turnkey.
 pub fn create_turnkey_activity_and_hash(challenge_b64: &str) -> (String, String) {
     let turnkey_activity = json!({
         "type": "ACTIVITY_TYPE_CREATE_API_KEYS_V2",
@@ -346,18 +329,6 @@ pub fn create_turnkey_activity_and_hash(challenge_b64: &str) -> (String, String)
     };
 
     (turnkey_activity, challenge_hash_b64url)
-}
-
-/// For a given Turnkey activity, obtain a passkey assertion using the challenge hash computed from the activity JSON.
-pub async fn passkey_assertion_for_turnkey_activity(
-    passkey_client: &mut MockPasskeyClient,
-    activity_json: &str,
-) -> serde_json::Value {
-    let mut hasher = Sha256::new();
-    hasher.update(activity_json.as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
-    let challenge_hash_b64url = BASE64_URL_SAFE_NO_PAD.encode(hash.as_bytes());
-    get_passkey_assertion(passkey_client, &challenge_hash_b64url).await
 }
 
 // Get a passkey challenge response from the server. The response also carries the Backup Account
