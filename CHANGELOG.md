@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7](https://github.com/worldcoin/backup-service/compare/0.9.6...0.9.7) - 2026-10-01
+
+### Added
+
+- gate OIDC add factor ([#279](https://github.com/worldcoin/backup-service/pull/279))
+
+### Other
+
+- *(deps)* bump tokio from 1.49.0 to 1.50.0 ([#294](https://github.com/worldcoin/backup-service/pull/294))
+- *(deps)* bump aws-sdk-dynamodb from 1.121.0 to 1.123.0 ([#292](https://github.com/worldcoin/backup-service/pull/292))
+- *(deps)* bump async-trait from 0.1.89 to 0.1.92 ([#293](https://github.com/worldcoin/backup-service/pull/293))
+- *(deps)* bump chrono from 0.4.44 to 0.4.45 ([#291](https://github.com/worldcoin/backup-service/pull/291))
+
 ## [0.9.6](https://github.com/worldcoin/backup-service/compare/0.9.5...0.9.6) - 2026-10-01
 
 ### Added
