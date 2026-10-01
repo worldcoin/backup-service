@@ -8,7 +8,8 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use types::{
-    AddFactorChallengeRequest, AddFactorChallengeResponse, ExistingFactorKind, NewFactor, Platform,
+    AddFactorChallengeRequest, AddFactorChallengeResponse, ErrorCode, ExistingFactorKind,
+    NewFactor, Platform,
 };
 use uuid::Uuid;
 
@@ -25,6 +26,16 @@ pub async fn handler(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<AddFactorChallengeRequest>,
 ) -> Result<Json<AddFactorChallengeResponse>, ErrorResponse> {
+    if request.existing_factor_kind == Some(ExistingFactorKind::OidcAccount)
+        || matches!(request.new_factor, NewFactor::PasskeyRegistration { .. })
+    {
+        // New add-factor combinations are disabled until the material binding in #271 ships.
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::NotSupported,
+            "This add-factor combination is disabled",
+        ));
+    }
+
     let mut existing_factor_challenge = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut existing_factor_challenge);
 

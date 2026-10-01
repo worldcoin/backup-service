@@ -40,6 +40,20 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) || matches!(
+        request.new_factor_authorization,
+        Authorization::Passkey { .. }
+    ) {
+        // New add-factor combinations are disabled until the material binding in #271 ships.
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::NotSupported,
+            "This add-factor combination is disabled",
+        ));
+    }
+
     // Step 1: Check authorization for the existing factor and get the backup ID.
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
         Authorization::Passkey { .. } => {
