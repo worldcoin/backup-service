@@ -41,9 +41,9 @@ pub async fn handler(
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
     // Step 1: Check authorization for the existing factor and get the backup ID.
-    let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
+    let (backup_id, approved_factor, oidc_session) = match &request.existing_factor_authorization {
         Authorization::Passkey { .. } => {
-            let authorized = authenticate_existing_passkey(
+            let (backup_id, approved_factor) = authenticate_existing_passkey(
                 &backup_storage,
                 &factor_lookup,
                 &challenge_manager,
@@ -53,7 +53,7 @@ pub async fn handler(
             redis_cache_manager
                 .use_challenge_token(request.existing_factor_challenge_token.clone())
                 .await?;
-            authorized
+            (backup_id, approved_factor, None)
         }
         Authorization::OidcAccount { .. } => {
             let (_, context) = challenge_manager
@@ -68,7 +68,7 @@ pub async fn handler(
                     "Challenge context mismatch",
                 ));
             };
-            let (backup_id, _) = auth_handler
+            let authenticated = auth_handler
                 .clone()
                 .verify(
                     &request.existing_factor_authorization,
@@ -79,7 +79,11 @@ pub async fn handler(
                     request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
-            (backup_id, new_factor_type)
+            (
+                authenticated.backup_id,
+                new_factor_type,
+                authenticated.oidc_session,
+            )
         }
         Authorization::EcKeypair { .. } => {
             return Err(ErrorResponse::bad_request(
@@ -89,7 +93,7 @@ pub async fn handler(
         }
     };
     // Step 2: Validate the new factor against the existing factor's approval.
-    verify_new_factor_binding(&challenge_manager, &expected_new_factor, &request).await?;
+    verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
     let validation = auth_handler
         .validate_factor_registration(
             &request.new_factor_authorization,
@@ -97,10 +101,7 @@ pub async fn handler(
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false,
-            !same_oidc_session(
-                &request.existing_factor_authorization,
-                &request.new_factor_authorization,
-            ),
+            oidc_session,
         )
         .await?;
 
@@ -302,39 +303,6 @@ async fn verify_new_factor_binding(
     }
 
     Ok(())
-}
-
-// Apple audience aliases do not change the session; token verification still checks the audience.
-fn same_oidc_session(existing: &Authorization, new: &Authorization) -> bool {
-    match (existing, new) {
-        (
-            Authorization::OidcAccount {
-                oidc_token: existing_token,
-                public_key: existing_pk,
-                ..
-            },
-            Authorization::OidcAccount {
-                oidc_token: new_token,
-                public_key: new_pk,
-                ..
-            },
-        ) => {
-            let same_raw_token = match (existing_token, new_token) {
-                (OidcToken::Google { token: existing }, OidcToken::Google { token: new }) => {
-                    existing == new
-                }
-                (
-                    OidcToken::Apple {
-                        token: existing, ..
-                    },
-                    OidcToken::Apple { token: new, .. },
-                ) => existing == new,
-                _ => false,
-            };
-            same_raw_token && existing_pk == new_pk
-        }
-        _ => false,
-    }
 }
 
 async fn persist_factor(
