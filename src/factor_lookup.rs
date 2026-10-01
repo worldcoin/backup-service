@@ -224,6 +224,7 @@ impl FactorLookup {
     }
 
     /// Returns the recorded last use (Unix seconds) of each factor whose row maps to `backup_id`,
+    /// read with strong consistency,
     /// keyed by [`FactorToLookup::primary_key`]. Factors without a recorded use are omitted; rows
     /// owned by another backup are ignored so their use is never attributed to this one.
     ///
@@ -248,6 +249,8 @@ impl FactorLookup {
                 .collect::<Vec<_>>();
             let request = aws_sdk_dynamodb::types::KeysAndAttributes::builder()
                 .set_keys(Some(keys))
+                // Strongly consistent: a use recorded just before recovery must not look stale.
+                .consistent_read(true)
                 .projection_expression("#pk, #backup_id, #last_used_at")
                 .expression_attribute_names("#pk", pk.clone())
                 .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
