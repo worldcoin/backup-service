@@ -587,6 +587,21 @@ async fn test_add_factor_with_modified_turnkey_activity() {
     assert_eq!(error_response["error"]["code"], "turnkey_activity_error");
 }
 
+#[tokio::test]
+async fn test_adding_factor_from_an_existing_oidc_factor_is_not_yet_supported() {
+    let response = common::send_post_request(
+        "/v1/add-factor/challenge",
+        json!({
+            "existingFactorKind": "OIDC_ACCOUNT",
+            "newFactor": { "kind": "PASSKEY_REGISTRATION", "platform": "IOS" }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body = parse_response_body(response).await;
+    assert_eq!(body["error"]["code"], "not_implemented", "{body}");
+}
+
 // Incorrectly signed challenge for new keypair
 #[tokio::test]
 #[serial]

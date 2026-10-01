@@ -37,7 +37,8 @@ const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 /// This endpoint requires authentication with both an existing factor (to prove access to the backup)
 /// and the new factor (to prove ownership of the new factor).
 ///
-/// The existing factor must be a passkey; the new factor can be a passkey or OIDC account.
+/// Supported Main Factor combinations: Passkey ↔ OIDC (Google/Apple). EC/keychain is not supported
+/// as a Main Factor for add-factor.
 #[expect(
     clippy::too_many_lines,
     reason = "the code is properly split out into steps"
@@ -50,6 +51,14 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) {
+        // This feature is not ready for use.
+        return Err(ErrorResponse::not_supported());
+    }
+
     // Step 1: Check authorization for the existing factor and get the backup ID
     let (backup_id, expected_new_factor) = match &request.existing_factor_authorization {
         Authorization::Passkey { credential, .. } => {
@@ -190,8 +199,37 @@ pub async fn handler(
             (backup_id, new_factor_type)
         }
         Authorization::OidcAccount { .. } => {
-            // Disabled until OIDC approvals bind to the new factor's material (#271).
-            return Err(ErrorResponse::not_supported());
+            // Step 1B.1: Authenticate the existing OIDC factor and bind to the expected new-factor
+            // descriptor, so the OIDC factor signs over the exact new factor being added.
+            let (_trusted_challenge, challenge_context) = challenge_manager
+                .extract_token_payload(
+                    (&request.existing_factor_authorization).into(),
+                    request.existing_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::InvalidChallengeContext,
+                    "Challenge context mismatch",
+                ));
+            };
+
+            // `AuthHandler::verify` authenticates the existing OIDC factor and marks its challenge
+            // token as used.
+            let (verified_backup_id, _metadata) = auth_handler
+                .clone()
+                .verify(
+                    &request.existing_factor_authorization,
+                    FactorScope::Main,
+                    ChallengeContext::AddFactor {
+                        new_factor_type: new_factor_type.clone(),
+                    },
+                    request.existing_factor_challenge_token.clone(),
+                )
+                .await?;
+
+            (verified_backup_id, new_factor_type)
         }
         Authorization::EcKeypair { .. } => {
             return Err(ErrorResponse::bad_request(
@@ -266,7 +304,47 @@ pub async fn handler(
         }
     }
 
-    // Step 2A: Use AuthHandler to validate the new factor
+    // Step 2A.1: When the same OIDC ID token + session keypair authorize both sides (same-account
+    // metadata-only upgrade), the existing-factor verify above already consumed the nonce — skip a
+    // second Redis mark so registration can still verify the new-factor challenge signature.
+    // Compare raw JWT + session key per-provider (not full `OidcToken`), so Apple `aud: None` vs
+    // explicit default does not block reuse of the already-consumed nonce, while still requiring
+    // both sides to be the same provider — a Google and an Apple token must never be treated as
+    // the same session merely because their opaque JWT strings happened to be equal.
+    let reuse_same_oidc_session = match (
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
+    ) {
+        (
+            Authorization::OidcAccount {
+                oidc_token: existing_token,
+                public_key: existing_pk,
+                ..
+            },
+            Authorization::OidcAccount {
+                oidc_token: new_token,
+                public_key: new_pk,
+                ..
+            },
+        ) => {
+            let same_raw_token = match (existing_token, new_token) {
+                (OidcToken::Google { token: existing }, OidcToken::Google { token: new }) => {
+                    existing == new
+                }
+                (
+                    OidcToken::Apple {
+                        token: existing, ..
+                    },
+                    OidcToken::Apple { token: new, .. },
+                ) => existing == new,
+                _ => false,
+            };
+            same_raw_token && existing_pk == new_pk
+        }
+        _ => false,
+    };
+
+    // Step 2A.2: Use AuthHandler to validate the new factor
     let validation_result = auth_handler
         .validate_factor_registration(
             &request.new_factor_authorization,
@@ -274,7 +352,7 @@ pub async fn handler(
             ChallengeContext::AddFactorByNewFactor {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
-            true,
+            !reuse_same_oidc_session,
         )
         .await?;
 

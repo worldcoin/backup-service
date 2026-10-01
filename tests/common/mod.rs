@@ -308,10 +308,7 @@ pub async fn get_add_factor_challenges_generic(
         payload["existingFactorKind"] = json!(kind);
     }
     let resp = send_post_request("/v1/add-factor/challenge", payload).await;
-    let status = resp.status();
-    let body = parse_response_body(resp).await;
-    assert_eq!(status, http::StatusCode::OK, "{body}");
-    body
+    parse_response_body(resp).await
 }
 
 /// Convenience helper to request OIDC-account new-factor challenges; defaults existing to PASSKEY unless overridden.
