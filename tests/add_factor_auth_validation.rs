@@ -10,9 +10,9 @@ use openidconnect::SubjectIdentifier;
 use serde_json::json;
 use serial_test::serial;
 
-// OIDC(new) missing provider id
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_missing_turnkey_provider_id() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
@@ -21,19 +21,16 @@ async fn test_add_factor_missing_turnkey_provider_id() {
         crate::common::generate_keypair();
     let (new_session_public_key, new_session_secret_key) = crate::common::generate_keypair();
 
-    // New-factor OIDC token bound to new-session key
     let new_oidc_token =
         test.oidc_server
             .generate_token(&MockOidcProvider::Google, None, &new_session_public_key);
 
-    // Challenges for OIDC(new)
     let challenges = get_add_factor_challenges_generic(
         json!({ "kind": "OIDC_ACCOUNT", "oidcToken": new_oidc_token }),
         Some("OIDC_ACCOUNT"),
     )
     .await;
 
-    // Existing OIDC auth for this challenge
     let existing_sig = crate::common::sign_keypair_challenge(
         &existing_session_secret_key,
         challenges["existingFactorChallenge"].as_str().unwrap(),
@@ -44,7 +41,6 @@ async fn test_add_factor_missing_turnkey_provider_id() {
         &existing_session_public_key,
     );
 
-    // New-factor signature
     let new_sig = crate::common::sign_keypair_challenge(
         &new_session_secret_key,
         challenges["newFactorChallenge"].as_str().unwrap(),
@@ -77,9 +73,9 @@ async fn test_add_factor_missing_turnkey_provider_id() {
     assert_eq!(body["error"]["code"], "missing_turnkey_provider_id");
 }
 
-// OIDC(new) signature verification error
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_new_oidc_signature_mismatch() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
@@ -141,7 +137,6 @@ async fn test_add_factor_new_oidc_signature_mismatch() {
     assert_eq!(body["error"]["code"], "signature_verification_error");
 }
 
-// EC keypair is rejected as an existing Main Factor for add-factor
 #[tokio::test]
 #[serial]
 async fn test_add_factor_rejects_ec_existing_main_factor() {
@@ -159,8 +154,7 @@ async fn test_add_factor_rejects_ec_existing_main_factor() {
 
     let challenges = get_add_factor_challenges_generic(
         json!({ "kind": "OIDC_ACCOUNT", "oidcToken": oidc_token }),
-        // Challenge type for EC would be Keypair; OIDC_ACCOUNT uses the same ChallengeType::Keypair.
-        Some("OIDC_ACCOUNT"),
+        Some("PASSKEY"),
     )
     .await;
 
@@ -200,7 +194,6 @@ async fn test_add_factor_rejects_ec_existing_main_factor() {
     assert_eq!(body["error"]["code"], "not_supported");
 }
 
-// EC keypair is rejected as a new Main Factor for add-factor
 #[tokio::test]
 #[serial]
 async fn test_add_factor_rejects_ec_new_main_factor() {
@@ -210,7 +203,6 @@ async fn test_add_factor_rejects_ec_new_main_factor() {
     assert_eq!(create_response.status(), StatusCode::OK);
 
     let (ec_public_key, ec_secret_key) = crate::common::generate_keypair();
-    // Challenge for OIDC new-factor; we will submit EC instead to hit the not_supported arm.
     let challenges = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",

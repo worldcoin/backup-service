@@ -250,11 +250,9 @@ pub enum ChallengeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
-    /// Registering a new passkey (`WebAuthn` credential creation).
+    /// Binds the registration state, not the resulting credential, to the existing-factor approval.
     ///
-    /// `registration_hash` is produced by
-    /// [`registration_state_hash`](crate::routes::add_factor_challenge::registration_state_hash);
-    /// see its doc comment for what it binds and why.
+    /// TODO: This is not live yet. Likely binding the registration ceremony won't be necessary.
     #[serde(rename_all = "camelCase")]
     PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]

@@ -517,7 +517,7 @@ pub enum NewFactor {
     },
 }
 
-/// The kind of the existing factor that will sign over the new factor being added.
+/// The kind of the existing factor authorizing the addition.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -533,11 +533,10 @@ pub enum ExistingFactorKind {
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AddFactorChallengeRequest {
-    /// The factor the client intends to add. Bound into the challenge issued for the existing
-    /// factor, so the existing factor signs over the new one.
+    /// The new factor descriptor used to bind the existing-factor challenge.
+    /// For passkeys, this binds the registration state rather than the resulting credential.
     pub new_factor: NewFactor,
-    /// The kind of the existing factor that will sign the challenge. Optional; defaults to
-    /// `PASSKEY` to preserve existing clients that predate non-passkey existing factors.
+    /// The factor signing the approval challenge; omitted values default to `PASSKEY`.
     #[serde(default)]
     pub existing_factor_kind: Option<ExistingFactorKind>,
 }
