@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
-use crate::backup_metadata::Factor;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::environment::Environment;
@@ -51,28 +50,13 @@ pub async fn handler(
         .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
-    // Step 3: Reserve the new key's lookup. A lost response may already have inserted this
-    // same owner's row; retain it and reconcile metadata rather than rejecting a safe retry.
-    let inserted_lookup = match factor_lookup
+    factor_lookup
         .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
-        .await
-    {
-        Ok(()) => true,
-        Err(error) => {
-            if factor_lookup
-                .lookup_consistent(FactorScope::Sync, &sync_factor_to_lookup)
-                .await?
-                != Some(backup_id.clone())
-            {
-                return Err(error.into());
-            }
-            false
-        }
-    };
+        .await?;
 
     // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
     let write = backup_storage
-        .register_sync_factor(
+        .add_sync_factor(
             &backup_id,
             sync_factor,
             request.sync_factor_to_replace.as_deref(),
@@ -81,7 +65,7 @@ pub async fn handler(
 
     // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land
     // (`NotInserted`). Skip for `Unknown` (ambiguous S3 write or factor already present).
-    if write.should_rollback_lookup() && inserted_lookup {
+    if write.should_rollback_lookup() {
         if let Err(e) = factor_lookup
             .delete_if_maps_to(FactorScope::Sync, &sync_factor_to_lookup, &backup_id)
             .await
@@ -97,57 +81,18 @@ pub async fn handler(
         }
     }
 
-    let _ = factor_lock.release().await;
-
-    if let Some(removed) = write.into_result()? {
-        if let Err(error) = cleanup_replaced_lookup(
-            environment,
-            &backup_storage,
-            &factor_lookup,
-            &redis_cache_manager,
-            &backup_id,
-            &removed,
-        )
-        .await
-        {
-            tracing::warn!(?error, factor_id = %removed.id, backup_id = %backup_id,
-                "Sync factor replaced but lookup cleanup failed");
-        }
+    let result = write.into_result();
+    if let Ok(Some(removed)) = &result {
+        auth_handler
+            .delete_stale_factor_lookup(
+                FactorScope::Sync,
+                &removed.as_factor_to_lookup(&environment),
+            )
+            .await;
     }
+
+    let _ = factor_lock.release().await;
+    result?;
 
     Ok(Json(AddSyncFactorResponse { backup_id }))
-}
-
-/// Recheck membership while holding the same key lock as registration. Cleanup must not delete
-/// a re-registered key or another backup's row. Stale lookup rows alone never grant access.
-async fn cleanup_replaced_lookup(
-    environment: Environment,
-    storage: &BackupStorage,
-    lookup: &FactorLookup,
-    redis: &RedisCacheManager,
-    backup_id: &str,
-    removed: &Factor,
-) -> Result<(), ErrorResponse> {
-    let factor = removed.as_factor_to_lookup(&environment);
-    let mut guard = redis
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&factor),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
-    let metadata = storage.get_metadata_by_backup_id(backup_id).await?;
-    let present = metadata.is_some_and(|(metadata, _)| {
-        metadata
-            .sync_factors
-            .iter()
-            .any(|factor| factor.kind == removed.kind)
-    });
-    if !present {
-        lookup
-            .delete_if_maps_to(FactorScope::Sync, &factor, backup_id)
-            .await?;
-    }
-    guard.release().await?;
-    Ok(())
 }
