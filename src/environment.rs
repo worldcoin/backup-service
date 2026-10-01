@@ -319,6 +319,14 @@ impl Environment {
         // `DISABLE_ATTESTATION_GATEWAY` is a legacy environment variable
     }
 
+    /// **Kill switch**. Record when each sync factor last authenticated a request (at most one
+    /// `DynamoDB` write per factor per day). On by default; set `TRACK_SYNC_FACTOR_LAST_USED=false`
+    /// to stop the writes. Already recorded values keep being returned.
+    #[must_use]
+    pub fn track_sync_factor_last_used(&self) -> bool {
+        env_bool("TRACK_SYNC_FACTOR_LAST_USED", true)
+    }
+
     /// **Roll-out flag**. Enforce verifying signature over the `backup_account_id` on creation.
     #[must_use]
     pub fn enforce_backup_account_proof(&self) -> bool {

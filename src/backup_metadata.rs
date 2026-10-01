@@ -74,6 +74,7 @@ impl Factor {
         ExportedFactor {
             id: self.id.clone(),
             created_at: self.created_at.timestamp(),
+            last_used_at: None,
             kind: match &self.kind {
                 FactorKind::Passkey {
                     webauthn_credential,

@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::sync::Arc;
+use tracing::Instrument;
 
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, PasskeyRegistration, PublicKeyCredential,
@@ -102,6 +103,14 @@ pub struct ValidationResult {
 /// only a convenience index and the two stores are written non-atomically, so this is the only
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
 const FACTOR_LOOKUP_GC_METRIC: &str = "factor_lookup_gc_total";
+
+/// Outcome of recording a sync factor's last use (`updated`, `skipped`, `error`, `timeout`).
+const SYNC_FACTOR_LAST_USED_METRIC: &str = "sync_factor_last_used_update_total";
+
+/// A sync factor's last use is refreshed at most once per day.
+const SYNC_FACTOR_LAST_USED_REFRESH_SECS: i64 = 24 * 60 * 60;
+
+const SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct AuthHandler {
@@ -605,14 +614,15 @@ impl AuthHandler {
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
 
-        let not_verified_backup_id = self
+        let lookup_record = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
+            .lookup_record(expected_factor_scope, &factor_to_lookup)
             .await?;
 
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
+        let Some(lookup_record) = lookup_record else {
             return Err(AuthError::BackupUntraceable);
         };
+        let not_verified_backup_id = lookup_record.backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -651,7 +661,62 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
+        if expected_factor_scope == FactorScope::Sync {
+            self.record_sync_factor_use(
+                factor_to_lookup,
+                &verified_backup_id,
+                lookup_record.last_used_at,
+            );
+        }
+
         Ok((verified_backup_id, backup_metadata))
+    }
+
+    /// Refreshes the sync factor's last use at most once per [`SYNC_FACTOR_LAST_USED_REFRESH_SECS`],
+    /// so recovery at the sync-factor cap can replace the least recently used access.
+    ///
+    /// Runs detached with a bounded timeout: tracking is best-effort and must never delay or fail
+    /// the authenticated request.
+    fn record_sync_factor_use(
+        &self,
+        factor: FactorToLookup,
+        backup_id: &str,
+        last_used_at: Option<i64>,
+    ) {
+        if !self.environment.track_sync_factor_last_used() {
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        if last_used_at.is_some_and(|at| now - at < SYNC_FACTOR_LAST_USED_REFRESH_SECS) {
+            return;
+        }
+        let factor_lookup = Arc::clone(&self.factor_lookup);
+        let backup_id = backup_id.to_string();
+        tokio::spawn(
+            async move {
+                let write =
+                    factor_lookup.record_last_used(FactorScope::Sync, &factor, &backup_id, now);
+                let result =
+                    match tokio::time::timeout(SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT, write).await {
+                        Ok(Ok(true)) => "updated",
+                        // The row was removed or moved after authentication, or a newer use landed first.
+                        Ok(Ok(false)) => "skipped",
+                        Ok(Err(err)) => {
+                            tracing::warn!(?err, "Failed to record sync factor last use");
+                            "error"
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                timeout_ms = SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT.as_millis(),
+                                "Timed out recording sync factor last use"
+                            );
+                            "timeout"
+                        }
+                    };
+                metrics::counter!(SYNC_FACTOR_LAST_USED_METRIC, "result" => result).increment(1);
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
