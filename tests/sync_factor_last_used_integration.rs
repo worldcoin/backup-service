@@ -226,3 +226,53 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
         None
     );
 }
+
+#[tokio::test]
+#[serial]
+async fn last_use_never_moves_backwards() {
+    let backup = create_backup().await;
+    let lookup = factor_lookup().await;
+    let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
+    let newer = chrono::Utc::now().timestamp();
+
+    assert!(lookup
+        .record_last_used(FactorScope::Sync, &factor, &backup.backup_id, newer)
+        .await
+        .unwrap());
+    // A slower concurrent update captured before the newer one must not rewind it.
+    assert!(!lookup
+        .record_last_used(FactorScope::Sync, &factor, &backup.backup_id, newer - 60)
+        .await
+        .unwrap());
+
+    assert_eq!(stored_last_used(&lookup, &backup).await, Some(newer));
+}
+
+#[tokio::test]
+#[serial]
+async fn last_use_of_a_row_owned_by_another_backup_is_not_reported() {
+    let backup = create_backup().await;
+    let lookup = factor_lookup().await;
+    let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
+    let now = chrono::Utc::now().timestamp();
+    assert!(lookup
+        .record_last_used(FactorScope::Sync, &factor, &backup.backup_id, now)
+        .await
+        .unwrap());
+
+    let own = lookup
+        .last_used_at(
+            FactorScope::Sync,
+            std::slice::from_ref(&factor),
+            &backup.backup_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(own.get(&factor.primary_key()), Some(&now));
+
+    let other = lookup
+        .last_used_at(FactorScope::Sync, &[factor], "another-backup")
+        .await
+        .unwrap();
+    assert!(other.is_empty());
+}

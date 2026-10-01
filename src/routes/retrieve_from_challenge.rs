@@ -109,7 +109,7 @@ async fn attach_sync_factor_last_used(
         .iter()
         .map(|factor| factor.as_factor_to_lookup(environment))
         .collect::<Vec<_>>();
-    let read = factor_lookup.last_used_at(FactorScope::Sync, &lookups);
+    let read = factor_lookup.last_used_at(FactorScope::Sync, &lookups, &backup_metadata.id);
     let last_used = match tokio::time::timeout(SYNC_FACTOR_LAST_USED_READ_TIMEOUT, read).await {
         Ok(Ok(last_used)) => {
             metrics::counter!(SYNC_FACTOR_LAST_USED_READ_METRIC, "result" => "ok").increment(1);

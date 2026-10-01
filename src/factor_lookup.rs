@@ -172,7 +172,8 @@ impl FactorLookup {
     /// Records that `factor` authenticated a request for `backup_id` at `now` (Unix seconds).
     ///
     /// Only updates an existing row that still maps to `backup_id`, so a row deleted or moved to
-    /// another backup in the meantime is never recreated. Returns `Ok(false)` in that case.
+    /// another backup in the meantime is never recreated, and only moves the value forward, so
+    /// concurrent updates landing out of order cannot rewind it. Returns `Ok(false)` when skipped.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbUpdateError` - if the update fails for a non-condition reason.
@@ -192,7 +193,9 @@ impl FactorLookup {
                 factor_primary_key(scope, factor),
             )
             .update_expression("SET #last_used_at = :now")
-            .condition_expression("#backup_id = :backup_id")
+            .condition_expression(
+                "#backup_id = :backup_id AND (attribute_not_exists(#last_used_at) OR #last_used_at < :now)",
+            )
             .expression_attribute_names("#last_used_at", DocumentAttribute::LastUsedAt.to_string())
             .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
             .expression_attribute_values(
@@ -220,16 +223,19 @@ impl FactorLookup {
         }
     }
 
-    /// Returns the recorded last use (Unix seconds) of each factor, keyed by
-    /// [`FactorToLookup::primary_key`]. Factors without a recorded use are omitted, including
-    /// keys `DynamoDB` leaves unprocessed under throttling; callers treat a missing entry as unknown.
+    /// Returns the recorded last use (Unix seconds) of each factor whose row maps to `backup_id`,
+    /// keyed by [`FactorToLookup::primary_key`]. Factors without a recorded use are omitted; rows
+    /// owned by another backup are ignored so their use is never attributed to this one.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbBatchGetError` - if a batch read fails.
+    /// * `FactorLookupError::IncompleteBatchRead` - if `DynamoDB` leaves keys unprocessed. A partial
+    ///   result would make the skipped factors look unused, so it is never returned.
     pub async fn last_used_at(
         &self,
         scope: FactorScope,
         factors: &[FactorToLookup],
+        backup_id: &str,
     ) -> Result<HashMap<String, i64>, FactorLookupError> {
         let table = self.environment.factor_lookup_dynamodb_table_name();
         let pk = DocumentAttribute::Pk.to_string();
@@ -242,8 +248,9 @@ impl FactorLookup {
                 .collect::<Vec<_>>();
             let request = aws_sdk_dynamodb::types::KeysAndAttributes::builder()
                 .set_keys(Some(keys))
-                .projection_expression("#pk, #last_used_at")
+                .projection_expression("#pk, #backup_id, #last_used_at")
                 .expression_attribute_names("#pk", pk.clone())
+                .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
                 .expression_attribute_names(
                     "#last_used_at",
                     DocumentAttribute::LastUsedAt.to_string(),
@@ -256,11 +263,22 @@ impl FactorLookup {
                 .request_items(table.clone(), request)
                 .send()
                 .await?;
+            if response
+                .unprocessed_keys()
+                .is_some_and(|unprocessed| !unprocessed.is_empty())
+            {
+                return Err(FactorLookupError::IncompleteBatchRead);
+            }
             for item in response
                 .responses()
                 .and_then(|responses| responses.get(&table))
                 .into_iter()
                 .flatten()
+                .filter(|item| {
+                    item.get(&DocumentAttribute::BackupId.to_string())
+                        .and_then(|value| value.as_s().ok())
+                        .is_some_and(|owner| owner == backup_id)
+                })
             {
                 let key = item
                     .get(&pk)
@@ -521,6 +539,8 @@ pub enum FactorLookupError {
     ),
     #[error("Failed to build a DynamoDB batch read request")]
     InvalidBatchRequest,
+    #[error("DynamoDB left keys of a batch read unprocessed")]
+    IncompleteBatchRead,
     #[error("Failed to parse backup ID from DynamoDB row")]
     ParseBackupIdError,
 }

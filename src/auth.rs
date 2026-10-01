@@ -104,7 +104,7 @@ pub struct ValidationResult {
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
 const FACTOR_LOOKUP_GC_METRIC: &str = "factor_lookup_gc_total";
 
-/// Outcome of recording a sync factor's last use (`updated`, `row_changed`, `error`, `timeout`).
+/// Outcome of recording a sync factor's last use (`updated`, `skipped`, `error`, `timeout`).
 const SYNC_FACTOR_LAST_USED_METRIC: &str = "sync_factor_last_used_update_total";
 
 /// A sync factor's last use is refreshed at most once per day.
@@ -699,8 +699,8 @@ impl AuthHandler {
                 let result =
                     match tokio::time::timeout(SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT, write).await {
                         Ok(Ok(true)) => "updated",
-                        // The row was removed or moved after authentication; nothing to track.
-                        Ok(Ok(false)) => "row_changed",
+                        // The row was removed or moved after authentication, or a newer use landed first.
+                        Ok(Ok(false)) => "skipped",
                         Ok(Err(err)) => {
                             tracing::warn!(?err, "Failed to record sync factor last use");
                             "error"
