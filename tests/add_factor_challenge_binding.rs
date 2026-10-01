@@ -110,9 +110,8 @@ async fn test_add_factor_challenge_binding_matrix() {
             .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
     let body3 = parse_response_body(resp3).await;
-    assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
+    assert_eq!(body3["error"]["code"], "not_supported");
 
-    // Fresh challenges again (case 2 may have consumed existing-factor token on the passkey path).
     let challenges3 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",

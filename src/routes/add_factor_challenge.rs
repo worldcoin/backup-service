@@ -26,11 +26,13 @@ pub async fn handler(
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
     Json(request): Json<AddFactorChallengeRequest>,
 ) -> Result<Json<AddFactorChallengeResponse>, ErrorResponse> {
-    if request.existing_factor_kind == Some(ExistingFactorKind::OidcAccount) {
-        // Disabled until the OIDC add-factor binding in #271 ships.
+    if request.existing_factor_kind == Some(ExistingFactorKind::OidcAccount)
+        || matches!(request.new_factor, NewFactor::PasskeyRegistration { .. })
+    {
+        // New add-factor combinations are disabled until the material binding in #271 ships.
         return Err(ErrorResponse::bad_request(
             ErrorCode::NotSupported,
-            "Adding a factor with an existing OIDC account is disabled",
+            "This add-factor combination is disabled",
         ));
     }
 

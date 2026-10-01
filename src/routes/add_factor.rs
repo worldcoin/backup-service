@@ -40,11 +40,17 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    if let Authorization::OidcAccount { .. } = &request.existing_factor_authorization {
-        // Disabled until the OIDC add-factor binding in #271 ships.
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) || matches!(
+        request.new_factor_authorization,
+        Authorization::Passkey { .. }
+    ) {
+        // New add-factor combinations are disabled until the material binding in #271 ships.
         return Err(ErrorResponse::bad_request(
             ErrorCode::NotSupported,
-            "Adding a factor with an existing OIDC account is disabled",
+            "This add-factor combination is disabled",
         ));
     }
 
