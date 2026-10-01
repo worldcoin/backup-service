@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::auth::AuthHandler;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
+use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
@@ -14,6 +15,7 @@ use types::{AddSyncFactorRequest, AddSyncFactorResponse, FactorScope};
 
 /// Adds a new sync factor to an existing backup.
 pub async fn handler(
+    Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
@@ -49,21 +51,24 @@ pub async fn handler(
         .use_sync_factor_token(request.sync_factor_token.clone())
         .await?;
 
-    // Step 3: Add the sync factor to backup lookup
     factor_lookup
         .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
         .await?;
 
-    // Step 4: Add the sync factor to the backup metadata
+    // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
     let write = backup_storage
-        .add_sync_factor(&backup_id, sync_factor)
+        .add_sync_factor(
+            &backup_id,
+            sync_factor,
+            request.sync_factor_to_replace.as_deref(),
+        )
         .await;
 
     // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land
     // (`NotInserted`). Skip for `Unknown` (ambiguous S3 write or factor already present).
     if write.should_rollback_lookup() {
         if let Err(e) = factor_lookup
-            .delete(FactorScope::Sync, &sync_factor_to_lookup)
+            .delete_if_maps_to(FactorScope::Sync, &sync_factor_to_lookup, &backup_id)
             .await
         {
             tracing::error!(message = "Failed to delete factor from lookup table after failed sync factor addition.", error = ?e, sync_factor_pk = sync_factor_to_lookup.primary_key());
@@ -77,9 +82,18 @@ pub async fn handler(
         }
     }
 
-    let _ = factor_lock.release().await;
+    let result = write.into_result();
+    if let Ok(Some(removed)) = &result {
+        auth_handler
+            .delete_stale_factor_lookup(
+                FactorScope::Sync,
+                &removed.as_factor_to_lookup(&environment),
+            )
+            .await;
+    }
 
-    write.into_result()?;
+    let _ = factor_lock.release().await;
+    result?;
 
     Ok(Json(AddSyncFactorResponse { backup_id }))
 }
