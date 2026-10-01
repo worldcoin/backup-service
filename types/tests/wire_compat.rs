@@ -237,6 +237,7 @@ fn backup_metadata() {
             ExportedFactor {
                 id: "factor_1".to_string(),
                 created_at: 1_700_000_000,
+                last_used_at: None,
                 kind: ExportedFactorKind::Passkey {
                     credential_id: "Y3JlZA".to_string(),
                     registration: json!({"attestation": "none"}),
@@ -246,6 +247,7 @@ fn backup_metadata() {
             ExportedFactor {
                 id: "factor_2".to_string(),
                 created_at: 1_700_000_001,
+                last_used_at: None,
                 kind: ExportedFactorKind::OidcAccount {
                     account: ExportedOidcAccountKind::Google {
                         masked_email: "ex***@gmail.com".to_string(),
@@ -257,6 +259,7 @@ fn backup_metadata() {
         sync_factors: vec![ExportedFactor {
             id: "factor_3".to_string(),
             created_at: 1_700_000_002,
+            last_used_at: Some(1_700_086_400),
             kind: ExportedFactorKind::EcKeypair {
                 public_key: "cHVibGlj".to_string(),
             },
@@ -294,10 +297,32 @@ fn backup_metadata() {
                 {
                     "id": "factor_3",
                     "createdAt": 1_700_000_002_i64,
+                    "lastUsedAt": 1_700_086_400_i64,
                     "kind": {"kind": "EC_KEYPAIR", "publicKey": "cHVibGlj"},
                 },
             ],
             "manifestHash": "ab".repeat(32),
+        }),
+    );
+}
+
+#[test]
+fn exported_factor_without_last_used_omits_the_field() {
+    let factor = ExportedFactor {
+        id: "factor_3".to_string(),
+        created_at: 1_700_000_002,
+        last_used_at: None,
+        kind: ExportedFactorKind::EcKeypair {
+            public_key: "cHVibGlj".to_string(),
+        },
+    };
+
+    assert_wire(
+        &factor,
+        &json!({
+            "id": "factor_3",
+            "createdAt": 1_700_000_002_i64,
+            "kind": {"kind": "EC_KEYPAIR", "publicKey": "cHVibGlj"},
         }),
     );
 }

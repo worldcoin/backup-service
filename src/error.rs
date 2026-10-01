@@ -393,6 +393,9 @@ impl From<FactorLookupError> for ErrorResponse {
             FactorLookupError::DynamoDbGetError(_)
             | FactorLookupError::DynamoDbDeleteError(_)
             | FactorLookupError::DynamoDbQueryError(_)
+            | FactorLookupError::DynamoDbUpdateError(_)
+            | FactorLookupError::DynamoDbBatchGetError(_)
+            | FactorLookupError::InvalidBatchRequest
             | FactorLookupError::ParseBackupIdError => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
