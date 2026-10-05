@@ -46,6 +46,7 @@ async fn same_session_request(token: &str, public_key: &str, secret_key: &Secret
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn same_session_consumes_both_challenges_and_rejects_fresh_challenge_replay() {
     let subject = Uuid::new_v4().to_string();
     let test = create_test_backup_with_oidc_account(&subject, b"DATA").await;
@@ -93,6 +94,7 @@ async fn same_session_consumes_both_challenges_and_rejects_fresh_challenge_repla
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn same_session_requires_both_challenge_signatures() {
     for authorization in ["existingFactorAuthorization", "newFactorAuthorization"] {
         let subject = Uuid::new_v4().to_string();
@@ -123,6 +125,7 @@ async fn same_session_requires_both_challenge_signatures() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn same_session_rejects_wrong_new_challenge_context() {
     let subject = Uuid::new_v4().to_string();
     let test = create_test_backup_with_oidc_account(&subject, b"DATA").await;
@@ -147,6 +150,7 @@ async fn same_session_rejects_wrong_new_challenge_context() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn same_session_rejects_either_spent_challenge_with_a_fresh_nonce() {
     for field in ["existingFactorChallengeToken", "newFactorChallengeToken"] {
         let subject = Uuid::new_v4().to_string();
