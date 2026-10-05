@@ -153,7 +153,7 @@ impl VerifiedOidcSession {
     }
 }
 
-/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
+/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the garbage collector for
 /// `FactorLookup` rows that no longer match backup metadata (the source of truth). `FactorLookup` is
 /// only a convenience index and the two stores are written non-atomically, so this is the only
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
@@ -734,11 +734,15 @@ impl AuthHandler {
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
-    /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
+    /// (or the backup is gone). Best-effort: errors are logged without changing the caller's result.
     ///
     /// Skips the delete when the factor mutate lock is held (create/add write in flight) so we do
     /// not remove a lookup that is about to be authorized in metadata.
-    async fn delete_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+    pub(crate) async fn delete_stale_factor_lookup(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) {
         let mut lock_guard = match self
             .redis_cache_manager
             .try_acquire_lock_guard(
@@ -771,24 +775,41 @@ impl AuthHandler {
             }
         };
 
-        match self.factor_lookup.delete(scope, factor).await {
-            Ok(()) => {
-                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "deleted").increment(1);
-                tracing::info!(
-                    message = "Deleted stale FactorLookup not authorized in backup metadata",
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+        let cleanup = async {
+            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+                return Ok::<&str, AuthError>("missing");
+            };
+            let metadata = self
+                .backup_storage
+                .get_metadata_by_backup_id(&owner)
+                .await?;
+            let present = metadata.is_some_and(|(metadata, _)| {
+                let factors = match scope {
+                    FactorScope::Main => metadata.factors,
+                    FactorScope::Sync => metadata.sync_factors,
+                };
+                factors.iter().any(|current| {
+                    current.as_factor_to_lookup(&self.environment).primary_key()
+                        == factor.primary_key()
+                })
+            });
+            if present {
+                return Ok("active_skip");
+            }
+            self.factor_lookup
+                .delete_if_maps_to(scope, factor, &owner)
+                .await?;
+            Ok("deleted")
+        }
+        .await;
+        match cleanup {
+            Ok(result) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => result).increment(1);
             }
             Err(err) => {
                 metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "delete_failed")
                     .increment(1);
-                tracing::error!(
-                    message = "Failed to delete stale FactorLookup during authentication",
-                    error = ?err,
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+                tracing::error!(?err, scope = %scope, "Failed to clean up stale FactorLookup");
             }
         }
 

@@ -5,6 +5,7 @@ use http_body_util::BodyExt;
 use serde_json::json;
 
 #[tokio::test]
+#[ignore = "Add-factor passkey registration is disabled until #271 ships."]
 async fn test_add_factor_challenge_response_shapes() {
     let oidc_resp = send_post_request(
         "/v1/add-factor/challenge",

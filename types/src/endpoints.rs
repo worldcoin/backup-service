@@ -480,6 +480,10 @@ pub struct AddSyncFactorRequest {
     /// The `sync_factor_token` from [`RetrieveBackupFromChallengeResponse`], which authorizes the
     /// request against a specific backup.
     pub sync_factor_token: String,
+    /// ID of an existing sync factor on this backup to replace with `sync_factor`. The existing factor
+    /// will be atomically removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_factor_to_replace: Option<String>,
 }
 
 impl Endpoint for AddSyncFactorRequest {

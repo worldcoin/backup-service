@@ -517,3 +517,19 @@ fn multipart_endpoints() {
     assert_eq!(AddFactorRequest::BODY, BodyKind::Json);
     assert_eq!(AddFactorRequest::METHOD, Method::Post);
 }
+
+#[test]
+fn add_sync_factor_to_replace_is_optional() {
+    use backup_service_types::AddSyncFactorRequest;
+    let legacy = json!({
+        "challengeToken":"challenge", "syncFactorToken":"main-recovery",
+        "syncFactor":{"kind":"EC_KEYPAIR", "publicKey":"public", "signature":"signature"}
+    });
+    let mut request: AddSyncFactorRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(request.sync_factor_to_replace, None);
+    assert_wire(&request, &legacy);
+    request.sync_factor_to_replace = Some("selected-sync-factor".to_string());
+    let mut expected = legacy;
+    expected["syncFactorToReplace"] = json!("selected-sync-factor");
+    assert_wire(&request, &expected);
+}

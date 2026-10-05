@@ -110,9 +110,8 @@ async fn test_add_factor_challenge_binding_matrix() {
             .await;
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
     let body3 = parse_response_body(resp3).await;
-    assert_eq!(body3["error"]["code"], "invalid_new_factor_type");
+    assert_eq!(body3["error"]["code"], "not_supported");
 
-    // Fresh challenges again (case 2 may have consumed existing-factor token on the passkey path).
     let challenges3 = get_add_factor_challenges_generic(
         json!({
             "kind": "OIDC_ACCOUNT",
@@ -175,7 +174,7 @@ async fn test_add_factor_existing_kind_mismatch() {
             "kind": "OIDC_ACCOUNT",
             "oidcToken": oidc_token,
         }),
-        Some("OIDC_ACCOUNT"),
+        Some("PASSKEY"),
     )
     .await;
 
@@ -189,7 +188,7 @@ async fn test_add_factor_existing_kind_mismatch() {
         "/v1/add-factor",
         json!({
             "existingFactorAuthorization": { "kind": "PASSKEY", "credential": passkey_assertion },
-            "existingFactorChallengeToken": challenges["existingFactorToken"],
+            "existingFactorChallengeToken": challenges["newFactorToken"],
             "existingFactorTurnkeyActivity": turnkey_activity,
             "newFactorAuthorization": {
                 "kind": "OIDC_ACCOUNT",
@@ -211,6 +210,7 @@ async fn test_add_factor_existing_kind_mismatch() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_oidc_existing_challenge_replay() {
     let subject = format!("replay-{}", uuid::Uuid::new_v4());
     let test = crate::common::create_test_backup_with_oidc_account(&subject, b"DATA").await;
@@ -278,6 +278,7 @@ async fn test_add_factor_oidc_existing_challenge_replay() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_rejects_swapped_passkey_registration_token() {
     let subject = format!("swap-{}", uuid::Uuid::new_v4());
     let test = crate::common::create_test_backup_with_oidc_account(&subject, b"DATA").await;

@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_oidc_existing_to_passkey_new_happy_path() {
     let subject = format!("subject-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
@@ -190,6 +191,7 @@ async fn test_add_factor_passkey_existing_to_oidc_new_happy_path() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
     let subject = format!("existing-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
@@ -282,6 +284,7 @@ async fn test_add_factor_oidc_existing_to_oidc_new_happy_path() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
     let subject = format!("same-oidc-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
@@ -378,6 +381,7 @@ async fn test_add_factor_same_oidc_metadata_only_turnkey_upgrade() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
     let subject = format!("same-oidc-one-session-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;
@@ -462,6 +466,7 @@ async fn test_add_factor_same_oidc_single_session_metadata_only_upgrade() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_same_oidc_different_turnkey_provider_id_is_duplicate() {
     let subject = format!("same-oidc-tpid-{}", Uuid::new_v4());
     let test = create_test_backup_with_oidc_account(&subject, b"BACKUP DATA").await;

@@ -12,6 +12,7 @@ use serial_test::serial;
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_missing_turnkey_provider_id() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
@@ -74,6 +75,7 @@ async fn test_add_factor_missing_turnkey_provider_id() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "OIDC-existing add-factor is disabled until #271 ships."]
 async fn test_add_factor_new_oidc_signature_mismatch() {
     let test = create_test_backup_with_oidc_account("sig-mismatch", b"DATA").await;
 
@@ -152,8 +154,7 @@ async fn test_add_factor_rejects_ec_existing_main_factor() {
 
     let challenges = get_add_factor_challenges_generic(
         json!({ "kind": "OIDC_ACCOUNT", "oidcToken": oidc_token }),
-        // Challenge type for EC would be Keypair; OIDC_ACCOUNT uses the same ChallengeType::Keypair.
-        Some("OIDC_ACCOUNT"),
+        Some("PASSKEY"),
     )
     .await;
 

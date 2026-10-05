@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7](https://github.com/worldcoin/backup-service/compare/0.9.6...0.9.7) - 2026-10-01
+
+### Added
+
+- gate OIDC add factor ([#279](https://github.com/worldcoin/backup-service/pull/279))
+
+### Other
+
+- *(deps)* bump tokio from 1.49.0 to 1.50.0 ([#294](https://github.com/worldcoin/backup-service/pull/294))
+- *(deps)* bump aws-sdk-dynamodb from 1.121.0 to 1.123.0 ([#292](https://github.com/worldcoin/backup-service/pull/292))
+- *(deps)* bump async-trait from 0.1.89 to 0.1.92 ([#293](https://github.com/worldcoin/backup-service/pull/293))
+- *(deps)* bump chrono from 0.4.44 to 0.4.45 ([#291](https://github.com/worldcoin/backup-service/pull/291))
+
+## [0.9.6](https://github.com/worldcoin/backup-service/compare/0.9.5...0.9.6) - 2026-10-01
+
+### Added
+
+- improvements to universal factor and refactor ([#283](https://github.com/worldcoin/backup-service/pull/283))
+- *(add-factor)* OIDC existing main factor authorization ([#233](https://github.com/worldcoin/backup-service/pull/233))
+- *(add-factor)* challenge API for universal add-factor ([#232](https://github.com/worldcoin/backup-service/pull/232))
+- prove backup account key on backup creation ([#243](https://github.com/worldcoin/backup-service/pull/243))
+
+### Fixed
+
+- *(release)* read versions from git tags in release-plz ([#288](https://github.com/worldcoin/backup-service/pull/288))
+- [MCORE-1898] replace selected sync access atomically during recovery ([#287](https://github.com/worldcoin/backup-service/pull/287))
+- *(add-factor)* post-insert FactorLookup ensure reconcile ([#237](https://github.com/worldcoin/backup-service/pull/237))
+- *(add-factor)* lookup ensure vs delete + heal retries ([#235](https://github.com/worldcoin/backup-service/pull/235))
+- *(add-factor)* concurrent lookup heal + same-session OIDC ([#234](https://github.com/worldcoin/backup-service/pull/234))
+- *(add-factor)* verify factor presence inside add_encryption_key_only ([#269](https://github.com/worldcoin/backup-service/pull/269))
+- avoid race condition on backup update ([#262](https://github.com/worldcoin/backup-service/pull/262))
+- graceful shutdown ([#261](https://github.com/worldcoin/backup-service/pull/261))
+- *(auth)* follow-ups on FactorLookup mutate locking ([#239](https://github.com/worldcoin/backup-service/pull/239))
+- *(auth)* GC stale FactorLookup when metadata does not authorize ([#238](https://github.com/worldcoin/backup-service/pull/238))
+- *(storage)* factor write reconcile + consistent lookup ([#231](https://github.com/worldcoin/backup-service/pull/231))
+
+### Other
+
+- *(add-factor)* unit-test metadata factor presence helper ([#236](https://github.com/worldcoin/backup-service/pull/236))
+- *(deps)* bump k256 from 0.13.4 to 0.14.0 ([#224](https://github.com/worldcoin/backup-service/pull/224))
+- *(deps)* bump serial_test from 3.5.0 to 4.0.1 ([#223](https://github.com/worldcoin/backup-service/pull/223))
+- *(deps)* bump passkey from 0.4.0 to 0.5.0 ([#268](https://github.com/worldcoin/backup-service/pull/268))
+- *(deps)* bump webauthn-rs from 0.5.2 to 0.5.5 ([#266](https://github.com/worldcoin/backup-service/pull/266))
+- *(deps)* bump bytes from 1.11.1 to 1.12.1 ([#267](https://github.com/worldcoin/backup-service/pull/267))
+- improve ci config ([#260](https://github.com/worldcoin/backup-service/pull/260))
+- Dependency Update - Rust - rustls ([#264](https://github.com/worldcoin/backup-service/pull/264))
+- unit tests for content-length validation ([#263](https://github.com/worldcoin/backup-service/pull/263))
+- *(auth)* add a metric for auth-time stale FactorLookup GC ([#248](https://github.com/worldcoin/backup-service/pull/248))
+- *(deps)* bump rsa from 0.9.8 to 0.9.10 ([#259](https://github.com/worldcoin/backup-service/pull/259))
+- *(deps)* bump reqwest from 0.12.24 to 0.12.28 ([#257](https://github.com/worldcoin/backup-service/pull/257))
+- *(deps)* bump serde_json from 1.0.149 to 1.0.151 ([#258](https://github.com/worldcoin/backup-service/pull/258))
+- version bumps & RUSTSEC-2026-0258 ([#244](https://github.com/worldcoin/backup-service/pull/244))
+- refactor all types into a separate crate ([#240](https://github.com/worldcoin/backup-service/pull/240))
+- *(deps)* bump anyhow from 1.0.103 to 1.0.104 ([#222](https://github.com/worldcoin/backup-service/pull/222))
+- *(deps)* bump serde from 1.0.228 to 1.0.229 ([#225](https://github.com/worldcoin/backup-service/pull/225))
+- *(deps)* bump aws-sdk-s3 from 1.128.0 to 1.129.0 ([#226](https://github.com/worldcoin/backup-service/pull/226))
+- Fix Redis lock release race by binding lock to owner token ([#214](https://github.com/worldcoin/backup-service/pull/214))
+
 # [0.9.5] - 2026-08-03
 
 ## What's Changed

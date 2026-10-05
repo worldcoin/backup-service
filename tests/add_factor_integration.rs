@@ -764,3 +764,72 @@ async fn test_add_factor_cross_backup_oidc_already_exists() {
         .any(|f| f["kind"]["kind"] == "OIDC_ACCOUNT");
     assert!(!oidc_on_b);
 }
+
+#[tokio::test]
+async fn test_adding_factor_from_an_existing_oidc_factor_is_not_yet_supported() {
+    for (endpoint, payload) in [
+        (
+            "/v1/add-factor/challenge",
+            json!({
+                "existingFactorKind": "OIDC_ACCOUNT",
+                "newFactor": { "kind": "OIDC_ACCOUNT", "oidcToken": "unused" }
+            }),
+        ),
+        (
+            "/v1/add-factor",
+            json!({
+                "existingFactorAuthorization": {
+                    "kind": "OIDC_ACCOUNT",
+                    "oidcToken": { "kind": "GOOGLE", "token": "unused" },
+                    "publicKey": "unused",
+                    "signature": "unused"
+                },
+                "existingFactorChallengeToken": "unused",
+                "newFactorAuthorization": {
+                    "kind": "OIDC_ACCOUNT",
+                    "oidcToken": { "kind": "GOOGLE", "token": "unused" },
+                    "publicKey": "unused",
+                    "signature": "unused"
+                },
+                "newFactorChallengeToken": "unused"
+            }),
+        ),
+    ] {
+        let response = common::send_post_request(endpoint, payload).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{endpoint}");
+        let body = parse_response_body(response).await;
+        assert_eq!(body["error"]["code"], "not_supported", "{endpoint}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn test_adding_a_passkey_is_not_yet_supported() {
+    for platform in ["IOS", "ANDROID"] {
+        for existing_kind in [json!(null), json!("PASSKEY"), json!("OIDC_ACCOUNT")] {
+            let response = common::send_post_request(
+                "/v1/add-factor/challenge",
+                json!({
+                    "existingFactorKind": existing_kind,
+                    "newFactor": { "kind": "PASSKEY_REGISTRATION", "platform": platform }
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = parse_response_body(response).await;
+            assert_eq!(body["error"]["code"], "not_supported", "{body}");
+        }
+    }
+    let response = common::send_post_request(
+        "/v1/add-factor",
+        json!({
+            "existingFactorAuthorization": { "kind": "PASSKEY", "credential": {} },
+            "existingFactorChallengeToken": "unused",
+            "newFactorAuthorization": { "kind": "PASSKEY", "credential": {} },
+            "newFactorChallengeToken": "unused"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = parse_response_body(response).await;
+    assert_eq!(body["error"]["code"], "not_supported", "{body}");
+}
