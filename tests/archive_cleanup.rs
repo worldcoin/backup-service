@@ -369,3 +369,64 @@ async fn deletion_waits_until_the_reader_has_fetched_all_ciphertext() {
     );
     read.assert_async().await;
 }
+
+#[tokio::test]
+async fn oidc_lock_contention_preserves_nonce_and_challenge_for_retry() {
+    let subject = uuid::Uuid::new_v4().to_string();
+    let backup = common::create_test_backup_with_oidc_account(&subject, b"old").await;
+    assert_eq!(backup.response.status(), StatusCode::OK);
+    let created = json_body(backup.response).await;
+    let id = created["backupId"].as_str().unwrap();
+    let challenge = common::get_keypair_retrieve_challenge().await;
+    let (public_key, secret) = common::generate_keypair();
+    let token = backup.oidc_server.generate_token(
+        &backup_service_test_utils::MockOidcProvider::Google,
+        Some(openidconnect::SubjectIdentifier::new(subject)),
+        &public_key,
+    );
+    let request = json!({
+        "authorization": {
+            "kind": "OIDC_ACCOUNT",
+            "oidcToken": { "kind": "GOOGLE", "token": token },
+            "publicKey": public_key,
+            "signature": common::sign_keypair_challenge(
+                &secret, challenge["challenge"].as_str().unwrap()
+            ),
+        },
+        "challengeToken": challenge["token"],
+    });
+    let cache = RedisCacheManager::new(backup.environment, backup.environment.cache_default_ttl())
+        .await
+        .unwrap();
+    let mut lock = cache.lock_backup(id).await.unwrap();
+    let response = common::send_post_request_with_bypass_attestation_token(
+        "/v1/retrieve/from-challenge",
+        request.clone(),
+        Some(backup.environment),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::LOCKED);
+    lock.release().await.unwrap();
+
+    let response = common::send_post_request_with_bypass_attestation_token(
+        "/v1/retrieve/from-challenge",
+        request.clone(),
+        Some(backup.environment),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        STANDARD
+            .decode(json_body(response).await["backup"].as_str().unwrap())
+            .unwrap(),
+        b"old"
+    );
+    let response = common::send_post_request_with_bypass_attestation_token(
+        "/v1/retrieve/from-challenge",
+        request,
+        Some(backup.environment),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"]["code"], "already_used");
+}

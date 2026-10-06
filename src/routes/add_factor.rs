@@ -40,12 +40,9 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    if matches!(
-        request.existing_factor_authorization,
-        Authorization::OidcAccount { .. }
-    ) || matches!(
-        request.new_factor_authorization,
-        Authorization::Passkey { .. }
+    if let (Authorization::OidcAccount { .. }, _) | (_, Authorization::Passkey { .. }) = (
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
     ) {
         // New add-factor combinations are disabled until the material binding in #271 ships.
         return Err(ErrorResponse::bad_request(
@@ -66,12 +63,6 @@ pub async fn handler(
                     &request,
                 )
                 .await?;
-                account_lock
-                    .run(
-                        redis_cache_manager
-                            .use_challenge_token(request.existing_factor_challenge_token.clone()),
-                    )
-                    .await?;
                 (backup_id, approved_factor, None, account_lock)
             }
             Authorization::OidcAccount { .. } => {
@@ -223,6 +214,9 @@ async fn authenticate_existing_passkey(
             "Challenge context mismatch",
         ));
     };
+    account_lock
+        .run(cache.use_challenge_token(request.existing_factor_challenge_token.clone()))
+        .await?;
     Ok((id, new_factor_type, account_lock))
 }
 

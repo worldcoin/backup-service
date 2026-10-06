@@ -277,8 +277,8 @@ impl AuthHandler {
         Ok(AuthenticationResult {
             backup_id,
             backup_metadata,
-            account_lock,
             oidc_session,
+            account_lock,
         })
     }
 
