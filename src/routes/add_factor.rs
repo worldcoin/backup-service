@@ -741,6 +741,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         }
     }
 
@@ -900,6 +901,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([0u8; 32]),
+            archive_id: None,
         };
         let _missing = s3
             .mock("GET", Matcher::Any)
