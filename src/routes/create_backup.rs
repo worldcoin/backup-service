@@ -156,6 +156,7 @@ pub async fn handler(
             ChallengeContext::Create {},
             request.turnkey_provider_id.clone(),
             false, // not a sync factor
+            None,
         )
         .await?;
 
@@ -171,6 +172,7 @@ pub async fn handler(
             ChallengeContext::Create {},
             None,
             true, // is a sync factor
+            None,
         )
         .await?;
 

@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use crate::auth::{AuthError, AuthHandler};
-use crate::backup_metadata::FactorKind;
-use crate::backup_storage::BackupStorage;
+use crate::auth::{AuthError, AuthHandler, ValidationResult};
+use crate::backup_metadata::{BackupMetadata, FactorKind};
+use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWrite};
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup, FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-    FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
+    factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
+    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
-use crate::redis_cache::RedisCacheManager;
+use crate::redis_cache::{RedisCacheManager, RedisLockGuard};
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
@@ -18,24 +18,20 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Duration;
+use rand::Rng;
 use types::{
     AddFactorRequest, AddFactorResponse, Authorization, BackupEncryptionKey, ErrorCode,
     FactorScope, OidcToken,
 };
 use webauthn_rs::prelude::PublicKeyCredential;
 
-/// Sanity check on what kind of activity is being signed alongside the backup service challenge.
-/// It should be an activity to create a new API key, because client uses it to a start a session
-/// and issue subsequent Turnkey requests without user verification.
 const EXPECTED_TURNKEY_ACTIVITY_TYPE: &str = "ACTIVITY_TYPE_CREATE_API_KEYS_V2";
-
 const TURNKEY_ACTIVITY_TTL: Duration = Duration::minutes(5);
 
-/// Adds a new factor to an existing backup.
+/// Adds a main factor using proofs from both the existing and new factors.
 ///
-/// This endpoint requires authentication with both an existing factor (to prove access to the backup)
-/// and the new factor (to prove ownership of the new factor).
-#[allow(clippy::too_many_lines)] // the code is properly split out into steps
+/// # Errors
+/// Rejects invalid or replayed proofs, unsupported factors, and storage conflicts or failures.
 pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(challenge_manager): Extension<Arc<ChallengeManager>>,
@@ -44,261 +40,928 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    // Step 1: Check authorization for the existing factor and get the backup ID
-    let (backup_id, expected_new_factor, mut account_lock) = match &request
-        .existing_factor_authorization
-    {
-        Authorization::Passkey { credential, .. } => {
-            // Step 1A.1: Validate the format of data: turnkey activity, passkey assertion object
+    if matches!(
+        request.existing_factor_authorization,
+        Authorization::OidcAccount { .. }
+    ) || matches!(
+        request.new_factor_authorization,
+        Authorization::Passkey { .. }
+    ) {
+        // New add-factor combinations are disabled until the material binding in #271 ships.
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::NotSupported,
+            "This add-factor combination is disabled",
+        ));
+    }
 
-            // Turnkey activity is required for passkeys
-            let Some(turnkey_activity) = &request.existing_factor_turnkey_activity else {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::MissingTurnkeyActivity,
-                    "Turnkey activity is missing",
-                ));
-            };
-            // Parse credential per the WebAuthn spec
-            let user_provided_credential = PublicKeyCredential::try_from_value(credential)?;
-
-            // Step 1A.2: Retrieve the potential backup using credential ID in the passkey.
-            // At this point, the user has not verified that they correctly signed the challenge.
-            let provided_credential_id = user_provided_credential.get_credential_id();
-            let backup_id = factor_lookup
-                .lookup(
-                    FactorScope::Main,
-                    &FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(provided_credential_id)),
+    // Step 1: Check authorization for the existing factor and get the backup ID.
+    let (backup_id, approved_factor, oidc_session, mut account_lock) =
+        match &request.existing_factor_authorization {
+            Authorization::Passkey { .. } => {
+                let (backup_id, approved_factor, account_lock) = authenticate_existing_passkey(
+                    &backup_storage,
+                    &factor_lookup,
+                    &challenge_manager,
+                    &redis_cache_manager,
+                    &request,
                 )
                 .await?;
-            let Some(backup_id) = backup_id else {
-                return Err(AuthError::BackupUntraceable.into());
-            };
-            let account_lock = redis_cache_manager.lock_backup(&backup_id).await?;
-            let metadata = account_lock
-                .run(async {
-                    backup_storage
-                        .get_metadata_by_backup_id(&backup_id)
-                        .await
-                        .map_err(ErrorResponse::from)
-                })
-                .await?;
-            let Some((backup_metadata, _)) = metadata else {
-                return Err(AuthError::BackupMissing.into());
-            };
-
-            // Step 1A.3: Verify the signature of the passkey assertion object using the public key
-            // from backup metadata as a reference. It should sign the Turnkey activity.
-            let reference_passkey = backup_metadata
-                .factors
-                .iter()
-                .find_map(|factor| {
-                    if let FactorKind::Passkey {
-                        webauthn_credential,
-                        ..
-                    } = &factor.kind
-                    {
-                        if webauthn_credential.cred_id() == provided_credential_id {
-                            Some(webauthn_credential)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| AuthError::BackupUntraceable)?;
-
-            verify_turnkey_activity_webauthn_stamp(
-                reference_passkey.get_public_key(),
-                turnkey_activity,
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.authenticator_data),
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.client_data_json),
-                &URL_SAFE_NO_PAD.encode(&user_provided_credential.response.signature),
-            )?;
-
-            // Step 1A.4: Verify the Turnkey activity is valid and matches what we know about the user.
-
-            // If the user already has a Turnkey account registered, we expect the Turnkey activity to contain the same account ID.
-            let expected_turnkey_account_id = backup_metadata.keys.iter().find_map(|key| {
-                if let BackupEncryptionKey::Turnkey {
-                    turnkey_account_id, ..
-                } = key
-                {
-                    Some(turnkey_account_id.clone())
-                } else {
-                    None
-                }
-            });
-
-            verify_turnkey_activity_parameters(
-                turnkey_activity,
-                expected_turnkey_account_id,
-                EXPECTED_TURNKEY_ACTIVITY_TYPE,
-                TURNKEY_ACTIVITY_TTL,
-            )?;
-
-            // Step 1A.5: Verify that Turnkey activity includes backup-service challenge.
-            // This challenge should also be of correct type.
-            let turnkey_activity_json: serde_json::Value = serde_json::from_str(turnkey_activity)
-                .map_err(|err| {
-                tracing::info!(message = "Failed to deserialize Turnkey activity", error = ?err);
-                ErrorResponse::bad_request(
-                    ErrorCode::InvalidTurnkeyActivity,
-                    "Provided Turnkey activity is invalid",
-                )
-            })?;
-
-            let backup_service_challenge = turnkey_activity_json["metadata"]["challenge"]
-                .as_str()
-                .ok_or_else(|| {
-                    tracing::info!(
-                        message =
-                            "Failed to get the backup-service challenge from Turnkey activity"
-                    );
-                    ErrorResponse::bad_request(
-                        ErrorCode::InvalidTurnkeyActivity,
-                        "Turnkey activity is missing server challenge",
+                account_lock
+                    .run(
+                        redis_cache_manager
+                            .use_challenge_token(request.existing_factor_challenge_token.clone()),
                     )
-                })?;
-            let (trusted_challenge, challenge_context) = challenge_manager
-                .extract_token_payload(
-                    ChallengeType::Passkey,
-                    request.existing_factor_challenge_token.clone(),
+                    .await?;
+                (backup_id, approved_factor, None, account_lock)
+            }
+            Authorization::OidcAccount { .. } => {
+                let (_, context) = challenge_manager
+                    .extract_token_payload(
+                        (&request.existing_factor_authorization).into(),
+                        request.existing_factor_challenge_token.clone(),
+                    )
+                    .await?;
+                let ChallengeContext::AddFactor { new_factor_type } = context else {
+                    return Err(ErrorResponse::bad_request(
+                        ErrorCode::InvalidChallengeContext,
+                        "Challenge context mismatch",
+                    ));
+                };
+                let authenticated = auth_handler
+                    .clone()
+                    .verify(
+                        &request.existing_factor_authorization,
+                        FactorScope::Main,
+                        ChallengeContext::AddFactor {
+                            new_factor_type: new_factor_type.clone(),
+                        },
+                        request.existing_factor_challenge_token.clone(),
+                    )
+                    .await?;
+                (
+                    authenticated.backup_id,
+                    new_factor_type,
+                    authenticated.oidc_session,
+                    authenticated.account_lock,
                 )
-                .await?;
-
-            // This is the most important piece, it binds the user's passkey signature to the challenge we provided originally in `/add-factor/challenge`
-            if STANDARD.encode(trusted_challenge) != backup_service_challenge {
+            }
+            Authorization::EcKeypair { .. } => {
                 return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallenge,
-                    "Challenge mismatch with Turnkey activity",
+                    ErrorCode::NotSupported,
+                    "EC keypair is not supported as an existing main factor for add-factor",
                 ));
             }
+        };
+    let result = account_lock
+        .run(async {
+            // Step 2: Validate the new factor against the existing factor's approval.
+            verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
+            let validation = auth_handler
+                .validate_factor_registration(
+                    &request.new_factor_authorization,
+                    request.new_factor_challenge_token.clone(),
+                    ChallengeContext::AddFactorByNewFactor {},
+                    request.turnkey_provider_id.clone(),
+                    false,
+                    oidc_session,
+                )
+                .await?;
 
-            let ChallengeContext::AddFactor { new_factor_type } = challenge_context else {
+            // Step 3: Persist the new factor and any encrypted backup key.
+            // Auth-time stale-row cleanup shares this lock with lookup and metadata writes.
+            let mut lock = redis_cache_manager
+                .try_acquire_lock_guard(
+                    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                    factor_lookup_mutate_lock_id(&validation.factor_to_lookup),
+                    Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+                )
+                .await?;
+            let result = persist_factor(
+                &backup_storage,
+                &factor_lookup,
+                &request,
+                validation,
+                &backup_id,
+            )
+            .await;
+            if let Err(error) = lock.release().await {
+                tracing::error!(message = "Failed to release add-factor lookup lock", ?error);
+            }
+            // Step 4: Return the new factor ID and updated backup metadata.
+            result
+        })
+        .await;
+    let _ = account_lock.release().await;
+    result
+}
+
+async fn authenticate_existing_passkey(
+    storage: &BackupStorage,
+    lookup: &FactorLookup,
+    challenges: &ChallengeManager,
+    cache: &RedisCacheManager,
+    request: &AddFactorRequest,
+) -> Result<(String, NewFactorType, RedisLockGuard), ErrorResponse> {
+    let Authorization::Passkey { credential, .. } = &request.existing_factor_authorization else {
+        return Err(AuthError::InvalidAuthorizationType.into());
+    };
+    let activity = request
+        .existing_factor_turnkey_activity
+        .as_deref()
+        .ok_or_else(|| {
+            ErrorResponse::bad_request(
+                ErrorCode::MissingTurnkeyActivity,
+                "Turnkey activity is missing",
+            )
+        })?;
+    let credential = PublicKeyCredential::try_from_value(credential)?;
+    let factor =
+        FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential.get_credential_id()));
+    let id = lookup
+        .lookup(FactorScope::Main, &factor)
+        .await?
+        .ok_or(AuthError::BackupUntraceable)?;
+    let account_lock = cache.lock_backup(&id).await?;
+    let (metadata, _) = account_lock
+        .run(async {
+            storage
+                .get_metadata_by_backup_id(&id)
+                .await
+                .map_err(ErrorResponse::from)
+        })
+        .await?
+        .ok_or(AuthError::BackupMissing)?;
+    verify_existing_activity(&metadata, &credential, activity)?;
+    let activity: serde_json::Value = serde_json::from_str(activity).map_err(|error| {
+        tracing::info!(message = "Invalid Turnkey activity JSON", ?error);
+        ErrorResponse::bad_request(
+            ErrorCode::InvalidTurnkeyActivity,
+            "Provided Turnkey activity is invalid",
+        )
+    })?;
+    let signed_challenge = activity["metadata"]["challenge"].as_str().ok_or_else(|| {
+        ErrorResponse::bad_request(
+            ErrorCode::InvalidTurnkeyActivity,
+            "Turnkey activity is missing server challenge",
+        )
+    })?;
+    let (challenge, context) = challenges
+        .extract_token_payload(
+            ChallengeType::Passkey,
+            request.existing_factor_challenge_token.clone(),
+        )
+        .await?;
+    if STANDARD.encode(challenge) != signed_challenge {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::InvalidChallenge,
+            "Challenge mismatch with Turnkey activity",
+        ));
+    }
+    let ChallengeContext::AddFactor { new_factor_type } = context else {
+        return Err(ErrorResponse::bad_request(
+            ErrorCode::InvalidChallengeContext,
+            "Challenge context mismatch",
+        ));
+    };
+    Ok((id, new_factor_type, account_lock))
+}
+
+fn verify_existing_activity(
+    metadata: &BackupMetadata,
+    credential: &PublicKeyCredential,
+    activity: &str,
+) -> Result<(), ErrorResponse> {
+    let passkey = metadata
+        .factors
+        .iter()
+        .find_map(|factor| {
+            let FactorKind::Passkey {
+                webauthn_credential,
+                ..
+            } = &factor.kind
+            else {
+                return None;
+            };
+            (webauthn_credential.cred_id() == credential.get_credential_id())
+                .then_some(webauthn_credential)
+        })
+        .ok_or(AuthError::BackupUntraceable)?;
+    verify_turnkey_activity_webauthn_stamp(
+        passkey.get_public_key(),
+        activity,
+        &URL_SAFE_NO_PAD.encode(&credential.response.authenticator_data),
+        &URL_SAFE_NO_PAD.encode(&credential.response.client_data_json),
+        &URL_SAFE_NO_PAD.encode(&credential.response.signature),
+    )?;
+    let account_id = metadata.keys.iter().find_map(|key| {
+        if let BackupEncryptionKey::Turnkey {
+            turnkey_account_id, ..
+        } = key
+        {
+            Some(turnkey_account_id.clone())
+        } else {
+            None
+        }
+    });
+    verify_turnkey_activity_parameters(
+        activity,
+        account_id,
+        EXPECTED_TURNKEY_ACTIVITY_TYPE,
+        TURNKEY_ACTIVITY_TTL,
+    )?;
+    Ok(())
+}
+
+async fn verify_new_factor_binding(
+    challenge_manager: &ChallengeManager,
+    expected_new_factor: &NewFactorType,
+    request: &AddFactorRequest,
+) -> Result<(), ErrorResponse> {
+    match (expected_new_factor, &request.new_factor_authorization) {
+        (
+            NewFactorType::OidcAccount {
+                oidc_token: expected_oidc_token,
+            },
+            Authorization::OidcAccount { oidc_token, .. },
+        ) => {
+            let raw_oidc_token = match oidc_token {
+                OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
+            };
+            if raw_oidc_token != expected_oidc_token {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::OidcTokenMismatch,
+                    "OIDC Token mismatch",
+                ));
+            }
+        }
+        (
+            NewFactorType::PasskeyRegistration {
+                registration_hash: expected_hash,
+            },
+            Authorization::Passkey { .. },
+        ) => {
+            let (registration_payload, new_factor_context) = challenge_manager
+                .extract_token_payload(
+                    ChallengeType::Passkey,
+                    request.new_factor_challenge_token.clone(),
+                )
+                .await?;
+            let ChallengeContext::AddFactorByNewFactor {} = new_factor_context else {
                 return Err(ErrorResponse::bad_request(
                     ErrorCode::InvalidChallengeContext,
                     "Challenge context mismatch",
                 ));
             };
-            // We do not need to check signature here, because whole activity is signed and verified
-            // in the previous steps.
-
-            // Step 1A.6: Track the used challenge to prevent replay attacks
-            // TODO / FIXME
-
-            // Step 1A.7: Return the backup ID and the new factor type
-            (backup_id, new_factor_type, account_lock)
-        }
-        Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => {
-            // TODO/FIXME: Implement the logic for verifying the existing factor for OIDC and EC keypair.
-            // When implementing OIDC here, pass `client_name` to `validate_oidc_authentication` so the
-            // correct provider client_id (per `Environment::{google,apple}_client_id`) is used.
-            return Err(ErrorResponse::bad_request(
-                ErrorCode::NotSupported,
-                "Not supported",
-            ));
-        }
-    };
-
-    let result = account_lock.run(async {
-    // Step 2: Validate the new factor using AuthHandler
-    // First, we need to verify that the new factor type matches what was expected from the existing factor's challenge
-    match &request.new_factor_authorization {
-        Authorization::OidcAccount { oidc_token, .. } => {
-            // Step 2A.1: Verify the OIDC token matches what was expected from the existing factor's challenge
-            #[allow(irrefutable_let_patterns)]
-            if let NewFactorType::OidcAccount {
-                oidc_token: expected_oidc_token,
-            } = &expected_new_factor
-            {
-                let raw_oidc_token = match &oidc_token {
-                    OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
-                };
-                if raw_oidc_token != expected_oidc_token {
-                    return Err(ErrorResponse::bad_request(
-                        ErrorCode::OidcTokenMismatch,
-                        "OIDC Token mismatch",
-                    ));
-                }
-            } else {
+            let actual_hash =
+                crate::routes::add_factor_challenge::registration_state_hash(&registration_payload);
+            if actual_hash != *expected_hash {
                 return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidNewFactorType,
-                    "Invalid new factor type",
+                    ErrorCode::PasskeyRegistrationMismatch,
+                    "Passkey registration does not match the one authorized by the existing factor",
                 ));
             }
         }
+        (_, Authorization::EcKeypair { .. }) => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::NotSupported,
+                "EC keypair is not supported as a main factor for add-factor",
+            ));
+        }
         _ => {
             return Err(ErrorResponse::bad_request(
-                ErrorCode::InvalidNewFactorAuthorizationType,
-                "Invalid new factor authorization type",
+                ErrorCode::InvalidNewFactorType,
+                "Invalid new factor type",
             ));
         }
     }
 
-    // Step 2A.2: Use AuthHandler to validate the new factor
-    let validation_result = auth_handler
-        .validate_factor_registration(
-            &request.new_factor_authorization,
-            request.new_factor_challenge_token.clone(),
-            ChallengeContext::AddFactorByNewFactor {},
-            request.turnkey_provider_id.clone(),
-            false, // not a sync factor
-        )
-        .await?;
+    Ok(())
+}
 
-    let new_factor = validation_result.factor;
-    let factor_to_lookup = validation_result.factor_to_lookup;
-
-    // Hold the factor mutate lock across lookup insert + metadata put so auth stale-delete cannot
-    // remove the row while S3 is still catching up.
-    let mut factor_lock = redis_cache_manager
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&factor_to_lookup),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
-
-    // Step 3.1: Update the factor lookup with the new factor
-    factor_lookup
-        .insert(FactorScope::Main, &factor_to_lookup, backup_id.clone())
-        .await?;
-
-    // Note on atomicity: This process is not atomic. The factor is added to the lookup first because this
-    // provides the best security guarantees: it avoids a window where a factor exists in the backup
-    // metadata (and is therefore usable) without a lookup entry.
-
-    // Step 3.2: Add the new factor and potentially new encrypted key to the backup metadata
-    let write = backup_storage
+async fn persist_factor(
+    storage: &BackupStorage,
+    lookup: &FactorLookup,
+    request: &AddFactorRequest,
+    validation: ValidationResult,
+    backup_id: &str,
+) -> Result<Json<AddFactorResponse>, ErrorResponse> {
+    let factor = validation.factor;
+    let lookup_key = validation.factor_to_lookup;
+    // Step 3.1: Update the factor lookup with the new factor.
+    let inserted = match insert_main_lookup(lookup, &lookup_key, backup_id).await? {
+        LookupInsert::Inserted => true,
+        LookupInsert::Existing => false,
+        LookupInsert::WrongOwner => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::FactorAlreadyExists,
+                "This factor already exists.",
+            ))
+        }
+        LookupInsert::Missing => {
+            tracing::error!(
+                message = "Lookup missing after insert conflict",
+                factor_pk = lookup_key.primary_key(),
+            );
+            return Err(ErrorResponse::internal_server_error());
+        }
+    };
+    // Step 3.2: Add the factor and any encrypted backup key to metadata.
+    let write = storage
         .add_factor(
-            &backup_id,
-            new_factor.clone(),
+            backup_id,
+            factor.clone(),
             request.encrypted_backup_key.clone(),
         )
         .await;
+    let (metadata, factor_id) = match write {
+        FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {
+            if let Some(key) = &request.encrypted_backup_key {
+                storage
+                    .add_encryption_key_only(backup_id, &factor.kind, key.clone())
+                    .await?;
+            }
+            let (metadata, _) = storage
+                .get_metadata_by_backup_id(backup_id)
+                .await?
+                .ok_or(BackupManagerError::BackupNotFound)?;
+            let Some(id) = stored_main_factor_id(&metadata, &factor.kind) else {
+                tracing::warn!(
+                    message = "Duplicate factor disappeared from metadata",
+                    factor_pk = lookup_key.primary_key(),
+                );
+                if inserted {
+                    if let Err(error) = lookup.delete(FactorScope::Main, &lookup_key).await {
+                        tracing::error!(
+                            message = "Failed to remove lookup for missing duplicate factor",
+                            ?error,
+                            factor_pk = lookup_key.primary_key(),
+                        );
+                    }
+                }
+                return Err(BackupManagerError::FactorNotFound.into());
+            };
+            (metadata, id)
+        }
+        // Step 3.3: Roll back our lookup insertion when the metadata write did not land.
+        FactorMetadataWrite::NotInserted(error) => {
+            if inserted {
+                rollback_lookup_if_absent(storage, lookup, &lookup_key, backup_id, &factor.kind)
+                    .await;
+            }
+            return Err(error.into());
+        }
+        FactorMetadataWrite::Unknown(error) => return Err(error.into()),
+        FactorMetadataWrite::Inserted(metadata) => (metadata, factor.id),
+    };
+    ensure_main_factor_lookup(storage, lookup, &lookup_key, backup_id, &factor.kind).await?;
+    Ok(Json(AddFactorResponse {
+        factor_id,
+        backup_metadata: metadata.exported(),
+    }))
+}
 
-    // Step 3.3: Roll back FactorLookup only when the metadata write definitely did not land
-    // (`NotInserted`). Skip rollback for `Unknown` (ambiguous S3 write or factor already present).
-    if write.should_rollback_lookup() {
-        if let Err(delete_err) = factor_lookup
-            .delete(FactorScope::Main, &factor_to_lookup)
-            .await
+enum LookupInsert {
+    Inserted,
+    Existing,
+    WrongOwner,
+    Missing,
+}
+
+async fn insert_main_lookup(
+    lookup: &FactorLookup,
+    factor: &FactorToLookup,
+    backup_id: &str,
+) -> Result<LookupInsert, FactorLookupError> {
+    match lookup
+        .insert(FactorScope::Main, factor, backup_id.to_string())
+        .await
+    {
+        Ok(()) => return Ok(LookupInsert::Inserted),
+        Err(FactorLookupError::DynamoDbPutError(
+            aws_sdk_dynamodb::error::SdkError::ServiceError(error),
+        )) if error.err().is_conditional_check_failed_exception() => {}
+        Err(error) => return Err(error),
+    }
+    // An eventually consistent read can miss the row that caused the insert conflict.
+    Ok(
+        match lookup.lookup_consistent(FactorScope::Main, factor).await? {
+            Some(owner) if owner == backup_id => LookupInsert::Existing,
+            Some(_) => LookupInsert::WrongOwner,
+            None => LookupInsert::Missing,
+        },
+    )
+}
+
+async fn rollback_lookup_if_absent(
+    storage: &BackupStorage,
+    lookup: &FactorLookup,
+    factor: &FactorToLookup,
+    backup_id: &str,
+    kind: &FactorKind,
+) {
+    match storage.get_metadata_by_backup_id(backup_id).await {
+        Ok(Some((metadata, _))) if metadata.factors.iter().any(|f| f.kind == *kind) => return,
+        Ok(Some(_) | None) => {}
+        Err(error) => {
+            tracing::error!(
+                message = "Failed to read metadata before rollback; keeping lookup",
+                ?error,
+                factor_pk = factor.primary_key(),
+            );
+            return;
+        }
+    }
+    if let Err(error) = lookup.delete(FactorScope::Main, factor).await {
+        tracing::error!(
+            message = "Lookup rollback failed; checking for an ambiguous delete",
+            ?error,
+            factor_pk = factor.primary_key(),
+        );
+    }
+    // A failed delete can still have applied; repair any concurrently committed factor.
+    heal_main_factor_lookup_if_present(storage, lookup, factor, backup_id, kind).await;
+}
+
+async fn retry_backoff(attempt: u32) {
+    let base_ms = 25u64 << attempt.min(4);
+    let jitter_ms = rand::thread_rng().gen_range(0..base_ms);
+    tokio::time::sleep(std::time::Duration::from_millis(base_ms + jitter_ms)).await;
+}
+
+async fn heal_main_factor_lookup_if_present(
+    storage: &BackupStorage,
+    lookup: &FactorLookup,
+    factor: &FactorToLookup,
+    backup_id: &str,
+    kind: &FactorKind,
+) {
+    // A confirmed factor can still be repaired if later metadata reads fail.
+    let mut confirmed_present = false;
+    let mut retry_without_metadata = false;
+    for attempt in 1..=3 {
+        if !retry_without_metadata {
+            match storage.get_metadata_by_backup_id(backup_id).await {
+                Ok(metadata) => {
+                    if classify_fetched_metadata_factor_presence(
+                        metadata.as_ref().map(|(metadata, _)| metadata),
+                        kind,
+                    ) == FactorPresence::Absent
+                    {
+                        return;
+                    }
+                    confirmed_present = true;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        message = "Failed to read metadata during lookup repair",
+                        ?error,
+                        backup_id,
+                        attempt,
+                    );
+                    if !confirmed_present {
+                        if attempt < 3 {
+                            retry_backoff(attempt).await;
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+        retry_without_metadata = false;
+        for _ in 0..2 {
+            match insert_main_lookup(lookup, factor, backup_id).await {
+                Ok(LookupInsert::Inserted | LookupInsert::Existing) => return,
+                Ok(LookupInsert::WrongOwner) => {
+                    tracing::error!(
+                        message = "Lookup repair conflicts with another backup",
+                        factor_pk = factor.primary_key(),
+                        backup_id,
+                    );
+                    return;
+                }
+                Ok(LookupInsert::Missing) => {
+                    // Retry a vanished row without making repair depend on another metadata read.
+                    confirmed_present = true;
+                    retry_without_metadata = true;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        message = "Failed to repair factor lookup",
+                        ?error,
+                        factor_pk = factor.primary_key(),
+                        attempt,
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    tracing::error!(
+        message = "Lookup repair exhausted retries; factor may be untraceable",
+        factor_pk = factor.primary_key(),
+        backup_id,
+    );
+}
+
+async fn ensure_main_factor_lookup(
+    storage: &BackupStorage,
+    lookup: &FactorLookup,
+    factor: &FactorToLookup,
+    backup_id: &str,
+    kind: &FactorKind,
+) -> Result<(), ErrorResponse> {
+    let factor_pk = factor.primary_key();
+    for attempt in 0..2 {
+        if factor_present_in_metadata_with_retry(storage, backup_id, kind, &factor_pk).await
+            == FactorPresence::Absent
         {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed factor addition.", error = ?delete_err, factor_pk = factor_to_lookup.primary_key());
+            return Ok(());
+        }
+        match insert_main_lookup(lookup, factor, backup_id).await? {
+            LookupInsert::Inserted | LookupInsert::Existing => {
+                return reconcile_ensured_lookup_against_metadata(
+                    storage, lookup, factor, backup_id, kind,
+                )
+                .await;
+            }
+            LookupInsert::WrongOwner if attempt == 0 => {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::FactorAlreadyExists,
+                    "This factor already exists.",
+                ))
+            }
+            LookupInsert::WrongOwner | LookupInsert::Missing => {}
+        }
+    }
+    tracing::error!(
+        message = "Failed to ensure lookup after factor write",
+        factor_pk
+    );
+    Err(ErrorResponse::internal_server_error())
+}
+
+async fn reconcile_ensured_lookup_against_metadata(
+    backup_storage: &BackupStorage,
+    factor_lookup: &FactorLookup,
+    factor_to_lookup: &FactorToLookup,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+) -> Result<(), ErrorResponse> {
+    const MAX_ROUNDS: u32 = 2;
+    let factor_pk = factor_to_lookup.primary_key();
+
+    for round in 1..=MAX_ROUNDS {
+        match factor_present_in_metadata_with_retry(
+            backup_storage,
+            backup_id,
+            new_factor_kind,
+            &factor_pk,
+        )
+        .await
+        {
+            FactorPresence::Present | FactorPresence::Unknown => return Ok(()),
+            FactorPresence::Absent => {
+                match factor_lookup
+                    .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                    .await?
+                {
+                    Some(existing) if existing == backup_id => {
+                        tracing::info!(
+                            message =
+                                "Deleting FactorLookup restored after concurrent factor deletion",
+                            factor_pk,
+                            round,
+                        );
+                        if let Err(delete_err) = factor_lookup
+                            .delete_if_maps_to(FactorScope::Main, factor_to_lookup, backup_id)
+                            .await
+                        {
+                            tracing::error!(
+                                message = "Lookup reconcile delete failed; continuing repair",
+                                error = ?delete_err,
+                                factor_pk,
+                                round,
+                            );
+                        }
+                        heal_main_factor_lookup_if_present(
+                            backup_storage,
+                            factor_lookup,
+                            factor_to_lookup,
+                            backup_id,
+                            new_factor_kind,
+                        )
+                        .await;
+                    }
+                    Some(_) | None => return Ok(()),
+                }
+            }
         }
     }
 
-    let _ = factor_lock.release().await;
+    Ok(())
+}
 
-    let updated_metadata = write.into_result()?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactorPresence {
+    Present,
+    Absent,
+    // Metadata reads failed; absence has not been established.
+    Unknown,
+}
 
-    // Step 4: Return the new factor ID and the updated backup metadata
-    Ok(Json(AddFactorResponse {
-        factor_id: new_factor.id,
-        backup_metadata: updated_metadata.exported(),
-    }))
-    }).await;
-    let _ = account_lock.release().await;
-    result
+fn classify_fetched_metadata_factor_presence(
+    metadata: Option<&BackupMetadata>,
+    kind: &FactorKind,
+) -> FactorPresence {
+    match metadata {
+        Some(metadata) if metadata.factors.iter().any(|f| f.kind == *kind) => {
+            FactorPresence::Present
+        }
+        Some(_) | None => FactorPresence::Absent,
+    }
+}
+
+async fn factor_present_in_metadata_with_retry(
+    backup_storage: &BackupStorage,
+    backup_id: &str,
+    new_factor_kind: &FactorKind,
+    factor_pk: &str,
+) -> FactorPresence {
+    const MAX_ATTEMPTS: u32 = 3;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match backup_storage.get_metadata_by_backup_id(backup_id).await {
+            Ok(metadata) => {
+                return classify_fetched_metadata_factor_presence(
+                    metadata.as_ref().map(|(metadata, _)| metadata),
+                    new_factor_kind,
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    message = "Failed to re-read metadata before FactorLookup ensure; retrying",
+                    error = ?err,
+                    factor_pk,
+                    attempt,
+                );
+                if attempt < MAX_ATTEMPTS {
+                    retry_backoff(attempt).await;
+                }
+            }
+        }
+    }
+
+    tracing::error!(
+        message = "Metadata reads exhausted retries; attempting lookup repair",
+        factor_pk,
+        backup_id,
+    );
+    FactorPresence::Unknown
+}
+
+fn stored_main_factor_id(metadata: &BackupMetadata, kind: &FactorKind) -> Option<String> {
+    metadata
+        .factors
+        .iter()
+        .find(|f| f.kind == *kind)
+        .map(|f| f.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::backup_storage::BackupStorage;
+    use crate::environment::Environment;
+    use crate::factor_lookup::{FactorLookup, FactorToLookup};
+    use mockito::{Matcher, Server};
+    use types::FactorScope;
+
+    use crate::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
+    use crate::routes::add_factor::{
+        classify_fetched_metadata_factor_presence, ensure_main_factor_lookup,
+        rollback_lookup_if_absent, stored_main_factor_id, FactorPresence,
+    };
+
+    fn google_kind(sub: &str) -> FactorKind {
+        FactorKind::OidcAccount {
+            account: OidcAccountKind::Google {
+                sub: sub.to_string(),
+                masked_email: "a****@b.com".to_string(),
+            },
+            turnkey_provider_id: "tp".to_string(),
+        }
+    }
+
+    fn metadata(factors: Vec<Factor>) -> BackupMetadata {
+        BackupMetadata {
+            id: "backup".to_string(),
+            factors,
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
+        }
+    }
+
+    #[test]
+    fn stored_main_factor_id_returns_none_when_factor_absent() {
+        assert!(stored_main_factor_id(&metadata(vec![]), &google_kind("sub")).is_none());
+    }
+
+    #[test]
+    fn stored_main_factor_id_returns_persisted_id_when_present() {
+        let factor = Factor {
+            id: "stored-id".to_string(),
+            created_at: chrono::Utc::now(),
+            kind: google_kind("sub"),
+        };
+        assert_eq!(
+            stored_main_factor_id(&metadata(vec![factor]), &google_kind("sub")).as_deref(),
+            Some("stored-id"),
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_absent_when_backup_missing() {
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(None, &google_kind("sub")),
+            FactorPresence::Absent,
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_absent_when_kind_missing() {
+        let factor = Factor {
+            id: "other".to_string(),
+            created_at: chrono::Utc::now(),
+            kind: google_kind("other"),
+        };
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(
+                Some(&metadata(vec![factor])),
+                &google_kind("sub")
+            ),
+            FactorPresence::Absent,
+        );
+    }
+
+    #[test]
+    fn classify_fetched_metadata_factor_presence_present_when_kind_matches() {
+        let factor = Factor {
+            id: "stored-id".to_string(),
+            created_at: chrono::Utc::now(),
+            kind: google_kind("sub"),
+        };
+        assert_eq!(
+            classify_fetched_metadata_factor_presence(
+                Some(&metadata(vec![factor])),
+                &google_kind("sub")
+            ),
+            FactorPresence::Present,
+        );
+    }
+
+    async fn fault_storage(server: &Server) -> BackupStorage {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let config = environment
+            .s3_client_config()
+            .await
+            .to_builder()
+            .endpoint_url(server.url())
+            .force_path_style(true)
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+            .build();
+        BackupStorage::new(environment, Arc::new(aws_sdk_s3::Client::from_conf(config)))
+    }
+
+    async fn factor_lookup(endpoint: Option<String>) -> FactorLookup {
+        let environment = Environment::development(None);
+        let mut config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
+            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled());
+        if let Some(endpoint) = endpoint {
+            config = config.endpoint_url(endpoint);
+        }
+        FactorLookup::new(
+            environment,
+            Arc::new(aws_sdk_dynamodb::Client::from_conf(config.build())),
+        )
+    }
+
+    #[tokio::test]
+    async fn unreadable_metadata_preserves_or_restores_the_lookup() {
+        let mut server = Server::new_async().await;
+        let _failure = server
+            .mock("GET", Matcher::Any)
+            .with_status(503)
+            .create_async()
+            .await;
+        let storage = fault_storage(&server).await;
+        let lookup = factor_lookup(None).await;
+        let id = uuid::Uuid::new_v4().to_string();
+        let kind = google_kind(&id);
+        let factor = FactorToLookup::OidcAccount {
+            iss: "google".to_string(),
+            sub: id.clone(),
+        };
+        lookup
+            .insert(FactorScope::Main, &factor, id.clone())
+            .await
+            .unwrap();
+
+        rollback_lookup_if_absent(&storage, &lookup, &factor, &id, &kind).await;
+        assert_eq!(
+            lookup
+                .lookup_consistent(FactorScope::Main, &factor)
+                .await
+                .unwrap(),
+            Some(id.clone())
+        );
+
+        lookup
+            .delete_if_maps_to(FactorScope::Main, &factor, &id)
+            .await
+            .unwrap();
+        ensure_main_factor_lookup(&storage, &lookup, &factor, &id, &kind)
+            .await
+            .unwrap();
+        assert_eq!(
+            lookup
+                .lookup_consistent(FactorScope::Main, &factor)
+                .await
+                .unwrap(),
+            Some(id)
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_delete_is_repaired_when_metadata_confirms_the_factor() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut s3 = Server::new_async().await;
+        let mut dynamo = Server::new_async().await;
+        let storage = fault_storage(&s3).await;
+        let lookup = factor_lookup(Some(dynamo.url())).await;
+        let kind = google_kind("subject");
+        let factor = FactorToLookup::OidcAccount {
+            iss: "google".to_string(),
+            sub: "subject".to_string(),
+        };
+        let metadata = BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![Factor::new_oidc_account(
+                OidcAccountKind::Google {
+                    sub: "subject".to_string(),
+                    masked_email: String::new(),
+                },
+                "provider".to_string(),
+            )],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: hex::encode([0u8; 32]),
+            archive_id: None,
+        };
+        let _missing = s3
+            .mock("GET", Matcher::Any)
+            .with_status(404)
+            .with_body("<Error><Code>NoSuchKey</Code></Error>")
+            .expect(1)
+            .create_async()
+            .await;
+        let _committed = s3
+            .mock("GET", Matcher::Any)
+            .with_status(200)
+            .with_body(serde_json::to_vec(&metadata).unwrap())
+            .create_async()
+            .await;
+        let present = Arc::new(AtomicBool::new(true));
+        let deleted = present.clone();
+        let delete = dynamo
+            .mock("POST", "/")
+            .match_header("x-amz-target", "DynamoDB_20120810.DeleteItem")
+            .with_status(500)
+            .with_body_from_request(move |_| {
+                deleted.store(false, Ordering::SeqCst);
+                "{\"__type\":\"InternalServerError\"}".into()
+            })
+            .create_async()
+            .await;
+        let restored = present.clone();
+        let insert = dynamo
+            .mock("POST", "/")
+            .match_header("x-amz-target", "DynamoDB_20120810.PutItem")
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                restored.store(true, Ordering::SeqCst);
+                "{}".into()
+            })
+            .create_async()
+            .await;
+
+        rollback_lookup_if_absent(&storage, &lookup, &factor, "backup", &kind).await;
+        delete.assert_async().await;
+        insert.assert_async().await;
+        assert!(present.load(Ordering::SeqCst));
+    }
 }
