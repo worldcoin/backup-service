@@ -381,6 +381,7 @@ const ERROR_CODES: &[&str] = &[
     "oidc_token_parse_error",
     "oidc_token_verification_error",
     "only_one_encryption_key_per_type_allowed",
+    "passkey_registration_mismatch",
     "signature_verification_error",
     "sync_factor_must_be_keypair",
     "token_expired",
@@ -515,4 +516,20 @@ fn multipart_endpoints() {
     assert_eq!(SyncBackupRequest::BODY, BodyKind::Multipart);
     assert_eq!(AddFactorRequest::BODY, BodyKind::Json);
     assert_eq!(AddFactorRequest::METHOD, Method::Post);
+}
+
+#[test]
+fn add_sync_factor_to_replace_is_optional() {
+    use backup_service_types::AddSyncFactorRequest;
+    let legacy = json!({
+        "challengeToken":"challenge", "syncFactorToken":"main-recovery",
+        "syncFactor":{"kind":"EC_KEYPAIR", "publicKey":"public", "signature":"signature"}
+    });
+    let mut request: AddSyncFactorRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(request.sync_factor_to_replace, None);
+    assert_wire(&request, &legacy);
+    request.sync_factor_to_replace = Some("selected-sync-factor".to_string());
+    let mut expected = legacy;
+    expected["syncFactorToReplace"] = json!("selected-sync-factor");
+    assert_wire(&request, &expected);
 }

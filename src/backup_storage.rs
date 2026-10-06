@@ -417,7 +417,8 @@ impl BackupStorage {
         }
     }
 
-    /// Adds a sync factor to the backup metadata in S3.
+    /// Adds a sync factor, replacing the selected sync factor in place if present.
+    /// Returns the replaced factor for lookup cleanup; otherwise applies the ordinary capacity limit.
     ///
     /// Returns a [`FactorMetadataWrite`] so callers that write `FactorLookup` first can roll back only
     /// when the metadata write definitely did not land.
@@ -425,14 +426,14 @@ impl BackupStorage {
     /// # Errors (via `NotInserted` / `Unknown`)
     /// - `BackupManagerError::SyncFactorMustBeKeypair` - if the sync factor is not a keypair. Only keypairs are supported sync factors.
     /// - `BackupManagerError::BackupNotFound` - if the backup does not exist.
-    /// - `BackupManagerError::FactorAlreadyExists` - if the sync factor already exists. Same-scope
-    ///   duplicates are `Unknown` (keep/heal lookup); opposite-scope duplicates are `NotInserted`
-    ///   so a just-inserted sync lookup (and sync token) can be rolled back.
+    /// - `BackupManagerError::FactorAlreadyExists` - same-scope duplicates keep the lookup;
+    ///   opposite-scope duplicates permit lookup rollback.
     pub async fn add_sync_factor(
         &self,
         backup_id: &str,
         sync_factor: Factor,
-    ) -> FactorMetadataWrite<()> {
+        sync_factor_to_replace: Option<&str>,
+    ) -> FactorMetadataWrite<Option<Factor>> {
         // Sync factor must be a keypair
         match sync_factor.kind {
             FactorKind::EcKeypair { .. } => {}
@@ -463,14 +464,27 @@ impl BackupStorage {
             return duplicate;
         }
 
-        if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
-            return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
-                limit: MAX_SYNC_FACTORS_PER_BACKUP,
-            });
-        }
-
-        // Add the sync factor to the metadata
-        metadata.sync_factors.push(sync_factor);
+        let replace_index = sync_factor_to_replace.and_then(|id| {
+            metadata
+                .sync_factors
+                .iter()
+                .position(|factor| factor.id == id)
+        });
+        let removed = if let Some(index) = replace_index {
+            // In-place swap keeps legacy over-cap counts from growing.
+            Some(std::mem::replace(
+                &mut metadata.sync_factors[index],
+                sync_factor,
+            ))
+        } else {
+            if metadata.sync_factors.len() >= MAX_SYNC_FACTORS_PER_BACKUP {
+                return FactorMetadataWrite::NotInserted(BackupManagerError::TooManyFactors {
+                    limit: MAX_SYNC_FACTORS_PER_BACKUP,
+                });
+            }
+            metadata.sync_factors.push(sync_factor);
+            None
+        };
 
         let body = match serde_json::to_vec(&metadata) {
             Ok(body) => body,
@@ -487,7 +501,7 @@ impl BackupStorage {
             .send()
             .await
         {
-            Ok(_) => FactorMetadataWrite::Inserted(()),
+            Ok(_) => FactorMetadataWrite::Inserted(removed),
             Err(err) => Self::classify_put_object_error(err),
         }
     }
@@ -1561,7 +1575,7 @@ mod tests {
         // Add the sync factor
         let keypair_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await
             .into_result()
             .unwrap();
@@ -1579,15 +1593,14 @@ mod tests {
             keypair_factor.kind
         );
 
-        // Try to add the same sync factor again - should fail with FactorAlreadyExists as Unknown
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, keypair_factor.clone())
+            .add_sync_factor(&test_backup_id, keypair_factor.clone(), None)
             .await;
         assert!(!result.should_rollback_lookup());
-        match result {
-            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists) => {}
-            other => panic!("Expected Unknown(FactorAlreadyExists), got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            FactorMetadataWrite::Unknown(BackupManagerError::FactorAlreadyExists)
+        ));
 
         // Same key as a main factor must reject sync add with rollback (opposite scope).
         let main_only_backup_id = gen_backup_id();
@@ -1607,7 +1620,7 @@ mod tests {
             .await
             .unwrap();
         let result = backup_storage
-            .add_sync_factor(&main_only_backup_id, main_keypair)
+            .add_sync_factor(&main_only_backup_id, main_keypair, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1626,7 +1639,7 @@ mod tests {
             "turnkey_provider_id".to_string(),
         );
         let result = backup_storage
-            .add_sync_factor(&test_backup_id, oidc_factor)
+            .add_sync_factor(&test_backup_id, oidc_factor, None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1636,7 +1649,7 @@ mod tests {
 
         // Try to add a sync factor to a non-existent backup - should fail with BackupNotFound
         let result = backup_storage
-            .add_sync_factor("non_existent_backup", keypair_factor.clone())
+            .add_sync_factor("non_existent_backup", keypair_factor.clone(), None)
             .await;
         assert!(result.should_rollback_lookup());
         match result {
@@ -1755,6 +1768,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-at-limit".to_string()),
+                None,
             )
             .await
             .into_result()
@@ -1765,6 +1779,7 @@ mod tests {
             .add_sync_factor(
                 &test_backup_id,
                 Factor::new_ec_keypair("public-key-over-limit".to_string()),
+                None,
             )
             .await;
         assert!(result.should_rollback_lookup());
@@ -2263,7 +2278,7 @@ mod tests {
         // Test 6: Add sync factor with SSE-KMS
         let sync_factor = Factor::new_ec_keypair("public-key".to_string());
         backup_storage
-            .add_sync_factor(&test_backup_id, sync_factor.clone())
+            .add_sync_factor(&test_backup_id, sync_factor.clone(), None)
             .await
             .into_result()
             .unwrap();

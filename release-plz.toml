@@ -1,4 +1,6 @@
 [workspace]
+# Crates are never published to a registry; read versions from git tags.
+git_only = true
 git_release_enable = true
 git_release_type = "auto"
 pr_labels = ["release"]

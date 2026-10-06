@@ -96,16 +96,15 @@ impl OidcTokenVerifier {
         self.fetch_remote_jwk_set(jwk_set_url).await
     }
 
-    /// Verifies an OIDC token. It also ensures that the nonce has not been used before.
+    /// Verifies the token and its session-key binding, then consumes its nonce.
     ///
     /// # Errors
-    /// - `OidcTokenVerifierError`s will be raised if the token is not valid or the nonce has been used before.
+    /// Rejects invalid or replayed tokens and provider or Redis failures.
     pub async fn verify_token(
         &self,
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
-        // Step 1: Extract the token and other parameters based on the OIDC provider
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
                 token,
@@ -121,21 +120,17 @@ impl OidcTokenVerifier {
             ),
         };
 
-        // Load the public keys from the OIDC provider
         let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
 
-        // Step 3: Create the token verifier.
         let token_verifier =
             CoreIdTokenVerifier::new_public_client(client_id, issuer_url.clone(), signature_keys)
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
-        // Step 4: Parse the OIDC token
         let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
             tracing::info!(message = "Failed to parse OIDC token", err = ?err);
             OidcTokenVerifierError::TokenParseError
         })?;
 
-        // Step 5: Verify the nonce and extract the claims
         let claims = oidc_token
             .claims(
                 &token_verifier,
@@ -150,12 +145,10 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Step 6: Track the nonce to prevent replays
         let nonce = claims
             .nonce()
             .ok_or(OidcTokenVerifierError::MissingNonce)?
             .secret();
-
         self.redis_cache_manager
             .use_oidc_nonce(nonce, &token.into())
             .await?;
@@ -164,13 +157,7 @@ impl OidcTokenVerifier {
     }
 }
 
-/// For Sign in with Apple multiple clients are supported. Each client uses its own
-/// bundle identifier as an `aud`, so instead of an explicit `aud`, the system uses an
-/// allowlist.
-///
-/// This method will ensure the audience specified by the client is in the allowlist
-/// for the current environment and verify the OIDC token with it.
-fn get_and_validate_apple_client_id(
+pub(crate) fn get_and_validate_apple_client_id(
     environment: &Environment,
     candidate_aud: Option<&String>,
 ) -> Result<ClientId, OidcTokenVerifierError> {

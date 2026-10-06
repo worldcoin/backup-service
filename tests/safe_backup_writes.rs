@@ -83,7 +83,7 @@ async fn legacy_snapshot_survives_sync_and_factor_changes() {
 
     let factor = Factor::new_ec_keypair("new-sync-key".into());
     storage
-        .add_sync_factor(&original.id, factor.clone())
+        .add_sync_factor(&original.id, factor.clone(), None)
         .await
         .into_result()
         .unwrap();
@@ -229,7 +229,7 @@ async fn concurrent_factor_write_and_sync_preserve_the_selected_archive() {
             "01".repeat(32),
             "02".repeat(32)
         ),
-        storage.add_sync_factor(&original.id, factor.clone()),
+        storage.add_sync_factor(&original.id, factor.clone(), None),
     );
     let addition = addition.into_result();
     assert!(sync.is_ok() || addition.is_ok());

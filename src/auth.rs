@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use openidconnect::core::CoreIdTokenClaims;
+
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential, WebauthnError,
@@ -13,7 +15,9 @@ use crate::challenge_manager::ChallengeManagerError;
 use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
-use crate::oidc_token_verifier::{OidcTokenVerifier, OidcTokenVerifierError};
+use crate::oidc_token_verifier::{
+    get_and_validate_apple_client_id, OidcTokenVerifier, OidcTokenVerifierError,
+};
 use crate::redis_cache::RedisCacheError;
 use crate::verify_signature::{verify_signature, VerifySignatureError};
 use crate::webauthn::TryFromValue;
@@ -97,7 +101,59 @@ pub struct ValidationResult {
     pub factor_to_lookup: FactorToLookup,
 }
 
-/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the auth-time garbage collector for
+pub struct AuthenticationResult {
+    pub backup_id: String,
+    pub backup_metadata: BackupMetadata,
+    pub oidc_session: Option<VerifiedOidcSession>,
+}
+
+/// Proof of OIDC authentication, consumed when validating the second factor in the same request.
+pub struct VerifiedOidcSession {
+    token: OidcToken,
+    public_key: String,
+    claims: CoreIdTokenClaims,
+}
+
+impl VerifiedOidcSession {
+    fn into_claims_for(
+        self,
+        token: &OidcToken,
+        public_key: &str,
+        environment: &Environment,
+    ) -> Result<Option<CoreIdTokenClaims>, OidcTokenVerifierError> {
+        if self.public_key != public_key {
+            return Ok(None);
+        }
+        let same_token = match (&self.token, token) {
+            (OidcToken::Google { token: existing }, OidcToken::Google { token: new }) => {
+                existing == new
+            }
+            (
+                OidcToken::Apple {
+                    token: existing, ..
+                },
+                OidcToken::Apple { token: new, aud },
+            ) if existing == new => {
+                let client_id = get_and_validate_apple_client_id(environment, aud.as_ref())?;
+                if !self
+                    .claims
+                    .audiences()
+                    .iter()
+                    .any(|aud| aud.as_str() == client_id.as_str())
+                {
+                    return Err(OidcTokenVerifierError::TokenVerificationError);
+                }
+                true
+            }
+            (OidcToken::Apple { .. }, OidcToken::Apple { .. })
+            | (OidcToken::Apple { .. }, OidcToken::Google { .. })
+            | (OidcToken::Google { .. }, OidcToken::Apple { .. }) => false,
+        };
+        Ok(same_token.then_some(self.claims))
+    }
+}
+
+/// Outcome of `AuthHandler::delete_stale_factor_lookup`, the garbage collector for
 /// `FactorLookup` rows that no longer match backup metadata (the source of truth). `FactorLookup` is
 /// only a convenience index and the two stores are written non-atomically, so this is the only
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
@@ -144,7 +200,7 @@ impl AuthHandler {
         expected_factor_scope: FactorScope,
         expected_challenge_context: ChallengeContext,
         challenge_token: String,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<AuthenticationResult, AuthError> {
         // Step 1: Verify that the authorization type is supported
         // `ECKeyPair` is the only supported factor type for `Sync` scope, other factors are rejected.
         if expected_factor_scope == FactorScope::Sync {
@@ -168,6 +224,7 @@ impl AuthHandler {
         }
 
         // Step 4: Verify each specific `Authorization` type and retrieve the backup ID and metadata
+        let mut oidc_session = None;
         let (backup_id, backup_metadata) = match authorization {
             Authorization::Passkey { credential, .. } => {
                 self.validate_passkey_authentication(
@@ -182,14 +239,17 @@ impl AuthHandler {
                 public_key,
                 signature,
             } => {
-                self.validate_oidc_authentication(
-                    oidc_token,
-                    public_key,
-                    signature,
-                    &challenge_token_payload,
-                    expected_factor_scope,
-                )
-                .await?
+                let (backup_id, metadata, session) = self
+                    .validate_oidc_authentication(
+                        oidc_token,
+                        public_key,
+                        signature,
+                        &challenge_token_payload,
+                        expected_factor_scope,
+                    )
+                    .await?;
+                oidc_session = Some(session);
+                (backup_id, metadata)
             }
             Authorization::EcKeypair {
                 public_key,
@@ -210,15 +270,17 @@ impl AuthHandler {
             .use_challenge_token(challenge_token)
             .await?;
 
-        Ok((backup_id, backup_metadata))
+        Ok(AuthenticationResult {
+            backup_id,
+            backup_metadata,
+            oidc_session,
+        })
     }
 
-    /// Validates a candidate **new** factor (`Sync` or `Main`) is valid for registration in the user's backup.
-    ///
-    /// This is called when creating a new backup with fresh factors or when adding a new `Sync` or `Main` factor to an existing backup.
+    /// Validates ownership of a new main or sync factor.
     ///
     /// # Errors
-    /// Returns error if the factor is not valid, or is improperly authenticated (following each factor type's specific rules).
+    /// Rejects unsupported factors, invalid or replayed proofs, and failed dependency calls.
     pub async fn validate_factor_registration(
         &self,
         authorization: &Authorization,
@@ -226,6 +288,7 @@ impl AuthHandler {
         expected_challenge_context: ChallengeContext,
         turnkey_provider_id: Option<String>,
         is_sync_factor: bool,
+        verified_oidc_session: Option<VerifiedOidcSession>,
     ) -> Result<ValidationResult, AuthError> {
         // Step 1: Verify that the authorization type is valid for the factor scope
         // Sync factors must be EC keypairs - passkeys and OIDC accounts are not allowed as sync factors
@@ -271,6 +334,7 @@ impl AuthHandler {
                     signature,
                     &challenge_token_payload,
                     turnkey_provider_id.ok_or_else(|| AuthError::MissingTurnkeyProviderId)?,
+                    verified_oidc_session,
                 )
                 .await?
             }
@@ -457,11 +521,20 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         turnkey_provider_id: String,
+        verified_oidc_session: Option<VerifiedOidcSession>,
     ) -> Result<(Factor, FactorToLookup), AuthError> {
-        let claims = self
-            .oidc_token_verifier
-            .verify_token(oidc_token, public_key.to_string())
-            .await?;
+        let claims = match verified_oidc_session {
+            Some(session) => session.into_claims_for(oidc_token, public_key, &self.environment)?,
+            None => None,
+        };
+        let claims = match claims {
+            Some(claims) => claims,
+            None => {
+                self.oidc_token_verifier
+                    .verify_token(oidc_token, public_key.to_string())
+                    .await?
+            }
+        };
 
         verify_signature(public_key, signature, challenge_token_payload)?;
 
@@ -504,7 +577,7 @@ impl AuthHandler {
         signature: &str,
         challenge_token_payload: &[u8],
         expected_factor_scope: FactorScope,
-    ) -> Result<(String, BackupMetadata), AuthError> {
+    ) -> Result<(String, BackupMetadata, VerifiedOidcSession), AuthError> {
         let claims = self
             .oidc_token_verifier
             .verify_token(oidc_token, public_key.to_string())
@@ -566,7 +639,15 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
-        Ok((verified_backup_id, backup_metadata))
+        Ok((
+            verified_backup_id,
+            backup_metadata,
+            VerifiedOidcSession {
+                token: oidc_token.clone(),
+                public_key: public_key.to_string(),
+                claims,
+            },
+        ))
     }
 
     //------------------------------------------------------------------------------------------------
@@ -653,11 +734,15 @@ impl AuthHandler {
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
-    /// (or the backup is gone). Best-effort: auth still fails; delete errors are logged only.
+    /// (or the backup is gone). Best-effort: errors are logged without changing the caller's result.
     ///
     /// Skips the delete when the factor mutate lock is held (create/add write in flight) so we do
     /// not remove a lookup that is about to be authorized in metadata.
-    async fn delete_stale_factor_lookup(&self, scope: FactorScope, factor: &FactorToLookup) {
+    pub(crate) async fn delete_stale_factor_lookup(
+        &self,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) {
         let mut lock_guard = match self
             .redis_cache_manager
             .try_acquire_lock_guard(
@@ -690,27 +775,155 @@ impl AuthHandler {
             }
         };
 
-        match self.factor_lookup.delete(scope, factor).await {
-            Ok(()) => {
-                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "deleted").increment(1);
-                tracing::info!(
-                    message = "Deleted stale FactorLookup not authorized in backup metadata",
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+        let cleanup = async {
+            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+                return Ok::<&str, AuthError>("missing");
+            };
+            let metadata = self
+                .backup_storage
+                .get_metadata_by_backup_id(&owner)
+                .await?;
+            let present = metadata.is_some_and(|(metadata, _)| {
+                let factors = match scope {
+                    FactorScope::Main => metadata.factors,
+                    FactorScope::Sync => metadata.sync_factors,
+                };
+                factors.iter().any(|current| {
+                    current.as_factor_to_lookup(&self.environment).primary_key()
+                        == factor.primary_key()
+                })
+            });
+            if present {
+                return Ok("active_skip");
+            }
+            self.factor_lookup
+                .delete_if_maps_to(scope, factor, &owner)
+                .await?;
+            Ok("deleted")
+        }
+        .await;
+        match cleanup {
+            Ok(result) => {
+                metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => result).increment(1);
             }
             Err(err) => {
                 metrics::counter!(FACTOR_LOOKUP_GC_METRIC, "result" => "delete_failed")
                     .increment(1);
-                tracing::error!(
-                    message = "Failed to delete stale FactorLookup during authentication",
-                    error = ?err,
-                    scope = %scope,
-                    factor_pk = factor.primary_key(),
-                );
+                tracing::error!(?err, scope = %scope, "Failed to clean up stale FactorLookup");
             }
         }
 
         let _ = lock_guard.release().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::auth::VerifiedOidcSession;
+    use crate::environment::Environment;
+    use crate::oidc_token_verifier::OidcTokenVerifierError;
+    use chrono::{Duration, Utc};
+    use openidconnect::core::CoreIdTokenClaims;
+    use openidconnect::{
+        Audience, EmptyAdditionalClaims, IssuerUrl, StandardClaims, SubjectIdentifier,
+    };
+    use types::OidcToken;
+
+    fn apple_session(aud: Option<String>) -> VerifiedOidcSession {
+        VerifiedOidcSession {
+            token: OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud,
+            },
+            public_key: "session-key".to_string(),
+            claims: CoreIdTokenClaims::new(
+                IssuerUrl::new("https://appleid.apple.com".to_string()).unwrap(),
+                vec![Audience::new("org.worldcoin.insight.staging".to_string())],
+                Utc::now() + Duration::minutes(5),
+                Utc::now(),
+                StandardClaims::new(SubjectIdentifier::new("subject".to_string())),
+                EmptyAdditionalClaims {},
+            ),
+        }
+    }
+
+    #[test]
+    fn verified_session_accepts_default_apple_audience_aliases() {
+        let explicit_aud = Some("org.worldcoin.insight.staging".to_string());
+        for (existing_aud, new_aud) in [(None, explicit_aud.clone()), (explicit_aud, None)] {
+            let claims = apple_session(existing_aud)
+                .into_claims_for(
+                    &OidcToken::Apple {
+                        token: "verified-token".to_string(),
+                        aud: new_aud,
+                    },
+                    "session-key",
+                    &Environment::development(None),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(claims.subject().as_str(), "subject");
+        }
+    }
+
+    #[test]
+    fn verified_session_rejects_invalid_apple_audience() {
+        let result = apple_session(None).into_claims_for(
+            &OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud: Some("untrusted".to_string()),
+            },
+            "session-key",
+            &Environment::development(None),
+        );
+        let Err(OidcTokenVerifierError::InvalidAud) = result else {
+            panic!("Expected invalid audience, got {result:?}");
+        };
+    }
+
+    #[test]
+    fn verified_session_rejects_allowed_audience_missing_from_token() {
+        let result = apple_session(None).into_claims_for(
+            &OidcToken::Apple {
+                token: "verified-token".to_string(),
+                aud: Some("org.world.staging.id".to_string()),
+            },
+            "session-key",
+            &Environment::development(None),
+        );
+        let Err(OidcTokenVerifierError::TokenVerificationError) = result else {
+            panic!("Expected token verification failure, got {result:?}");
+        };
+    }
+
+    #[test]
+    fn verified_session_does_not_authenticate_a_different_token_provider_or_key() {
+        for (token, public_key) in [
+            (
+                OidcToken::Apple {
+                    token: "other-token".to_string(),
+                    aud: None,
+                },
+                "session-key",
+            ),
+            (
+                OidcToken::Google {
+                    token: "verified-token".to_string(),
+                },
+                "session-key",
+            ),
+            (
+                OidcToken::Apple {
+                    token: "verified-token".to_string(),
+                    aud: None,
+                },
+                "other-key",
+            ),
+        ] {
+            assert!(apple_session(None)
+                .into_claims_for(&token, public_key, &Environment::development(None),)
+                .unwrap()
+                .is_none());
+        }
     }
 }

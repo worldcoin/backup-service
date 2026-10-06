@@ -250,6 +250,11 @@ pub enum ChallengeContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NewFactorType {
+    /// Binds the registration state, not the resulting credential, to the existing-factor approval.
+    ///
+    /// TODO: This is not live yet. Likely binding the registration ceremony won't be necessary.
+    #[serde(rename_all = "camelCase")]
+    PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]
     OidcAccount { oidc_token: String },
 }
