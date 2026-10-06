@@ -96,17 +96,14 @@ impl OidcTokenVerifier {
         self.fetch_remote_jwk_set(jwk_set_url).await
     }
 
-    /// Verifies the token and its nonce binding to the session key.
-    /// With `consume_nonce=false`, the nonce must already have been consumed in this request.
+    /// Verifies the token and its session-key binding, then consumes its nonce.
     ///
     /// # Errors
-    /// Rejects invalid tokens, unexpected nonce state, and provider or Redis failures.
+    /// Rejects invalid or replayed tokens and provider or Redis failures.
     pub async fn verify_token(
         &self,
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
-        // FIXME: This introduces a footgun, and nonce replay prevention could be forgotten. Refactor.
-        consume_nonce: bool,
     ) -> Result<IdTokenClaims<EmptyAdditionalClaims, CoreGenderClaim>, OidcTokenVerifierError> {
         let (oidc_token, jwk_set_url, client_id, issuer_url) = match token {
             OidcToken::Google { token } => (
@@ -148,33 +145,19 @@ impl OidcTokenVerifier {
                 }
             })?;
 
-        // Reuse requires Redis to confirm consumption, even when the caller expects it.
         let nonce = claims
             .nonce()
             .ok_or(OidcTokenVerifierError::MissingNonce)?
             .secret();
-        match self
-            .redis_cache_manager
+        self.redis_cache_manager
             .use_oidc_nonce(nonce, &token.into())
-            .await
-        {
-            Ok(()) if consume_nonce => {}
-            Ok(()) => return Err(OidcTokenVerifierError::NonceReuseAssumptionViolated),
-            Err(RedisCacheError::AlreadyUsed) if !consume_nonce => {}
-            Err(err) => return Err(err.into()),
-        }
+            .await?;
 
         Ok(claims.clone())
     }
 }
 
-/// For Sign in with Apple multiple clients are supported. Each client uses its own
-/// bundle identifier as an `aud`, so instead of an explicit `aud`, the system uses an
-/// allowlist.
-///
-/// This method will ensure the audience specified by the client is in the allowlist
-/// for the current environment and verify the OIDC token with it.
-fn get_and_validate_apple_client_id(
+pub(crate) fn get_and_validate_apple_client_id(
     environment: &Environment,
     candidate_aud: Option<&String>,
 ) -> Result<ClientId, OidcTokenVerifierError> {
@@ -210,9 +193,6 @@ pub enum OidcTokenVerifierError {
     RedisCacheError(#[from] RedisCacheError),
     #[error("The aud provided is not valid")]
     InvalidAud,
-    /// The caller expected a previously consumed nonce, but Redis accepted it as unused.
-    #[error("Nonce was not already consumed as the caller's reuse assumption expected")]
-    NonceReuseAssumptionViolated,
 }
 
 /// If issued at is in the future or too far in the past, the token is invalid
@@ -267,13 +247,13 @@ mod tests {
         match provider {
             OidcProvider::Google => {
                 verifier
-                    .verify_token(&OidcToken::Google { token }, public_key, true)
+                    .verify_token(&OidcToken::Google { token }, public_key)
                     .await
             }
             OidcProvider::Apple => {
                 verifier
                     // Use the default
-                    .verify_token(&OidcToken::Apple { token, aud }, public_key, true)
+                    .verify_token(&OidcToken::Apple { token, aud }, public_key)
                     .await
             }
         }
@@ -363,7 +343,7 @@ mod tests {
         let oidc_token: OidcToken = serde_json::from_str(&json).unwrap();
         assert!(matches!(oidc_token, OidcToken::Apple { aud: None, .. }));
 
-        let result = verifier.verify_token(&oidc_token, public_key, true).await;
+        let result = verifier.verify_token(&oidc_token, public_key).await;
 
         assert!(result.is_ok());
     }

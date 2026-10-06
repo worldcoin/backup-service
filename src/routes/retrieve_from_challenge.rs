@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::auth::AuthHandler;
+use crate::auth::{AuthHandler, AuthenticationResult};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::error::ErrorResponse;
@@ -30,7 +30,11 @@ pub async fn handler(
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
     // Step 1: Auth. Verify the solved challenge
-    let (backup_id, backup_metadata) = auth_handler
+    let AuthenticationResult {
+        backup_id,
+        backup_metadata,
+        ..
+    } = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Main,
