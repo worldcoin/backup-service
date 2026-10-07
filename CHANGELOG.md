@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/worldcoin/backup-service/compare/0.9.7...0.10.0) - 2026-10-07
+
+### Fixed
+
+- *(ci)* attest before publishing Docker tags ([#299](https://github.com/worldcoin/backup-service/pull/299))
+- verify OIDC sessions once per request ([#284](https://github.com/worldcoin/backup-service/pull/284))
+
+### Other
+
+- *(deps)* bump redis from 0.32.7 to 1.0.2 ([#290](https://github.com/worldcoin/backup-service/pull/290))
+
 ## [0.9.7](https://github.com/worldcoin/backup-service/compare/0.9.6...0.9.7) - 2026-10-01
 
 ### Added
