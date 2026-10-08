@@ -21,7 +21,11 @@ pub async fn handler(
     headers: HeaderMap,
     request: Json<VerifyFactorRequest>,
 ) -> Result<Json<VerifyFactorResponse>, ErrorResponse> {
-    let AuthenticationResult { backup_id, .. } = auth_handler
+    let AuthenticationResult {
+        backup_id,
+        mut account_lock,
+        ..
+    } = auth_handler
         .verify(
             &request.authorization,
             FactorScope::Main,
@@ -37,6 +41,7 @@ pub async fn handler(
 
     let span = tracing::info_span!("verify_factor", backup_id = %backup_id, client_version = %client_version);
 
+    let _ = account_lock.release().await;
     async move { Ok(Json(VerifyFactorResponse { backup_id })) }
         .instrument(span)
         .await

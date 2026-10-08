@@ -51,40 +51,47 @@ pub async fn handler(
         &challenge_token_payload,
     )?;
 
-    // Step 4: Check if backup exists
-    let backup_exists = backup_storage
-        .does_backup_exist(&request.backup_account_id)
-        .await
-        .map_err(|_| ErrorResponse::internal_server_error())?;
+    let mut account_lock = redis_cache_manager
+        .lock_backup(&request.backup_account_id)
+        .await?;
+    let result = account_lock
+        .run(async {
+            // Step 4: Check if backup exists
+            let metadata = backup_storage
+                .get_metadata_by_backup_id(&request.backup_account_id)
+                .await
+                .map_err(|_| ErrorResponse::internal_server_error())?;
 
-    if !backup_exists {
-        return Err(ErrorResponse::not_found());
-    }
+            let Some((metadata, _)) = metadata else {
+                return Err(ErrorResponse::not_found());
+            };
 
-    let backup_id = request.backup_account_id.clone();
-    let span = tracing::info_span!("reset_backup", backup_id = %backup_id);
+            let backup_id = request.backup_account_id.clone();
+            let span = tracing::info_span!("reset_backup", backup_id = %backup_id);
 
-    async move {
-        // Step 5: Mark the challenge token as used (replay protection)
-        redis_cache_manager
-            .use_challenge_token(request.challenge_token.clone())
+            async move {
+                let lookup_deletion = factor_lookup.prepare_deletion(&metadata).await?;
+                // Step 5: Mark the challenge token as used (replay protection)
+                redis_cache_manager
+                    .use_challenge_token(request.challenge_token.clone())
+                    .await
+                    .map_err(ErrorResponse::from)?;
+
+                // Step 6: Delete the backup and metadata from S3
+                backup_storage
+                    .delete_backup(&backup_id)
+                    .await
+                    .map_err(ErrorResponse::from)?;
+
+                // Step 7: Delete all factors from FactorLookup (DynamoDB)
+                factor_lookup.delete_captured(lookup_deletion).await?;
+
+                Ok(StatusCode::NO_CONTENT)
+            }
+            .instrument(span)
             .await
-            .map_err(ErrorResponse::from)?;
-
-        // Step 6: Delete the backup and metadata from S3
-        backup_storage
-            .delete_backup(&backup_id)
-            .await
-            .map_err(ErrorResponse::from)?;
-
-        // Step 7: Delete all factors from FactorLookup (DynamoDB)
-        factor_lookup
-            .delete_all_by_backup_id(backup_id.clone())
-            .await
-            .map_err(ErrorResponse::from)?;
-
-        Ok(StatusCode::NO_CONTENT)
-    }
-    .instrument(span)
-    .await
+        })
+        .await;
+    let _ = account_lock.release().await;
+    result
 }

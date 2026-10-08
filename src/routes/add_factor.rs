@@ -9,7 +9,7 @@ use crate::factor_lookup::{
     factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
     FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
-use crate::redis_cache::RedisCacheManager;
+use crate::redis_cache::{RedisCacheManager, RedisLockGuard};
 use crate::turnkey_activity::{
     verify_turnkey_activity_parameters, verify_turnkey_activity_webauthn_stamp,
 };
@@ -40,12 +40,9 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddFactorRequest>,
 ) -> Result<Json<AddFactorResponse>, ErrorResponse> {
-    if matches!(
-        request.existing_factor_authorization,
-        Authorization::OidcAccount { .. }
-    ) || matches!(
-        request.new_factor_authorization,
-        Authorization::Passkey { .. }
+    if let (Authorization::OidcAccount { .. }, _) | (_, Authorization::Passkey { .. }) = (
+        &request.existing_factor_authorization,
+        &request.new_factor_authorization,
     ) {
         // New add-factor combinations are disabled until the material binding in #271 ships.
         return Err(ErrorResponse::bad_request(
@@ -55,91 +52,97 @@ pub async fn handler(
     }
 
     // Step 1: Check authorization for the existing factor and get the backup ID.
-    let (backup_id, approved_factor, oidc_session) = match &request.existing_factor_authorization {
-        Authorization::Passkey { .. } => {
-            let (backup_id, approved_factor) = authenticate_existing_passkey(
+    let (backup_id, approved_factor, oidc_session, mut account_lock) =
+        match &request.existing_factor_authorization {
+            Authorization::Passkey { .. } => {
+                let (backup_id, approved_factor, account_lock) = authenticate_existing_passkey(
+                    &backup_storage,
+                    &factor_lookup,
+                    &challenge_manager,
+                    &redis_cache_manager,
+                    &request,
+                )
+                .await?;
+                (backup_id, approved_factor, None, account_lock)
+            }
+            Authorization::OidcAccount { .. } => {
+                let (_, context) = challenge_manager
+                    .extract_token_payload(
+                        (&request.existing_factor_authorization).into(),
+                        request.existing_factor_challenge_token.clone(),
+                    )
+                    .await?;
+                let ChallengeContext::AddFactor { new_factor_type } = context else {
+                    return Err(ErrorResponse::bad_request(
+                        ErrorCode::InvalidChallengeContext,
+                        "Challenge context mismatch",
+                    ));
+                };
+                let authenticated = auth_handler
+                    .clone()
+                    .verify(
+                        &request.existing_factor_authorization,
+                        FactorScope::Main,
+                        ChallengeContext::AddFactor {
+                            new_factor_type: new_factor_type.clone(),
+                        },
+                        request.existing_factor_challenge_token.clone(),
+                    )
+                    .await?;
+                (
+                    authenticated.backup_id,
+                    new_factor_type,
+                    authenticated.oidc_session,
+                    authenticated.account_lock,
+                )
+            }
+            Authorization::EcKeypair { .. } => {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::NotSupported,
+                    "EC keypair is not supported as an existing main factor for add-factor",
+                ));
+            }
+        };
+    let result = account_lock
+        .run(async {
+            // Step 2: Validate the new factor against the existing factor's approval.
+            verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
+            let validation = auth_handler
+                .validate_factor_registration(
+                    &request.new_factor_authorization,
+                    request.new_factor_challenge_token.clone(),
+                    ChallengeContext::AddFactorByNewFactor {},
+                    request.turnkey_provider_id.clone(),
+                    false,
+                    oidc_session,
+                )
+                .await?;
+
+            // Step 3: Persist the new factor and any encrypted backup key.
+            // Auth-time stale-row cleanup shares this lock with lookup and metadata writes.
+            let mut lock = redis_cache_manager
+                .try_acquire_lock_guard(
+                    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                    factor_lookup_mutate_lock_id(&validation.factor_to_lookup),
+                    Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+                )
+                .await?;
+            let result = persist_factor(
                 &backup_storage,
                 &factor_lookup,
-                &challenge_manager,
                 &request,
+                validation,
+                &backup_id,
             )
-            .await?;
-            redis_cache_manager
-                .use_challenge_token(request.existing_factor_challenge_token.clone())
-                .await?;
-            (backup_id, approved_factor, None)
-        }
-        Authorization::OidcAccount { .. } => {
-            let (_, context) = challenge_manager
-                .extract_token_payload(
-                    (&request.existing_factor_authorization).into(),
-                    request.existing_factor_challenge_token.clone(),
-                )
-                .await?;
-            let ChallengeContext::AddFactor { new_factor_type } = context else {
-                return Err(ErrorResponse::bad_request(
-                    ErrorCode::InvalidChallengeContext,
-                    "Challenge context mismatch",
-                ));
-            };
-            let authenticated = auth_handler
-                .clone()
-                .verify(
-                    &request.existing_factor_authorization,
-                    FactorScope::Main,
-                    ChallengeContext::AddFactor {
-                        new_factor_type: new_factor_type.clone(),
-                    },
-                    request.existing_factor_challenge_token.clone(),
-                )
-                .await?;
-            (
-                authenticated.backup_id,
-                new_factor_type,
-                authenticated.oidc_session,
-            )
-        }
-        Authorization::EcKeypair { .. } => {
-            return Err(ErrorResponse::bad_request(
-                ErrorCode::NotSupported,
-                "EC keypair is not supported as an existing main factor for add-factor",
-            ));
-        }
-    };
-    // Step 2: Validate the new factor against the existing factor's approval.
-    verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
-    let validation = auth_handler
-        .validate_factor_registration(
-            &request.new_factor_authorization,
-            request.new_factor_challenge_token.clone(),
-            ChallengeContext::AddFactorByNewFactor {},
-            request.turnkey_provider_id.clone(),
-            false,
-            oidc_session,
-        )
-        .await?;
-
-    // Step 3: Persist the new factor and any encrypted backup key.
-    // Auth-time stale-row cleanup shares this lock with lookup and metadata writes.
-    let mut lock = redis_cache_manager
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&validation.factor_to_lookup),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
-    let result = persist_factor(
-        &backup_storage,
-        &factor_lookup,
-        &request,
-        validation,
-        &backup_id,
-    )
-    .await;
-    if let Err(error) = lock.release().await {
-        tracing::error!(message = "Failed to release add-factor lookup lock", ?error);
-    }
-    // Step 4: Return the new factor ID and updated backup metadata.
+            .await;
+            if let Err(error) = lock.release().await {
+                tracing::error!(message = "Failed to release add-factor lookup lock", ?error);
+            }
+            // Step 4: Return the new factor ID and updated backup metadata.
+            result
+        })
+        .await;
+    let _ = account_lock.release().await;
     result
 }
 
@@ -147,8 +150,9 @@ async fn authenticate_existing_passkey(
     storage: &BackupStorage,
     lookup: &FactorLookup,
     challenges: &ChallengeManager,
+    cache: &RedisCacheManager,
     request: &AddFactorRequest,
-) -> Result<(String, NewFactorType), ErrorResponse> {
+) -> Result<(String, NewFactorType, RedisLockGuard), ErrorResponse> {
     let Authorization::Passkey { credential, .. } = &request.existing_factor_authorization else {
         return Err(AuthError::InvalidAuthorizationType.into());
     };
@@ -168,11 +172,17 @@ async fn authenticate_existing_passkey(
         .lookup(FactorScope::Main, &factor)
         .await?
         .ok_or(AuthError::BackupUntraceable)?;
-    let backup = storage
-        .get_by_backup_id(&id)
+    let account_lock = cache.lock_backup(&id).await?;
+    let (metadata, _) = account_lock
+        .run(async {
+            storage
+                .get_metadata_by_backup_id(&id)
+                .await
+                .map_err(ErrorResponse::from)
+        })
         .await?
         .ok_or(AuthError::BackupMissing)?;
-    verify_existing_activity(&backup.metadata, &credential, activity)?;
+    verify_existing_activity(&metadata, &credential, activity)?;
     let activity: serde_json::Value = serde_json::from_str(activity).map_err(|error| {
         tracing::info!(message = "Invalid Turnkey activity JSON", ?error);
         ErrorResponse::bad_request(
@@ -204,7 +214,10 @@ async fn authenticate_existing_passkey(
             "Challenge context mismatch",
         ));
     };
-    Ok((id, new_factor_type))
+    account_lock
+        .run(cache.use_challenge_token(request.existing_factor_challenge_token.clone()))
+        .await?;
+    Ok((id, new_factor_type, account_lock))
 }
 
 fn verify_existing_activity(

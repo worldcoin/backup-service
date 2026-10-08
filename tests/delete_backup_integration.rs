@@ -34,6 +34,14 @@ async fn get_delete_backup_challenge() -> serde_json::Value {
 async fn verify_backup_deleted(backup_id: &str) {
     let s3_client = common::get_test_s3_client().await;
     let bucket_name = "backup-service-bucket";
+    let objects = s3_client
+        .list_objects_v2()
+        .bucket(bucket_name)
+        .prefix(format!("{backup_id}/"))
+        .send()
+        .await
+        .unwrap();
+    assert!(objects.contents().is_empty());
     let metadata_key = format!("{backup_id}/metadata");
 
     let metadata_result = s3_client

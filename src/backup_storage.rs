@@ -200,6 +200,7 @@ impl BackupStorage {
     }
 
     /// Uploads a new archive and conditionally publishes it with its manifest hash.
+    /// Returns the previous archive key for cleanup after publication succeeds.
     ///
     /// # Errors
     /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
@@ -213,7 +214,7 @@ impl BackupStorage {
         backup: Bytes,
         current_manifest_hash: String,
         new_manifest_hash: String,
-    ) -> Result<(), BackupManagerError> {
+    ) -> Result<String, BackupManagerError> {
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
             return Err(BackupManagerError::BackupNotFound);
         };
@@ -226,6 +227,7 @@ impl BackupStorage {
             return Err(BackupManagerError::ManifestHashMismatch);
         }
 
+        let previous_archive = get_backup_key(&metadata);
         metadata.archive_id = Some(self.upload_archive(backup_id, backup).await?);
         metadata.manifest_hash = new_manifest_hash;
 
@@ -239,7 +241,7 @@ impl BackupStorage {
             .await;
 
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(previous_archive),
             Err(SdkError::ServiceError(err)) if err.raw().status().as_u16() == 404 => {
                 tracing::warn!(message = "Backup deleted while syncing", backup_id);
                 Err(BackupManagerError::BackupNotFound)
@@ -711,7 +713,7 @@ impl BackupStorage {
         Ok(metadata)
     }
 
-    /// Unpublishes a backup, retaining its archives for readers holding a metadata snapshot.
+    /// Unpublishes a backup and deletes its archives while the caller holds the account lock.
     ///
     /// # Errors
     /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
@@ -719,14 +721,75 @@ impl BackupStorage {
         &self,
         backup_id: &str,
     ) -> Result<DeletionResult, BackupManagerError> {
+        let Some((_, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Ok(DeletionResult::BackupDeleted);
+        };
+        let e_tag = e_tag.ok_or(BackupManagerError::ETagNotFound)?;
+        let mut keys = vec![format!("{backup_id}/backup")];
+        let mut continuation_token = None;
+        loop {
+            let page = self
+                .s3_client
+                .list_objects_v2()
+                .bucket(self.environment.s3_bucket())
+                .prefix(format!("{backup_id}/backups/"))
+                .set_continuation_token(continuation_token)
+                .send()
+                .await?;
+            for object in page.contents() {
+                if let Some(key) = object.key() {
+                    keys.push(key.to_owned());
+                }
+            }
+            continuation_token = page.next_continuation_token().map(str::to_owned);
+            if continuation_token.is_none() {
+                break;
+            }
+        }
+
+        let deletion = self
+            .s3_client
+            .delete_objects()
+            .bucket(self.environment.s3_bucket())
+            .delete(
+                aws_sdk_s3::types::Delete::builder()
+                    .objects(
+                        aws_sdk_s3::types::ObjectIdentifier::builder()
+                            .key(get_metadata_key(backup_id))
+                            .e_tag(e_tag.trim_matches('"'))
+                            .build()?,
+                    )
+                    .build()?,
+            )
+            .send()
+            .await?;
+        if let Some(error) = deletion.errors().first() {
+            return Err(BackupManagerError::DeletionRejected(format!(
+                "{}: {}",
+                get_metadata_key(backup_id),
+                error.code().unwrap_or("unknown error")
+            )));
+        }
+
+        for key in keys {
+            self.delete_archive(&key).await?;
+        }
+
+        Ok(DeletionResult::BackupDeleted)
+    }
+
+    /// Deletes a retired archive while the caller holds the account lock.
+    ///
+    /// # Errors
+    /// Returns the S3 error if deletion cannot be confirmed.
+    pub async fn delete_archive(&self, key: &str) -> Result<(), BackupManagerError> {
         self.s3_client
             .delete_object()
             .bucket(self.environment.s3_bucket())
-            .key(get_metadata_key(backup_id))
+            .key(key)
             .send()
             .await?;
-
-        Ok(DeletionResult::BackupDeleted)
+        Ok(())
     }
 
     /// Checks whether a backup exists for a specific ID.
@@ -803,6 +866,8 @@ impl PartialEq for DeletionResult {
 
 #[derive(thiserror::Error, Debug)]
 pub enum BackupManagerError {
+    #[error("Failed to list backup archives: {0:?}")]
+    ListObjectsError(#[from] SdkError<aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error>),
     #[error("Failed to upload object to S3: {0:?}")]
     PutObjectError(#[from] SdkError<aws_sdk_s3::operation::put_object::PutObjectError>),
     #[error("Failed to download object from S3: {0:?}")]
@@ -827,6 +892,12 @@ pub enum BackupManagerError {
     ETagNotFound,
     #[error("Failed to delete object from S3: {0:?}")]
     DeleteObjectError(#[from] SdkError<aws_sdk_s3::operation::delete_object::DeleteObjectError>),
+    #[error("Failed to delete S3 objects: {0}")]
+    DeleteObjectsError(#[from] SdkError<aws_sdk_s3::operation::delete_objects::DeleteObjectsError>),
+    #[error("S3 rejected deletion of {0}")]
+    DeletionRejected(String),
+    #[error("Failed to build S3 request: {0}")]
+    BuildRequestError(#[from] aws_sdk_s3::error::BuildError),
     #[error(
         "Update conflict. The provided manifest hash does not match the current manifest hash. Sync the latest state first."
     )]
@@ -2570,48 +2641,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deletion_unpublishes_without_invalidating_an_existing_reader() {
-        let (storage, _, _) = storage().await;
-        let original = metadata();
-        storage
-            .create(b"old".to_vec().into(), &original)
-            .await
-            .unwrap();
-        let snapshot = storage
-            .get_by_backup_id(&original.id)
-            .await
-            .unwrap()
-            .unwrap();
-        storage.delete_backup(&original.id).await.unwrap();
-        assert!(!storage.does_backup_exist(&original.id).await.unwrap());
-        assert!(storage
-            .get_by_backup_id(&original.id)
-            .await
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            storage
-                .get_backup_by_metadata(&snapshot.metadata)
-                .await
-                .unwrap()
-                .unwrap(),
-            b"old"
-        );
-        storage
-            .create(b"replacement".to_vec().into(), &original)
-            .await
-            .unwrap();
-        assert_eq!(
-            storage
-                .get_backup_by_metadata(&snapshot.metadata)
-                .await
-                .unwrap()
-                .unwrap(),
-            b"old"
-        );
-    }
-
-    #[tokio::test]
     async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
         let (storage, _, environment) = storage().await;
         let original = metadata();
@@ -2712,5 +2741,135 @@ mod tests {
             assert_eq!(committed.backup, b"old");
             assert_eq!(committed.metadata, snapshot);
         }
+    }
+    #[tokio::test]
+    async fn deletion_removes_archives_before_recreation() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let snapshot = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        storage.delete_backup(&original.id).await.unwrap();
+        assert!(!storage.does_backup_exist(&original.id).await.unwrap());
+        assert!(storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .get_backup_by_metadata(&snapshot.metadata)
+            .await
+            .unwrap()
+            .is_none());
+        storage
+            .create(b"replacement".to_vec().into(), &original)
+            .await
+            .unwrap();
+        assert!(storage
+            .get_backup_by_metadata(&snapshot.metadata)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_conditional_delete_preserves_archives() {
+        let (_, _, environment) = storage().await;
+        let metadata = metadata();
+        let mut server = mockito::Server::new_async().await;
+        let client = S3Client::from_conf(
+            environment
+                .s3_client_config()
+                .await
+                .to_builder()
+                .endpoint_url(server.url())
+                .retry_config(RetryConfig::disabled())
+                .build(),
+        );
+        let storage = BackupStorage::new(environment, Arc::new(client));
+        let path = format!("/{}/{}/metadata", environment.s3_bucket(), metadata.id);
+        let read = server
+            .mock("GET", path.as_str())
+            .match_query(Matcher::Any)
+            .with_header("etag", "\"original\"")
+            .with_body(serde_json::to_vec(&metadata).unwrap())
+            .create_async()
+            .await;
+        let list = server
+            .mock(
+                "GET",
+                Matcher::Regex(format!("^/{}/?$", environment.s3_bucket())),
+            )
+            .match_query(Matcher::Any)
+            .with_body("<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+            .create_async()
+            .await;
+        // LocalStack 4.14 ignores batch-delete ETags, so exercise the AWS contract here.
+        let deletion = server.mock("POST", Matcher::Regex(format!("^/{}/?$", environment.s3_bucket())))
+            .match_query(Matcher::Any)
+            .match_body(Matcher::Regex("<ETag>original</ETag>".into()))
+            .with_body(format!("<DeleteResult><Error><Key>{}/metadata</Key><Code>PreconditionFailed</Code></Error></DeleteResult>", metadata.id))
+            .create_async().await;
+        let archives = server
+            .mock("DELETE", Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let result = storage.delete_backup(&metadata.id).await;
+        assert!(
+            matches!(result, Err(BackupManagerError::DeletionRejected(_))),
+            "{result:?}"
+        );
+        read.assert_async().await;
+        list.assert_async().await;
+        deletion.assert_async().await;
+        archives.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn deletion_includes_superseded_unpublished_and_legacy_archives() {
+        let (storage, client, environment) = storage().await;
+        let metadata = metadata();
+        storage
+            .create(b"old".to_vec().into(), &metadata)
+            .await
+            .unwrap();
+        storage
+            .update_backup(
+                &metadata.id,
+                b"new".to_vec().into(),
+                "01".repeat(32),
+                "02".repeat(32),
+            )
+            .await
+            .unwrap();
+        for key in [
+            format!("{}/backup", metadata.id),
+            format!("{}/backups/unpublished", metadata.id),
+        ] {
+            client
+                .put_object()
+                .bucket(environment.s3_bucket())
+                .key(key)
+                .body(b"leftover".to_vec().into())
+                .send()
+                .await
+                .unwrap();
+        }
+        storage.delete_backup(&metadata.id).await.unwrap();
+        let remaining = client
+            .list_objects_v2()
+            .bucket(environment.s3_bucket())
+            .prefix(format!("{}/", metadata.id))
+            .send()
+            .await
+            .unwrap();
+        assert!(remaining.contents().is_empty());
     }
 }
