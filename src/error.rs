@@ -293,7 +293,6 @@ impl From<BackupManagerError> for ErrorResponse {
             BackupManagerError::PutObjectError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
-            | BackupManagerError::HeadObjectError(_)
             | BackupManagerError::ByteStreamError(_)
             | BackupManagerError::DeleteObjectError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
