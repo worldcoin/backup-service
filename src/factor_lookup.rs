@@ -493,7 +493,7 @@ impl FactorLookup {
 }
 
 /// A `FactorLookup` row: the backup a factor maps to and, for sync factors, its last recorded use.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct LookupRecord {
     pub backup_id: String,
     /// Unix seconds of the last recorded use; `None` when never recorded.
