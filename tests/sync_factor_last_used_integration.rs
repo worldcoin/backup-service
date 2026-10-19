@@ -197,7 +197,7 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
     assert_eq!(stored_last_used(&lookup, &backup).await, None);
 
     // A missing row is not recreated.
-    let missing = FactorToLookup::from_ec_keypair("bm90LXJlZ2lzdGVyZWQ".to_string());
+    let missing = FactorToLookup::from_ec_keypair(uuid::Uuid::new_v4().to_string());
     assert!(!lookup
         .set_sync_factor_last_used(&missing, &backup.backup_id, now)
         .await
