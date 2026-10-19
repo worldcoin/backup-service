@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::auth::{AuthError, AuthHandler};
+use crate::auth::{AuthError, AuthHandler, AuthenticationResult};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::error::ErrorResponse;
@@ -39,7 +39,11 @@ pub async fn handler(
         }
     }
 
-    let (backup_id, backup_metadata) = backup_metadata?;
+    let AuthenticationResult {
+        backup_id,
+        backup_metadata,
+        ..
+    } = backup_metadata?;
 
     if let Some(expected_backup_id) = request.backup_id {
         if backup_id != expected_backup_id {

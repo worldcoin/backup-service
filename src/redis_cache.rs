@@ -30,12 +30,12 @@ impl RedisCacheManager {
     pub async fn new(environment: Environment, default_ttl: Duration) -> Result<Self, RedisError> {
         let client: redis::Client = redis::Client::open(environment.redis_endpoint_url())?;
         let config = ConnectionManagerConfig::new()
-            .set_connection_timeout(Duration::from_secs(3))
-            .set_response_timeout(Duration::from_secs(3))
+            .set_connection_timeout(Some(Duration::from_secs(3)))
+            .set_response_timeout(Some(Duration::from_secs(3)))
             .set_number_of_retries(3)
-            .set_exponent_base(2)
-            .set_factor(100)
-            .set_max_delay(5000);
+            .set_exponent_base(2.0)
+            .set_min_delay(Duration::from_millis(100))
+            .set_max_delay(Duration::from_secs(5));
         let redis = ConnectionManager::new_with_config(client, config).await?;
 
         tracing::info!("Redis connection pool built successfully.");

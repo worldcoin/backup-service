@@ -266,7 +266,9 @@ impl FactorLookup {
             return Err(FactorLookupError::IncompleteBatchRead);
         }
         let backup_id_attribute = DocumentAttribute::BackupId.to_string();
-        let items = response.responses().and_then(|responses| responses.get(&table));
+        let items = response
+            .responses()
+            .and_then(|responses| responses.get(&table));
         for item in items.into_iter().flatten() {
             let owned = item
                 .get(&backup_id_attribute)
@@ -275,7 +277,9 @@ impl FactorLookup {
             if !owned {
                 continue;
             }
-            let Some((_, factor_id)) = factor_ids.iter().find(|(key, _)| item.get(&pk) == Some(key))
+            let Some((_, factor_id)) = factor_ids
+                .iter()
+                .find(|(key, _)| item.get(&pk) == Some(key))
             else {
                 continue;
             };
