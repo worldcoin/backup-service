@@ -202,6 +202,13 @@ impl FactorLookup {
                 ":backup_id",
                 aws_sdk_dynamodb::types::AttributeValue::S(backup_id.to_string()),
             )
+            // Best-effort and retried by the next request anyway, so a single attempt keeps a
+            // throttled table from seeing three writes per sync request.
+            .customize()
+            .config_override(
+                aws_sdk_dynamodb::config::Builder::default()
+                    .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled()),
+            )
             .send()
             .await
         {
@@ -224,8 +231,8 @@ impl FactorLookup {
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbBatchGetError` - if the batch read fails.
-    /// * `FactorLookupError::IncompleteBatchRead` - if `DynamoDB` leaves keys unprocessed. A partial
-    ///   result would make the skipped factors look unused, so it is never returned.
+    /// * `FactorLookupError::IncompleteBatchRead` - if `DynamoDB` leaves keys unprocessed. A
+    ///   partial result would make the skipped factors look unused, so it is never returned.
     pub async fn sync_factors_last_used(
         &self,
         sync_factors: &[Factor],
@@ -238,17 +245,24 @@ impl FactorLookup {
         }
         let table = self.environment.factor_lookup_dynamodb_table_name();
         let pk = DocumentAttribute::Pk.to_string();
-        let mut keys = Vec::new();
-        let mut factor_ids = Vec::new();
+        // Keyed by primary key: BatchGetItem rejects duplicate keys.
+        let mut factor_ids = HashMap::new();
         for factor in sync_factors {
-            let key = factor_primary_key(
+            let key = factor_pk(
                 FactorScope::Sync,
                 &factor.as_factor_to_lookup(&self.environment),
             );
-            keys.push(HashMap::from([(pk.clone(), key.clone())]));
-            factor_ids.push((key, factor.id.as_str()));
+            factor_ids.insert(key, factor.id.as_str());
         }
-        // `MAX_SYNC_FACTORS_PER_BACKUP` keeps this under BatchGetItem's 100-key limit.
+        let mut keys = Vec::new();
+        for key in factor_ids.keys() {
+            keys.push(HashMap::from([(
+                pk.clone(),
+                aws_sdk_dynamodb::types::AttributeValue::S(key.clone()),
+            )]));
+        }
+        // A single request: BatchGetItem takes 100 keys, and only legacy backups exceed the cap
+        // of 25 sync factors. One over 100 fails the read and goes without `lastUsedAt`.
         let request = aws_sdk_dynamodb::types::KeysAndAttributes::builder()
             .set_keys(Some(keys))
             .build()
@@ -277,9 +291,10 @@ impl FactorLookup {
             if !owned {
                 continue;
             }
-            let Some((_, factor_id)) = factor_ids
-                .iter()
-                .find(|(key, _)| item.get(&pk) == Some(key))
+            let Some(factor_id) = item
+                .get(&pk)
+                .and_then(|value| value.as_s().ok())
+                .and_then(|key| factor_ids.get(key))
             else {
                 continue;
             };
@@ -512,7 +527,11 @@ fn factor_primary_key(
     scope: FactorScope,
     factor: &FactorToLookup,
 ) -> aws_sdk_dynamodb::types::AttributeValue {
-    aws_sdk_dynamodb::types::AttributeValue::S(format!("{scope}#{}", factor.primary_key()))
+    aws_sdk_dynamodb::types::AttributeValue::S(factor_pk(scope, factor))
+}
+
+fn factor_pk(scope: FactorScope, factor: &FactorToLookup) -> String {
+    format!("{scope}#{}", factor.primary_key())
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -586,6 +605,22 @@ pub enum DocumentAttribute {
     CreatedAt,
     // Unix seconds a sync factor last authenticated a request, refreshed at most daily
     LastUsedAt,
+}
+
+/// A `FactorLookup` without retries, pointed at `endpoint` (a fault-injecting server) when given.
+#[cfg(test)]
+pub(crate) async fn test_factor_lookup(endpoint: Option<String>) -> FactorLookup {
+    dotenvy::from_filename(".env.example").unwrap();
+    let environment = Environment::development(None);
+    let mut config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
+        .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled());
+    if let Some(endpoint) = endpoint {
+        config = config.endpoint_url(endpoint);
+    }
+    FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::from_conf(config.build())),
+    )
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod common;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::common::{
@@ -210,28 +211,47 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
 
 #[tokio::test]
 #[serial]
-async fn last_use_of_a_row_owned_by_another_backup_is_not_reported() {
+async fn last_use_is_reported_per_factor_and_only_to_its_backup() {
     let backup = create_backup().await;
     let lookup = factor_lookup().await;
-    let factor = Factor::new_ec_keypair(backup.sync_public_key.clone());
-    let now = chrono::Utc::now().timestamp();
-    assert!(lookup
-        .set_sync_factor_last_used(
-            &FactorToLookup::from_ec_keypair(backup.sync_public_key.clone()),
-            &backup.backup_id,
-            now,
+    let second_key = uuid::Uuid::new_v4().to_string();
+    lookup
+        .insert(
+            FactorScope::Sync,
+            &FactorToLookup::from_ec_keypair(second_key.clone()),
+            backup.backup_id.clone(),
         )
         .await
-        .unwrap());
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let first = Factor::new_ec_keypair(backup.sync_public_key.clone());
+    let second = Factor::new_ec_keypair(second_key.clone());
+    for (key, at) in [
+        (&backup.sync_public_key, now),
+        (&second_key, now - DAY_SECS),
+    ] {
+        assert!(lookup
+            .set_sync_factor_last_used(
+                &FactorToLookup::from_ec_keypair(key.clone()),
+                &backup.backup_id,
+                at,
+            )
+            .await
+            .unwrap());
+    }
+    let factors = [first.clone(), second.clone()];
 
     let own = lookup
-        .sync_factors_last_used(std::slice::from_ref(&factor), &backup.backup_id)
+        .sync_factors_last_used(&factors, &backup.backup_id)
         .await
         .unwrap();
-    assert_eq!(own.get(&factor.id), Some(&now));
+    assert_eq!(
+        own,
+        HashMap::from([(first.id, now), (second.id, now - DAY_SECS)])
+    );
 
     let other = lookup
-        .sync_factors_last_used(&[factor], "another-backup")
+        .sync_factors_last_used(&factors, "another-backup")
         .await
         .unwrap();
     assert!(other.is_empty());

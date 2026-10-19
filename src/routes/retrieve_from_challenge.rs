@@ -119,3 +119,81 @@ async fn sync_factors_last_used(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mockito::{Matcher, Server};
+    use serde_json::json;
+
+    use crate::backup_metadata::{BackupMetadata, Factor};
+    use crate::environment::Environment;
+    use crate::factor_lookup::test_factor_lookup;
+    use crate::routes::retrieve_from_challenge::{
+        sync_factors_last_used, SYNC_FACTOR_LAST_USED_READ_TIMEOUT,
+    };
+
+    fn backup_with_sync_keys(public_keys: &[&str]) -> BackupMetadata {
+        BackupMetadata {
+            id: "backup".to_string(),
+            factors: vec![],
+            sync_factors: public_keys
+                .iter()
+                .map(|key| Factor::new_ec_keypair((*key).to_string()))
+                .collect(),
+            keys: vec![],
+            manifest_hash: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_batch_read_reports_no_last_use() {
+        let table = Environment::development(None).factor_lookup_dynamodb_table_name();
+        let mut dynamo = Server::new_async().await;
+        let _partial = dynamo
+            .mock("POST", Matcher::Any)
+            .with_header("content-type", "application/x-amz-json-1.0")
+            .with_body(
+                json!({
+                    "Responses": {(table.clone()): [{
+                        "PK": {"S": "SYNC#EC_KEYPAIR|used"},
+                        "BackupId": {"S": "backup"},
+                        "LastUsedAt": {"N": "1700000000"},
+                    }]},
+                    "UnprocessedKeys": {(table): {
+                        "Keys": [{"PK": {"S": "SYNC#EC_KEYPAIR|throttled"}}],
+                    }},
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let lookup = test_factor_lookup(Some(dynamo.url())).await;
+
+        let last_used =
+            sync_factors_last_used(&lookup, &backup_with_sync_keys(&["used", "throttled"])).await;
+
+        assert!(
+            last_used.is_empty(),
+            "a partial read would make the throttled factor look unused"
+        );
+    }
+
+    #[tokio::test]
+    async fn hung_read_reports_no_last_use_at_its_timeout() {
+        // Accepts connections but never answers, so the read hangs.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let lookup =
+            test_factor_lookup(Some(format!("http://{}", silent.local_addr().unwrap()))).await;
+        let started = std::time::Instant::now();
+
+        let last_used = tokio::time::timeout(
+            SYNC_FACTOR_LAST_USED_READ_TIMEOUT * 2,
+            sync_factors_last_used(&lookup, &backup_with_sync_keys(&["key"])),
+        )
+        .await
+        .expect("the read must not hold up recovery");
+
+        assert!(last_used.is_empty());
+        assert!(started.elapsed() >= SYNC_FACTOR_LAST_USED_READ_TIMEOUT);
+    }
+}

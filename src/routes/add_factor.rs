@@ -714,7 +714,7 @@ mod tests {
 
     use crate::backup_storage::BackupStorage;
     use crate::environment::Environment;
-    use crate::factor_lookup::{FactorLookup, FactorToLookup};
+    use crate::factor_lookup::{test_factor_lookup as factor_lookup, FactorToLookup};
     use mockito::{Matcher, Server};
     use types::FactorScope;
 
@@ -814,19 +814,6 @@ mod tests {
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
             .build();
         BackupStorage::new(environment, Arc::new(aws_sdk_s3::Client::from_conf(config)))
-    }
-
-    async fn factor_lookup(endpoint: Option<String>) -> FactorLookup {
-        let environment = Environment::development(None);
-        let mut config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
-            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled());
-        if let Some(endpoint) = endpoint {
-            config = config.endpoint_url(endpoint);
-        }
-        FactorLookup::new(
-            environment,
-            Arc::new(aws_sdk_dynamodb::Client::from_conf(config.build())),
-        )
     }
 
     #[tokio::test]
