@@ -824,4 +824,36 @@ mod test {
             None
         );
     }
+
+    #[tokio::test]
+    async fn last_used_write_is_a_single_attempt() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let mut dynamo = mockito::Server::new_async().await;
+        let failure = dynamo
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(1)
+            .create_async()
+            .await;
+        // The client keeps the SDK's default retries, which the write must override.
+        let environment = Environment::development(None);
+        let config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
+            .endpoint_url(dynamo.url())
+            .build();
+        let lookup = FactorLookup::new(
+            environment,
+            Arc::new(aws_sdk_dynamodb::Client::from_conf(config)),
+        );
+
+        let result = lookup
+            .set_sync_factor_last_used(
+                &FactorToLookup::from_ec_keypair("key".to_string()),
+                "backup",
+                0,
+            )
+            .await;
+
+        assert!(result.is_err());
+        failure.assert_async().await;
+    }
 }
