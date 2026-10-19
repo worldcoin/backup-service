@@ -1,10 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::auth::AuthHandler;
 use crate::backup_metadata::BackupMetadata;
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
-use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::factor_lookup::FactorLookup;
 use crate::headers::CLIENT_VERSION;
@@ -15,10 +15,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http::HeaderMap;
 use tracing::Instrument;
-use types::{
-    ExportedBackupMetadata, FactorScope, RetrieveBackupFromChallengeRequest,
-    RetrieveBackupFromChallengeResponse,
-};
+use types::{FactorScope, RetrieveBackupFromChallengeRequest, RetrieveBackupFromChallengeResponse};
 
 /// Outcome of reading sync factors' last use during recovery (`ok`, `error`, `timeout`).
 const SYNC_FACTOR_LAST_USED_READ_METRIC: &str = "sync_factor_last_used_read_total";
@@ -38,7 +35,6 @@ pub async fn handler(
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
     Extension(factor_lookup): Extension<Arc<FactorLookup>>,
-    Extension(environment): Extension<Environment>,
     headers: HeaderMap,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
@@ -73,14 +69,11 @@ pub async fn handler(
             .await?;
 
         // Step 4: Return the backup and metadata
+        let last_used = sync_factors_last_used(&factor_lookup, &backup_metadata).await;
         let mut metadata = backup_metadata.exported();
-        attach_sync_factor_last_used(
-            &factor_lookup,
-            &environment,
-            &backup_metadata,
-            &mut metadata,
-        )
-        .await;
+        for factor in &mut metadata.sync_factors {
+            factor.last_used_at = last_used.get(&factor.id).copied();
+        }
 
         Ok(Json(RetrieveBackupFromChallengeResponse {
             backup: STANDARD.encode(backup),
@@ -92,25 +85,16 @@ pub async fn handler(
     .await
 }
 
-/// Adds each sync factor's last use so a client at the sync-factor cap can replace the least
-/// recently used access. Best-effort and bounded: on failure the values are omitted and the client
-/// falls back to creation time, so recovery itself never fails here.
-async fn attach_sync_factor_last_used(
+/// Reads each sync factor's last use so a client at the sync-factor cap can replace the least
+/// recently used access. Best-effort and bounded: on failure it is empty and the client falls back
+/// to creation time, so recovery itself never fails here.
+async fn sync_factors_last_used(
     factor_lookup: &FactorLookup,
-    environment: &Environment,
     backup_metadata: &BackupMetadata,
-    exported: &mut ExportedBackupMetadata,
-) {
-    if backup_metadata.sync_factors.is_empty() {
-        return;
-    }
-    let lookups = backup_metadata
-        .sync_factors
-        .iter()
-        .map(|factor| factor.as_factor_to_lookup(environment))
-        .collect::<Vec<_>>();
-    let read = factor_lookup.last_used_at(FactorScope::Sync, &lookups, &backup_metadata.id);
-    let last_used = match tokio::time::timeout(SYNC_FACTOR_LAST_USED_READ_TIMEOUT, read).await {
+) -> HashMap<String, i64> {
+    let read =
+        factor_lookup.sync_factors_last_used(&backup_metadata.sync_factors, &backup_metadata.id);
+    match tokio::time::timeout(SYNC_FACTOR_LAST_USED_READ_TIMEOUT, read).await {
         Ok(Ok(last_used)) => {
             metrics::counter!(SYNC_FACTOR_LAST_USED_READ_METRIC, "result" => "ok").increment(1);
             last_used
@@ -118,7 +102,7 @@ async fn attach_sync_factor_last_used(
         Ok(Err(err)) => {
             metrics::counter!(SYNC_FACTOR_LAST_USED_READ_METRIC, "result" => "error").increment(1);
             tracing::warn!(?err, "Failed to read sync factors' last use; omitting it");
-            return;
+            HashMap::new()
         }
         Err(_) => {
             metrics::counter!(SYNC_FACTOR_LAST_USED_READ_METRIC, "result" => "timeout")
@@ -127,16 +111,7 @@ async fn attach_sync_factor_last_used(
                 timeout_ms = SYNC_FACTOR_LAST_USED_READ_TIMEOUT.as_millis(),
                 "Timed out reading sync factors' last use; omitting it"
             );
-            return;
-        }
-    };
-    for (factor, lookup) in backup_metadata.sync_factors.iter().zip(&lookups) {
-        if let Some(exported_factor) = exported
-            .sync_factors
-            .iter_mut()
-            .find(|it| it.id == factor.id)
-        {
-            exported_factor.last_used_at = last_used.get(&lookup.primary_key()).copied();
+            HashMap::new()
         }
     }
 }
