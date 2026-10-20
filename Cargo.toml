@@ -60,9 +60,20 @@ aide = { version = "0.14.2", features = [
 types = { workspace = true, features = ["openapi"] }
 anyhow = "1.0.103"
 aws-config = "1.10.1"
-aws-sdk-dynamodb = "1.121.0"
-aws-sdk-kms = "1.115.0"
-aws-sdk-s3 = "1.142.0"
+aws-sdk-dynamodb = { version = "1.121.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-kms = { version = "1.115.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-s3 = { version = "1.142.0", default-features = false, features = [
+  "default-https-client",
+  "http-1x",
+  "rt-tokio",
+  "sigv4a",
+] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 axum-prometheus = "0.8"
 base64 = { workspace = true }
