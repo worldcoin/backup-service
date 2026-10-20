@@ -10,7 +10,7 @@ use crate::common::{
 use axum::http::StatusCode;
 use backup_service::backup_metadata::Factor;
 use backup_service::environment::Environment;
-use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup, ReadConsistency};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -111,9 +111,10 @@ async fn recovered_sync_factors(backup: &TestBackup) -> Vec<serde_json::Value> {
 
 async fn stored_last_used(lookup: &FactorLookup, backup: &TestBackup) -> Option<i64> {
     lookup
-        .lookup_record(
+        .lookup(
             FactorScope::Sync,
             &FactorToLookup::from_ec_keypair(backup.sync_public_key.clone()),
+            ReadConsistency::Eventual,
         )
         .await
         .unwrap()
@@ -204,7 +205,10 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
         .await
         .unwrap());
     assert_eq!(
-        lookup.lookup(FactorScope::Sync, &missing).await.unwrap(),
+        lookup
+            .lookup(FactorScope::Sync, &missing, ReadConsistency::Eventual)
+            .await
+            .unwrap(),
         None
     );
 }

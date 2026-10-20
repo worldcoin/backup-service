@@ -88,7 +88,7 @@ impl FactorLookup {
         Ok(())
     }
 
-    /// Looks up the backup ID for the given factor (eventually consistent `GetItem`).
+    /// Looks up the row for the given factor.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbGetError` - if the factor cannot be fetched from the `DynamoDB` table.
@@ -97,46 +97,7 @@ impl FactorLookup {
         &self,
         scope: FactorScope,
         factor: &FactorToLookup,
-    ) -> Result<Option<String>, FactorLookupError> {
-        Ok(self
-            .lookup_record(scope, factor)
-            .await?
-            .map(|record| record.backup_id))
-    }
-
-    /// Like [`Self::lookup`], but also returns when the factor was last recorded as used.
-    ///
-    /// # Errors
-    /// Same as [`Self::lookup`].
-    pub async fn lookup_record(
-        &self,
-        scope: FactorScope,
-        factor: &FactorToLookup,
-    ) -> Result<Option<LookupRecord>, FactorLookupError> {
-        self.lookup_inner(scope, factor, false).await
-    }
-
-    /// Strongly consistent `GetItem` — use after write races where an eventually consistent read
-    /// might miss a just-written mapping.
-    ///
-    /// # Errors
-    /// Same as [`Self::lookup`].
-    pub async fn lookup_consistent(
-        &self,
-        scope: FactorScope,
-        factor: &FactorToLookup,
-    ) -> Result<Option<String>, FactorLookupError> {
-        Ok(self
-            .lookup_inner(scope, factor, true)
-            .await?
-            .map(|record| record.backup_id))
-    }
-
-    async fn lookup_inner(
-        &self,
-        scope: FactorScope,
-        factor: &FactorToLookup,
-        consistent_read: bool,
+        consistency: ReadConsistency,
     ) -> Result<Option<LookupRecord>, FactorLookupError> {
         let result = self
             .dynamodb_client
@@ -146,7 +107,7 @@ impl FactorLookup {
                 DocumentAttribute::Pk.to_string(),
                 factor_primary_key(scope, factor),
             )
-            .consistent_read(consistent_read)
+            .consistent_read(consistency == ReadConsistency::Strong)
             .send()
             .await?;
 
@@ -507,8 +468,15 @@ impl FactorLookup {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadConsistency {
+    Eventual,
+    /// Use after write races, where an eventually consistent read can miss a just-written row.
+    Strong,
+}
+
 /// A `FactorLookup` row: the backup a factor maps to and, for sync factors, its last recorded use.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LookupRecord {
     pub backup_id: String,
     /// Unix seconds of the last recorded use; `None` when never recorded.
@@ -655,14 +623,15 @@ mod test {
 
         // Lookup the factor
         let result = factor_lookup
-            .lookup(FactorScope::Main, &factor)
+            .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
             .await
-            .unwrap();
+            .unwrap()
+            .map(|record| record.backup_id);
         assert_eq!(result, Some(backup_id));
 
         // Should not find the factor in sync scope
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -677,7 +646,7 @@ mod test {
         // Lookup a non-existent factor
         let factor = FactorToLookup::from_passkey("non_existent_credential_id".to_string());
         let result = factor_lookup
-            .lookup(FactorScope::Main, &factor)
+            .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -727,9 +696,10 @@ mod test {
 
         // Verify the factor exists
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
-            .unwrap();
+            .unwrap()
+            .map(|record| record.backup_id);
         assert_eq!(result, Some(backup_id));
 
         // Delete the factor
@@ -740,7 +710,7 @@ mod test {
 
         // Verify the factor no longer exists
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -775,23 +745,26 @@ mod test {
         // Verify all factors exist
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Main, &factor1)
+                .lookup(FactorScope::Main, &factor1, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor2)
+                .lookup(FactorScope::Sync, &factor2, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor3)
+                .lookup(FactorScope::Sync, &factor3, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
 
@@ -804,21 +777,21 @@ mod test {
         // Verify all factors no longer exist
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Main, &factor1)
+                .lookup(FactorScope::Main, &factor1, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor2)
+                .lookup(FactorScope::Sync, &factor2, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor3)
+                .lookup(FactorScope::Sync, &factor3, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None

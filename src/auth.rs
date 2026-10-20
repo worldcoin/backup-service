@@ -25,7 +25,7 @@ use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
     factor_lookup::{
-        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup,
+        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup, ReadConsistency,
         FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
     },
     redis_cache::RedisCacheManager,
@@ -447,8 +447,13 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
-            .await?;
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .map(|record| record.backup_id);
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
             return Err(AuthError::BackupUntraceable);
@@ -606,8 +611,13 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &oidc_factor)
-            .await?;
+            .lookup(
+                expected_factor_scope,
+                &oidc_factor,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .map(|record| record.backup_id);
 
         let Some(not_verified_backup_id) = not_verified_backup_id else {
             return Err(AuthError::BackupUntraceable);
@@ -694,15 +704,18 @@ impl AuthHandler {
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
 
-        let lookup_record = self
+        let Some(record) = self
             .factor_lookup
-            .lookup_record(expected_factor_scope, &factor_to_lookup)
-            .await?;
-
-        let Some(lookup_record) = lookup_record else {
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+        else {
             return Err(AuthError::BackupUntraceable);
         };
-        let not_verified_backup_id = lookup_record.backup_id;
+        let not_verified_backup_id = record.backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -746,7 +759,7 @@ impl AuthHandler {
                 &self.factor_lookup,
                 &factor_to_lookup,
                 &verified_backup_id,
-                lookup_record.last_used_at,
+                record.last_used_at,
             )
             .await;
         }
@@ -797,7 +810,12 @@ impl AuthHandler {
         };
 
         let cleanup = async {
-            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+            let Some(owner) = self
+                .factor_lookup
+                .lookup(scope, factor, ReadConsistency::Strong)
+                .await?
+                .map(|record| record.backup_id)
+            else {
                 return Ok::<&str, AuthError>("missing");
             };
             let metadata = self

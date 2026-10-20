@@ -6,7 +6,7 @@ use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWri
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
+    factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup, ReadConsistency,
     FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
 use crate::redis_cache::RedisCacheManager;
@@ -165,9 +165,10 @@ async fn authenticate_existing_passkey(
     let factor =
         FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential.get_credential_id()));
     let id = lookup
-        .lookup(FactorScope::Main, &factor)
+        .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
         .await?
-        .ok_or(AuthError::BackupUntraceable)?;
+        .ok_or(AuthError::BackupUntraceable)?
+        .backup_id;
     let backup = storage
         .get_by_backup_id(&id)
         .await?
@@ -425,8 +426,11 @@ async fn insert_main_lookup(
     }
     // An eventually consistent read can miss the row that caused the insert conflict.
     Ok(
-        match lookup.lookup_consistent(FactorScope::Main, factor).await? {
-            Some(owner) if owner == backup_id => LookupInsert::Existing,
+        match lookup
+            .lookup(FactorScope::Main, factor, ReadConsistency::Strong)
+            .await?
+        {
+            Some(owner) if owner.backup_id == backup_id => LookupInsert::Existing,
             Some(_) => LookupInsert::WrongOwner,
             None => LookupInsert::Missing,
         },
@@ -603,10 +607,10 @@ async fn reconcile_ensured_lookup_against_metadata(
             FactorPresence::Present | FactorPresence::Unknown => return Ok(()),
             FactorPresence::Absent => {
                 match factor_lookup
-                    .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                    .lookup(FactorScope::Main, factor_to_lookup, ReadConsistency::Strong)
                     .await?
                 {
-                    Some(existing) if existing == backup_id => {
+                    Some(existing) if existing.backup_id == backup_id => {
                         tracing::info!(
                             message =
                                 "Deleting FactorLookup restored after concurrent factor deletion",
@@ -714,7 +718,9 @@ mod tests {
 
     use crate::backup_storage::BackupStorage;
     use crate::environment::Environment;
-    use crate::factor_lookup::{test_factor_lookup as factor_lookup, FactorToLookup};
+    use crate::factor_lookup::{
+        test_factor_lookup as factor_lookup, FactorToLookup, ReadConsistency,
+    };
     use mockito::{Matcher, Server};
     use types::FactorScope;
 
@@ -840,9 +846,10 @@ mod tests {
         rollback_lookup_if_absent(&storage, &lookup, &factor, &id, &kind).await;
         assert_eq!(
             lookup
-                .lookup_consistent(FactorScope::Main, &factor)
+                .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(id.clone())
         );
 
@@ -855,9 +862,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             lookup
-                .lookup_consistent(FactorScope::Main, &factor)
+                .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(id)
         );
     }
