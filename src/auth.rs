@@ -698,7 +698,7 @@ impl AuthHandler {
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
 
-        let Some(record) = self
+        let record = self
             .factor_lookup
             .lookup(
                 expected_factor_scope,
@@ -706,9 +706,7 @@ impl AuthHandler {
                 ReadConsistency::Eventual,
             )
             .await?
-        else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .ok_or(AuthError::BackupUntraceable)?;
         let not_verified_backup_id = record.backup_id;
 
         let backup_metadata = self
