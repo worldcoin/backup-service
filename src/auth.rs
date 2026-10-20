@@ -453,11 +453,8 @@ impl AuthHandler {
                 ReadConsistency::Eventual,
             )
             .await?
-            .map(|record| record.backup_id);
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -617,11 +614,8 @@ impl AuthHandler {
                 ReadConsistency::Eventual,
             )
             .await?
-            .map(|record| record.backup_id);
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -868,7 +862,10 @@ async fn record_sync_factor_use(
     last_used_at: Option<i64>,
 ) {
     let now = chrono::Utc::now().timestamp();
-    if last_used_at.is_some_and(|at| now - at < SYNC_FACTOR_LAST_USED_REFRESH_SECS) {
+    // A timestamp in the future (clock skew, a corrupt row) is rewritten, not trusted forever.
+    let recent =
+        |at: i64| (0..SYNC_FACTOR_LAST_USED_REFRESH_SECS).contains(&now.saturating_sub(at));
+    if last_used_at.is_some_and(recent) {
         return;
     }
     let write = factor_lookup.set_sync_factor_last_used(factor, backup_id, now);
@@ -1028,5 +1025,25 @@ mod tests {
         .expect("recording a use must not hold up the request");
 
         assert!(started.elapsed() >= SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn out_of_range_last_use_is_rewritten() {
+        let mut dynamo = mockito::Server::new_async().await;
+        let writes = dynamo
+            .mock("POST", mockito::Matcher::Any)
+            .with_header("content-type", "application/x-amz-json-1.0")
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+        let lookup = test_factor_lookup(Some(dynamo.url())).await;
+        let factor = FactorToLookup::from_ec_keypair("key".to_string());
+
+        for at in [i64::MIN, i64::MAX] {
+            record_sync_factor_use(&lookup, &factor, "backup", Some(at)).await;
+        }
+
+        writes.assert_async().await;
     }
 }
