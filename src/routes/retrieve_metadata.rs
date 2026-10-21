@@ -42,6 +42,7 @@ pub async fn handler(
     let AuthenticationResult {
         backup_id,
         backup_metadata,
+        mut account_lock,
         ..
     } = backup_metadata?;
 
@@ -53,6 +54,7 @@ pub async fn handler(
 
     // Step 2: Return the backup metadata
     let exported_metadata = backup_metadata.exported();
+    let _ = account_lock.release().await;
 
     Ok(Json(exported_metadata))
 }
