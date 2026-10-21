@@ -10,7 +10,6 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::Client as S3Client;
 use axum::http::StatusCode;
-use backup_service::backup_metadata::FactorKind;
 use backup_service::environment::Environment;
 use backup_service::factor_lookup::FactorToLookup;
 use base64::engine::general_purpose::STANDARD;
@@ -485,6 +484,7 @@ async fn test_remove_sync_factor_etag_concurrency() {
         ],
         keys: vec![],
         manifest_hash: hex::encode([1u8; 32]),
+        archive_id: None,
     };
 
     // Create the backup
@@ -533,14 +533,8 @@ async fn test_remove_sync_factor_etag_concurrency() {
 
     // Count successes and failures
     let successes = [first, second, third].iter().filter(|r| r.is_ok()).count();
-    let failures = [first, second, third].iter().filter(|r| r.is_err()).count();
-
-    // Exactly one operation should succeed, the others should fail due to eTag mismatch
-    assert_eq!(successes, 1, "Expected exactly one operation to succeed");
-    assert_eq!(
-        failures, 2,
-        "Expected exactly two operations to fail due to eTag mismatch"
-    );
+    // Requests may read after an earlier removal commits and then also succeed.
+    assert!(successes >= 1, "At least one removal must succeed");
 
     // Verify that the failed operations are due to PutObjectError with PreconditionFailed
     for result in [first, second, third] {
@@ -561,7 +555,6 @@ async fn test_remove_sync_factor_etag_concurrency() {
         }
     }
 
-    // Verify that exactly two sync factors remain in the backup
     let final_metadata = backup_storage
         .get_metadata_by_backup_id(&backup_id)
         .await
@@ -569,21 +562,14 @@ async fn test_remove_sync_factor_etag_concurrency() {
         .unwrap()
         .0;
 
-    assert_eq!(final_metadata.sync_factors.len(), 2);
-
-    // print remaining factors
-    // high likelihood that the removed factor is the one with the public key "public-key-1", but we don't assert as it's not deterministic
-    let remaining_factors = final_metadata
-        .sync_factors
+    assert_eq!(final_metadata.sync_factors.len(), 3 - successes);
+    for (factor, result) in [sync_factor1, sync_factor2, sync_factor3]
         .iter()
-        .map(|f| {
-            let kind = f.kind.clone();
-            match kind {
-                FactorKind::EcKeypair { public_key } => public_key,
-                _ => panic!("Expected EcKeypair, got: {kind:?}"),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    println!("remaining factors: {remaining_factors:?}");
+        .zip([first, second, third])
+    {
+        assert_eq!(
+            final_metadata.sync_factors.contains(factor),
+            result.is_err()
+        );
+    }
 }

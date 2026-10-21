@@ -902,6 +902,7 @@ async fn auth_cleanup_rereads_membership_and_changed_lookup_owner_under_lock() {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: "hash".to_string(),
+            archive_id: None,
         };
         let current = BackupMetadata {
             id: current_owner.to_string(),
