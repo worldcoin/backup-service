@@ -25,7 +25,7 @@ use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
     factor_lookup::{
-        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup,
+        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup, ReadConsistency,
         FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
     },
     redis_cache::RedisCacheManager,
@@ -158,6 +158,16 @@ impl VerifiedOidcSession {
 /// only a convenience index and the two stores are written non-atomically, so this is the only
 /// signal into how often — and how successfully — that drift actually gets cleaned up in production.
 const FACTOR_LOOKUP_GC_METRIC: &str = "factor_lookup_gc_total";
+
+/// Outcome of recording a sync factor's last use (`updated`, `not_owned`, `error`, `timeout`).
+const SYNC_FACTOR_LAST_USED_METRIC: &str = "sync_factor_last_used_update_total";
+
+/// A sync factor's last use is refreshed at most once per day.
+const SYNC_FACTOR_LAST_USED_REFRESH_SECS: i64 = 24 * 60 * 60;
+
+/// Bounds the latency a sync factor's first request of the day pays for recording its use.
+const SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct AuthHandler {
@@ -437,12 +447,14 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -596,12 +608,14 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &oidc_factor)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &oidc_factor,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -684,14 +698,16 @@ impl AuthHandler {
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
 
-        let not_verified_backup_id = self
+        let record = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?;
+        let not_verified_backup_id = record.backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -729,6 +745,16 @@ impl AuthHandler {
 
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
+
+        if expected_factor_scope == FactorScope::Sync {
+            record_sync_factor_use(
+                &self.factor_lookup,
+                &factor_to_lookup,
+                &verified_backup_id,
+                record.last_used_at,
+            )
+            .await;
+        }
 
         Ok((verified_backup_id, backup_metadata))
     }
@@ -776,7 +802,12 @@ impl AuthHandler {
         };
 
         let cleanup = async {
-            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+            let Some(owner) = self
+                .factor_lookup
+                .lookup(scope, factor, ReadConsistency::Strong)
+                .await?
+                .map(|record| record.backup_id)
+            else {
                 return Ok::<&str, AuthError>("missing");
             };
             let metadata = self
@@ -817,10 +848,58 @@ impl AuthHandler {
     }
 }
 
+/// Refreshes a sync factor's last use at most once per
+/// [`SYNC_FACTOR_LAST_USED_REFRESH_SECS`], so recovery at the sync-factor cap can replace the least
+/// recently used access.
+///
+/// Best-effort: a failed or timed-out write is counted and logged, never returned.
+async fn record_sync_factor_use(
+    factor_lookup: &FactorLookup,
+    factor: &FactorToLookup,
+    backup_id: &str,
+    last_used_at: Option<i64>,
+) {
+    let now = chrono::Utc::now().timestamp();
+    // A timestamp in the future (clock skew, a corrupt row) is rewritten, not trusted forever.
+    let recent =
+        |at: i64| (0..SYNC_FACTOR_LAST_USED_REFRESH_SECS).contains(&now.saturating_sub(at));
+    if last_used_at.is_some_and(recent) {
+        return;
+    }
+    let write = factor_lookup.set_sync_factor_last_used(factor, backup_id, now);
+    let result = match tokio::time::timeout(SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT, write).await {
+        Ok(Ok(true)) => "updated",
+        // The row was deleted or moved to another backup after authentication.
+        Ok(Ok(false)) => "not_owned",
+        Ok(Err(err)) => {
+            tracing::warn!(
+                ?err,
+                backup_id,
+                factor_pk = factor.primary_key(),
+                "Failed to record sync factor last use"
+            );
+            "error"
+        }
+        Err(_) => {
+            tracing::warn!(
+                backup_id,
+                factor_pk = factor.primary_key(),
+                timeout_ms = SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT.as_millis(),
+                "Timed out recording sync factor last use"
+            );
+            "timeout"
+        }
+    };
+    metrics::counter!(SYNC_FACTOR_LAST_USED_METRIC, "result" => result).increment(1);
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::auth::VerifiedOidcSession;
+    use crate::auth::{
+        record_sync_factor_use, VerifiedOidcSession, SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT,
+    };
     use crate::environment::Environment;
+    use crate::factor_lookup::{test_factor_lookup, FactorToLookup};
     use crate::oidc_token_verifier::OidcTokenVerifierError;
     use chrono::{Duration, Utc};
     use openidconnect::core::CoreIdTokenClaims;
@@ -925,5 +1004,44 @@ mod tests {
                 .unwrap()
                 .is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn hung_sync_factor_use_write_gives_up_at_its_timeout() {
+        // Accepts connections but never answers, so the write hangs.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let lookup =
+            test_factor_lookup(Some(format!("http://{}", silent.local_addr().unwrap()))).await;
+        let factor = FactorToLookup::from_ec_keypair("key".to_string());
+        let started = std::time::Instant::now();
+
+        tokio::time::timeout(
+            SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT * 2,
+            record_sync_factor_use(&lookup, &factor, "backup", None),
+        )
+        .await
+        .expect("recording a use must not hold up the request");
+
+        assert!(started.elapsed() >= SYNC_FACTOR_LAST_USED_WRITE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn out_of_range_last_use_is_rewritten() {
+        let mut dynamo = mockito::Server::new_async().await;
+        let writes = dynamo
+            .mock("POST", mockito::Matcher::Any)
+            .with_header("content-type", "application/x-amz-json-1.0")
+            .with_body("{}")
+            .expect(2)
+            .create_async()
+            .await;
+        let lookup = test_factor_lookup(Some(dynamo.url())).await;
+        let factor = FactorToLookup::from_ec_keypair("key".to_string());
+
+        for at in [i64::MIN, i64::MAX] {
+            record_sync_factor_use(&lookup, &factor, "backup", Some(at)).await;
+        }
+
+        writes.assert_async().await;
     }
 }

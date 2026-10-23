@@ -8,7 +8,7 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::error::SdkError;
 use axum::http::StatusCode;
 use backup_service::environment::Environment;
-use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup, ReadConsistency};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use http_body_util::BodyExt;
@@ -100,12 +100,12 @@ async fn test_delete_backup_happy_path() {
 
     // Verify factors exist in DynamoDB before deletion
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &sync_factor)
+        .lookup(FactorScope::Sync, &sync_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
@@ -141,12 +141,12 @@ async fn test_delete_backup_happy_path() {
 
     // Verify all factors were deleted from DynamoDB
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &sync_factor)
+        .lookup(FactorScope::Sync, &sync_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
