@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::auth::{AuthHandler, AuthenticationResult};
@@ -71,10 +70,10 @@ pub async fn handler(
         let last_used = factor_lookup
             .fetch_last_used(&backup_metadata.sync_factors, &backup_metadata.id)
             .await
-            .unwrap_or_else(|err| {
+            .inspect_err(|err| {
                 tracing::warn!(?err, "Failed to fetch sync factors' last use; omitting it");
-                HashMap::new()
-            });
+            })
+            .unwrap_or_default();
         let mut metadata = backup_metadata.exported();
         for factor in &mut metadata.sync_factors {
             factor.last_used = last_used.get(&factor.id).copied();

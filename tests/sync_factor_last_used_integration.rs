@@ -8,6 +8,7 @@ use crate::common::{
     create_test_backup_with_sync_keypair, get_keypair_retrieval_challenge, send_post_request,
     send_post_request_with_bypass_attestation_token, sign_keypair_challenge,
 };
+use aws_sdk_dynamodb::types::AttributeValue;
 use axum::http::StatusCode;
 use backup_service::backup_metadata::Factor;
 use backup_service::environment::Environment;
@@ -206,6 +207,29 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
             .unwrap(),
         None
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn recovery_succeeds_without_last_use_when_it_cannot_be_read() {
+    let backup = create_backup().await;
+    let environment = Environment::development(None);
+    // A row without a backup ID fails the whole batch read.
+    aws_sdk_dynamodb::Client::new(&environment.aws_config().await)
+        .put_item()
+        .table_name(environment.factor_lookup_dynamodb_table_name())
+        .item(
+            "PK",
+            AttributeValue::S(format!("SYNC#EC_KEYPAIR|{}", backup.sync_public_key)),
+        )
+        .item("LastUsed", AttributeValue::S(days_ago(0).to_string()))
+        .send()
+        .await
+        .unwrap();
+
+    let sync_factors = recovered_sync_factors(&backup).await;
+
+    assert!(sync_factors[0].get("lastUsed").is_none());
 }
 
 #[tokio::test]

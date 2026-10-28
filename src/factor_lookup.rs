@@ -3,6 +3,7 @@ use crate::environment::Environment;
 use aws_sdk_dynamodb::config::timeout::TimeoutConfig;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
 use chrono::NaiveDate;
@@ -165,16 +166,14 @@ impl FactorLookup {
             .await
         {
             Ok(_) => Ok(true),
-            Err(sdk_err)
-                if matches!(
-                    &sdk_err,
-                    SdkError::ServiceError(inner)
-                        if inner.err().is_conditional_check_failed_exception()
-                ) =>
+            Err(err)
+                if err
+                    .as_service_error()
+                    .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
             {
                 Ok(false)
             }
-            Err(sdk_err) => Err(sdk_err.into()),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -518,9 +517,7 @@ pub enum FactorLookupError {
     #[error("Failed to query factors from DynamoDB: {0}")]
     DynamoDbQueryError(#[from] SdkError<aws_sdk_dynamodb::operation::query::QueryError>),
     #[error("Failed to update factor in DynamoDB: {0}")]
-    DynamoDbUpdateError(
-        #[from] SdkError<aws_sdk_dynamodb::operation::update_item::UpdateItemError>,
-    ),
+    DynamoDbUpdateError(#[from] SdkError<UpdateItemError>),
     #[error("Failed to batch read factors from DynamoDB: {0}")]
     DynamoDbBatchGetError(
         #[from] SdkError<aws_sdk_dynamodb::operation::batch_get_item::BatchGetItemError>,
@@ -847,13 +844,53 @@ mod test {
             LAST_USED_WRITE_TIMEOUT * 2,
             lookup.set_last_used(&factor, "backup", NaiveDate::MIN),
         );
-        assert!(write.await.expect("the write must time out").is_err());
+        assert!(matches!(
+            write.await.expect("the write must time out"),
+            Err(FactorLookupError::DynamoDbUpdateError(
+                SdkError::TimeoutError(_)
+            ))
+        ));
 
         let read = tokio::time::timeout(
             LAST_USED_READ_TIMEOUT * 2,
             lookup.fetch_last_used(&sync_factors, "backup"),
         );
-        assert!(read.await.expect("the read must time out").is_err());
+        assert!(matches!(
+            read.await.expect("the read must time out"),
+            Err(FactorLookupError::DynamoDbBatchGetError(
+                SdkError::TimeoutError(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_sync_factors_skips_the_batch_read() {
+        // Nothing listens here, so any request would fail.
+        let lookup = factor_lookup_without_retries(Some("http://127.0.0.1:1".to_string())).await;
+
+        let last_used = lookup.fetch_last_used(&[], "backup").await.unwrap();
+
+        assert!(last_used.is_empty());
+    }
+
+    #[test]
+    fn malformed_last_used_reads_as_never_used() {
+        for value in [
+            AttributeValue::S("2026-13-01".to_string()),
+            AttributeValue::N("1700000000".to_string()),
+        ] {
+            let item = HashMap::from([
+                (
+                    DocumentAttribute::BackupId.to_string(),
+                    AttributeValue::S("backup".to_string()),
+                ),
+                (DocumentAttribute::LastUsed.to_string(), value),
+            ]);
+
+            let record = LookupRecord::try_from(&item).unwrap();
+
+            assert_eq!(record.last_used, None);
+        }
     }
 
     #[tokio::test]
