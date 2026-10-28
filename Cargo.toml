@@ -2,7 +2,7 @@
 members = [".", "test-utils", "types"]
 
 [workspace.package]
-version = "0.9.7"
+version = "0.10.0"
 license = "MIT"
 edition = "2021"
 
@@ -60,9 +60,20 @@ aide = { version = "0.14.2", features = [
 types = { workspace = true, features = ["openapi"] }
 anyhow = "1.0.103"
 aws-config = "1.10.1"
-aws-sdk-dynamodb = "1.121.0"
-aws-sdk-kms = "1.115.0"
-aws-sdk-s3 = "1.142.0"
+aws-sdk-dynamodb = { version = "1.121.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-kms = { version = "1.115.0", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+] }
+aws-sdk-s3 = { version = "1.142.0", default-features = false, features = [
+  "default-https-client",
+  "http-1x",
+  "rt-tokio",
+  "sigv4a",
+] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 axum-prometheus = "0.8"
 base64 = { workspace = true }
@@ -78,7 +89,7 @@ openidconnect = { workspace = true }
 p256 = { workspace = true }
 k256 = { workspace = true }
 rand = { workspace = true }
-redis = { version = "0.32.5", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
+redis = { version = "1.0.2", features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12.22", features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 schemars = { workspace = true }
