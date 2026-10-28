@@ -2,24 +2,7 @@
 //! consumed by the HTTP server and can be used by clients.
 //!
 //! Extensible enums are non-exhaustive: callers must handle unsupported variants when matching.
-//! This permits adding variants in a compatible Rust release, but does not make unknown JSON
-//! variants deserialize successfully. Only [`ErrorCode`] preserves unknown wire values.
-//! Request and response structs remain constructible with literals; adding their fields still
-//! requires a Rust compatibility review. [`FactorScope`] is deliberately exhaustive because a
-//! new permission scope changes the authorization model.
-//!
-//! For example, an exhaustive match on a platform is rejected outside this crate:
-//!
-//! ```compile_fail,E0004
-//! use backup_service_types::Platform;
-//!
-//! fn name(platform: Platform) -> &'static str {
-//!     match platform {
-//!         Platform::Ios => "iOS",
-//!         Platform::Android => "Android",
-//!     }
-//! }
-//! ```
+//! This permits adding variants in a compatible Rust release. Only [`ErrorCode`] preserves unknown wire values.
 
 #![deny(clippy::exhaustive_enums)]
 #![deny(missing_docs)] // TODO: Make this a workspace lint
