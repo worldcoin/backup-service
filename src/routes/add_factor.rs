@@ -165,6 +165,7 @@ async fn authenticate_existing_passkey(
     let factor =
         FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential.get_credential_id()));
     let id = lookup
+        // eventual is fine as it's a read (at worst, this results in an error in the request, this doesn't authorize alone)
         .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
         .await?
         .ok_or(AuthError::BackupUntraceable)?

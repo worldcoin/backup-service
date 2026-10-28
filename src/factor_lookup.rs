@@ -20,7 +20,7 @@ pub const FACTOR_LOOKUP_MUTATE_LOCK_PREFIX: &str = "factor_lookup_mutate:";
 /// Fallback TTL for [`FACTOR_LOOKUP_MUTATE_LOCK_PREFIX`] (should exceed a normal put + retries).
 pub const FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS: u64 = 120;
 
-const LAST_USED_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const LAST_USED_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 const LAST_USED_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -123,9 +123,7 @@ impl FactorLookup {
         result.item().map(LookupRecord::try_from).transpose()
     }
 
-    /// Records that the sync `factor` authenticated a request for `backup_id` on `date`. Only
-    /// updates a row that still maps to `backup_id`, since `UpdateItem` would otherwise recreate a
-    /// deleted row. Returns `Ok(false)` when the row is gone or moved.
+    /// Records that the sync `factor` was last used at `date`.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbUpdateError` - if the update fails for a non-condition reason
@@ -150,15 +148,13 @@ impl FactorLookup {
             .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
             .expression_attribute_values(":date", AttributeValue::S(date.to_string()))
             .expression_attribute_values(":backup_id", AttributeValue::S(backup_id.to_string()))
-            // Best-effort and retried by the next request anyway, so a single attempt keeps a
-            // throttled table from seeing three writes per sync request.
             .customize()
             .config_override(
                 aws_sdk_dynamodb::config::Builder::default()
                     .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
                     .timeout_config(
                         TimeoutConfig::builder()
-                            .operation_timeout(LAST_USED_WRITE_TIMEOUT)
+                            .operation_timeout(LAST_USED_WRITE_TIMEOUT) // Best-effort
                             .build(),
                     ),
             )
@@ -177,8 +173,8 @@ impl FactorLookup {
         }
     }
 
-    /// Returns the day each of `sync_factors` was last used, keyed by factor id. Factors never
-    /// used, or whose row maps to another backup, are omitted.
+    /// Returns the date of last use for each `sync_factor`. Factors never
+    /// used, or who map to another backup, are omitted.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbBatchGetError` - if the batch read fails or exceeds its timeout.
@@ -191,13 +187,11 @@ impl FactorLookup {
         backup_id: &str,
     ) -> Result<HashMap<String, NaiveDate>, FactorLookupError> {
         let mut last_used = HashMap::new();
-        // BatchGetItem rejects an empty key list.
         if sync_factors.is_empty() {
             return Ok(last_used);
         }
         let table = self.environment.factor_lookup_dynamodb_table_name();
         let pk = DocumentAttribute::Pk.to_string();
-        // Keyed by primary key: BatchGetItem rejects duplicate keys.
         let mut factor_ids = HashMap::new();
         for factor in sync_factors {
             let key = factor_pk(

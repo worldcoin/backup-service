@@ -66,12 +66,12 @@ pub async fn handler(
             .await?;
 
         // Step 4: Return the backup and metadata
-        // Best-effort: without it the client falls back to creation time.
+        // 4.1: Include the last_used attribute (best-effort)
         let last_used = factor_lookup
             .fetch_last_used(&backup_metadata.sync_factors, &backup_metadata.id)
             .await
             .inspect_err(|err| {
-                tracing::warn!(?err, "Failed to fetch sync factors' last use; omitting it");
+                tracing::error!(?err, "Failed to fetch sync factors' last use; omitting it");
             })
             .unwrap_or_default();
         let mut metadata = backup_metadata.exported();
