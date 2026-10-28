@@ -685,6 +685,7 @@ impl BackupStorage {
                             return Err(BackupManagerError::FactorOrphanedFromEncryptionKey);
                         }
                     }
+                    _ => return Err(BackupManagerError::FactorOrphanedFromEncryptionKey),
                 }
             } else {
                 // return Err if the key is not found
@@ -835,6 +836,7 @@ impl PartialEq for DeletionResult {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum BackupManagerError {
     #[error("Failed to HeadObject: {0:?}")]
     HeadObjectError(#[from] SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>),

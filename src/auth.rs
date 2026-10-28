@@ -13,7 +13,7 @@ use webauthn_rs::prelude::{
 
 use crate::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
 use crate::backup_storage::BackupManagerError;
-use crate::challenge_manager::ChallengeManagerError;
+use crate::challenge_manager::{ChallengeManagerError, ChallengeType};
 use crate::environment::Environment;
 use crate::factor_lookup::FactorLookupError;
 use crate::mask_email;
@@ -36,6 +36,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use types::{Authorization, FactorScope, OidcToken};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AuthError {
     /// Very rare case where a backup ID is resolved from the provided factor, but the backup does not actually exist.
     #[error("backup_missing")]
@@ -150,6 +151,7 @@ impl VerifiedOidcSession {
             (OidcToken::Apple { .. }, OidcToken::Apple { .. })
             | (OidcToken::Apple { .. }, OidcToken::Google { .. })
             | (OidcToken::Google { .. }, OidcToken::Apple { .. }) => false,
+            _ => return Err(OidcTokenVerifierError::TokenVerificationError),
         };
         Ok(same_token.then_some(self.claims))
     }
@@ -211,13 +213,17 @@ impl AuthHandler {
                     return Err(AuthError::InvalidAuthorizationType);
                 }
                 Authorization::EcKeypair { .. } => {}
+                _ => return Err(AuthError::InvalidAuthorizationType),
             }
         }
 
         // Step 2: Extract challenge token (ensures the server actually issued a challenge for the request being performed)
         let (challenge_token_payload, challenge_context) = self
             .challenge_manager
-            .extract_token_payload(authorization.into(), challenge_token.clone())
+            .extract_token_payload(
+                ChallengeType::try_from(authorization)?,
+                challenge_token.clone(),
+            )
             .await?;
 
         // Step 3: Verify the challenge context (i.e. the purpose of the challenge is correct)
@@ -265,6 +271,7 @@ impl AuthHandler {
                 )
                 .await?
             }
+            _ => return Err(AuthError::InvalidAuthorizationType),
         };
 
         // Step 5: Track the used challenge to prevent replay attacks
@@ -301,6 +308,7 @@ impl AuthHandler {
                     return Err(AuthError::InvalidSyncFactorType);
                 }
                 Authorization::EcKeypair { .. } => {}
+                _ => return Err(AuthError::InvalidAuthorizationType),
             }
         }
 
@@ -308,7 +316,10 @@ impl AuthHandler {
         // This ensures the challenge was issued by us and hasn't expired
         let (challenge_token_payload, challenge_context) = self
             .challenge_manager
-            .extract_token_payload(authorization.into(), challenge_token.clone())
+            .extract_token_payload(
+                ChallengeType::try_from(authorization)?,
+                challenge_token.clone(),
+            )
             .await?;
 
         // Step 3: Verify the challenge context matches what we expect
@@ -348,6 +359,7 @@ impl AuthHandler {
                 signature,
                 &challenge_token_payload,
             )?,
+            _ => return Err(AuthError::InvalidAuthorizationType),
         };
 
         // Step 5: Mark the challenge token as used to prevent replay attacks
@@ -556,6 +568,7 @@ impl AuthHandler {
                 sub: claims.subject().to_string(),
                 masked_email: mask_email(&email).unwrap_or_default(),
             },
+            _ => return Err(OidcTokenVerifierError::TokenVerificationError.into()),
         };
 
         let factor = Factor::new_oidc_account(oidc_account, turnkey_provider_id);
@@ -589,14 +602,10 @@ impl AuthHandler {
 
         verify_signature(public_key, signature, challenge_token_payload)?;
 
-        let oidc_factor = match oidc_token {
-            OidcToken::Google { .. } | OidcToken::Apple { .. } => {
-                FactorToLookup::from_oidc_account(
-                    claims.issuer().to_string(),
-                    claims.subject().to_string(),
-                )
-            }
-        };
+        let oidc_factor = FactorToLookup::from_oidc_account(
+            claims.issuer().to_string(),
+            claims.subject().to_string(),
+        );
 
         let not_verified_backup_id = self
             .factor_lookup

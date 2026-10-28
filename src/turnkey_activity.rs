@@ -183,6 +183,7 @@ pub fn verify_turnkey_activity_parameters(
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum TurnkeyActivityError {
     #[error("Incorrect key type, expected P256 with ECDSA")]
     IncorrectKeyType,

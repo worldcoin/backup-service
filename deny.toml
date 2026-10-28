@@ -8,6 +8,7 @@ unknown-registry = "deny"
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "a potential timing attack to recover a private key from rsa crate. however, the rsa library is used either for tests or signature verification, so private key material is not exposed." },
+    { id = "RUSTSEC-2026-0387", reason = "`crypto-bigint` 0.5.5 has no patched 0.5.x release. in production it is only pulled in by `openidconnect` 4.0.1 (latest) via p256/p384 0.13, which only verify OIDC ID token signatures over public data. the other path is `passkey` 0.5 in test-utils (dev-only, signs with throwaway test keys). our own p256/k256 and aws-sigv4 use the patched 0.7.x." },
 ]
 
 [licenses]

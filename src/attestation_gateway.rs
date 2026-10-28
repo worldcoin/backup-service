@@ -24,6 +24,7 @@ const STALE_AFTER: Duration = Duration::from_mins(1);
 pub use types::endpoints::ATTESTATION_TOKEN_HEADER as ATTESTATION_GATEWAY_HEADER;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AttestationGatewayError {
     #[error("Failed to fetch JWK set from attestation gateway: {0}")]
     FetchJwkSet(reqwest::Error),

@@ -499,6 +499,7 @@ fn factor_pk(scope: FactorScope, factor: &FactorToLookup) -> String {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum FactorLookupError {
     #[error("Failed to insert factor into DynamoDB: {0}")]
     DynamoDbPutError(#[from] SdkError<PutItemError>),

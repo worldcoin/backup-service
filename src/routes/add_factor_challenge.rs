@@ -45,6 +45,12 @@ pub async fn handler(
     {
         ExistingFactorKind::Passkey => ChallengeType::Passkey,
         ExistingFactorKind::OidcAccount => ChallengeType::Keypair,
+        _ => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::InvalidAuthorizationType,
+                "Unsupported existing factor kind",
+            ));
+        }
     };
 
     let (new_factor_type, new_factor_challenge_value, new_factor_token) = match &request.new_factor
@@ -60,6 +66,12 @@ pub async fn handler(
                         "World App",
                         None,
                     )?,
+                _ => {
+                    return Err(ErrorResponse::bad_request(
+                        ErrorCode::NotSupported,
+                        "Unsupported platform",
+                    ));
+                }
             };
             let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
             let registration_json = serde_json::to_string(&registration)?;
@@ -95,6 +107,12 @@ pub async fn handler(
                 serde_json::Value::String(STANDARD.encode(new_factor_challenge)),
                 token,
             )
+        }
+        _ => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::InvalidNewFactorType,
+                "Unsupported new factor kind",
+            ));
         }
     };
 

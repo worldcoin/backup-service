@@ -156,7 +156,10 @@ impl ChallengeManager {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum ChallengeManagerError {
+    #[error("Unsupported authorization type")]
+    InvalidAuthorizationType,
     #[error("Error setting claim: {0}")]
     SetClaim(josekit::JoseError),
     #[error("Error encrypting token: {0}")]
@@ -186,13 +189,16 @@ pub enum ChallengeType {
     Keypair,
 }
 
-impl From<&Authorization> for ChallengeType {
-    fn from(value: &Authorization) -> Self {
-        match value {
+impl TryFrom<&Authorization> for ChallengeType {
+    type Error = ChallengeManagerError;
+
+    fn try_from(value: &Authorization) -> Result<Self, Self::Error> {
+        Ok(match value {
             Authorization::Passkey { .. } => Self::Passkey,
             // NOTE: OIDC Accounts also sign a `Keypair` challenge. The keypair is part of the OIDC nonce.
             Authorization::OidcAccount { .. } | Authorization::EcKeypair { .. } => Self::Keypair,
-        }
+            _ => return Err(ChallengeManagerError::InvalidAuthorizationType),
+        })
     }
 }
 

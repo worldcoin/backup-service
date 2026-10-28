@@ -100,7 +100,7 @@ impl OidcTokenVerifier {
     ///
     /// # Errors
     /// Rejects invalid or replayed tokens and provider or Redis failures.
-    pub async fn verify_token(
+    pub(crate) async fn verify_token(
         &self,
         token: &OidcToken,
         expected_public_key_sec1_base64: String,
@@ -118,6 +118,7 @@ impl OidcTokenVerifier {
                 get_and_validate_apple_client_id(&self.environment, aud.as_ref())?,
                 self.environment.apple_issuer_url(),
             ),
+            _ => return Err(OidcTokenVerifierError::TokenVerificationError),
         };
 
         let signature_keys = self.get_jwk_set(&jwk_set_url).await?.as_ref().clone();
@@ -178,6 +179,7 @@ pub(crate) fn get_and_validate_apple_client_id(
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum OidcTokenVerifierError {
     #[error("Failed to fetch JWK set from OIDC provider")]
     JwkSetFetchError,
@@ -224,6 +226,7 @@ mod tests {
         match provider {
             OidcProvider::Google => &MockOidcProvider::Google,
             OidcProvider::Apple => &MockOidcProvider::Apple,
+            _ => panic!("Unsupported mock OIDC provider"),
         }
     }
 
@@ -256,6 +259,7 @@ mod tests {
                     .verify_token(&OidcToken::Apple { token, aud }, public_key)
                     .await
             }
+            _ => Err(OidcTokenVerifierError::TokenVerificationError),
         }
     }
 
@@ -474,6 +478,7 @@ mod tests {
                 OidcProvider::Apple => {
                     assert!(matches!(result, Err(OidcTokenVerifierError::InvalidAud)));
                 }
+                _ => panic!("Unsupported mock OIDC provider"),
             }
         }
     }
