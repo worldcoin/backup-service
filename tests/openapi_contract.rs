@@ -109,6 +109,7 @@ async fn attestation_gated_routes_reject_requests_without_a_token() {
         let method = match method {
             Method::Get => "GET",
             Method::Post => "POST",
+            _ => panic!("Unsupported endpoint method: {method:?}"),
         };
 
         let request = Request::builder()

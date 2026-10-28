@@ -318,6 +318,7 @@ const USED_CHALLENGE_PREFIX: &str = "usedChallengeHash";
 const USED_OIDC_NONCE_PREFIX: &str = "usedOidcNonceHash";
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum RedisCacheError {
     #[error("unexpected encoding error")]
     EncodingError,
