@@ -719,7 +719,7 @@ mod tests {
     use crate::backup_storage::BackupStorage;
     use crate::environment::Environment;
     use crate::factor_lookup::{
-        test_factor_lookup as factor_lookup, FactorToLookup, ReadConsistency,
+        factor_lookup_without_retries as factor_lookup, FactorToLookup, ReadConsistency,
     };
     use mockito::{Matcher, Server};
     use types::FactorScope;

@@ -231,11 +231,9 @@ pub struct ExportedFactor {
     pub id: String,
     /// Unix timestamp (seconds) when the factor was created.
     pub created_at: i64,
-    /// Unix timestamp (seconds) when this sync factor last authenticated a request, tracked at
-    /// day granularity. Only reported for sync factors on `retrieve/from-challenge`; absent when
-    /// unknown (the factor has not authenticated since tracking started, or the read failed).
+    /// Day (UTC) this sync factor was last used, if known. Only set by `retrieve/from-challenge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<i64>,
+    pub last_used: Option<chrono::NaiveDate>,
     /// The kind of factor and its associated metadata.
     pub kind: ExportedFactorKind,
 }

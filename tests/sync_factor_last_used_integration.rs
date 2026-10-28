@@ -2,6 +2,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::common::{
     create_test_backup_with_sync_keypair, get_keypair_retrieval_challenge, send_post_request,
@@ -13,13 +14,12 @@ use backup_service::environment::Environment;
 use backup_service::factor_lookup::{FactorLookup, FactorToLookup, ReadConsistency};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use chrono::{Days, NaiveDate, Utc};
 use http_body_util::BodyExt;
 use p256::SecretKey;
 use serde_json::json;
 use serial_test::serial;
 use types::FactorScope;
-
-const DAY_SECS: i64 = 24 * 60 * 60;
 
 struct TestBackup {
     backup_id: String,
@@ -109,17 +109,32 @@ async fn recovered_sync_factors(backup: &TestBackup) -> Vec<serde_json::Value> {
         .clone()
 }
 
-async fn stored_last_used(lookup: &FactorLookup, backup: &TestBackup) -> Option<i64> {
+async fn stored_last_used(lookup: &FactorLookup, backup: &TestBackup) -> Option<NaiveDate> {
     lookup
         .lookup(
             FactorScope::Sync,
             &FactorToLookup::from_ec_keypair(backup.sync_public_key.clone()),
-            ReadConsistency::Eventual,
+            ReadConsistency::Strong,
         )
         .await
         .unwrap()
         .unwrap()
-        .last_used_at
+        .last_used
+}
+
+/// The use is recorded in the background, so wait for it to land.
+async fn wait_for_last_used(lookup: &FactorLookup, backup: &TestBackup, expected: NaiveDate) {
+    for _ in 0..50 {
+        if stored_last_used(lookup, backup).await == Some(expected) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("sync factor last use was not recorded as {expected}");
+}
+
+fn days_ago(days: u64) -> NaiveDate {
+    Utc::now().date_naive() - Days::new(days)
 }
 
 #[tokio::test]
@@ -131,17 +146,16 @@ async fn sync_factor_use_is_recorded_and_reported_on_recovery() {
     let before_use = recovered_sync_factors(&backup).await;
     assert_eq!(before_use.len(), 1);
     assert!(
-        before_use[0].get("lastUsedAt").is_none(),
+        before_use[0].get("lastUsed").is_none(),
         "an unused factor has no last use"
     );
 
-    let started = chrono::Utc::now().timestamp();
     use_sync_factor(&backup).await;
-    let recorded = stored_last_used(&lookup, &backup).await.unwrap();
-    assert!(recorded >= started && recorded <= chrono::Utc::now().timestamp());
+    let today = Utc::now().date_naive();
+    wait_for_last_used(&lookup, &backup, today).await;
 
     let after_use = recovered_sync_factors(&backup).await;
-    assert_eq!(after_use[0]["lastUsedAt"], json!(recorded));
+    assert_eq!(after_use[0]["lastUsed"], json!(today.to_string()));
     assert_eq!(
         after_use[0]["kind"]["publicKey"],
         json!(backup.sync_public_key)
@@ -150,37 +164,18 @@ async fn sync_factor_use_is_recorded_and_reported_on_recovery() {
 
 #[tokio::test]
 #[serial]
-async fn sync_factor_use_within_a_day_is_not_rewritten() {
-    let backup = create_backup().await;
-    let lookup = factor_lookup().await;
-    let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
-    let recent = chrono::Utc::now().timestamp() - 3_600;
-    assert!(lookup
-        .set_sync_factor_last_used(&factor, &backup.backup_id, recent)
-        .await
-        .unwrap());
-
-    use_sync_factor(&backup).await;
-
-    assert_eq!(stored_last_used(&lookup, &backup).await, Some(recent));
-}
-
-#[tokio::test]
-#[serial]
 async fn sync_factor_use_older_than_a_day_is_refreshed() {
     let backup = create_backup().await;
     let lookup = factor_lookup().await;
     let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
-    let stale = chrono::Utc::now().timestamp() - 2 * DAY_SECS;
     assert!(lookup
-        .set_sync_factor_last_used(&factor, &backup.backup_id, stale)
+        .set_last_used(&factor, &backup.backup_id, days_ago(2))
         .await
         .unwrap());
 
     use_sync_factor(&backup).await;
 
-    let refreshed = stored_last_used(&lookup, &backup).await.unwrap();
-    assert!(refreshed > stale + DAY_SECS);
+    wait_for_last_used(&lookup, &backup, Utc::now().date_naive()).await;
 }
 
 #[tokio::test]
@@ -189,11 +184,11 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
     let backup = create_backup().await;
     let lookup = factor_lookup().await;
     let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
-    let now = chrono::Utc::now().timestamp();
+    let today = Utc::now().date_naive();
 
     // A row that maps to another backup is left untouched.
     assert!(!lookup
-        .set_sync_factor_last_used(&factor, "another-backup", now)
+        .set_last_used(&factor, "another-backup", today)
         .await
         .unwrap());
     assert_eq!(stored_last_used(&lookup, &backup).await, None);
@@ -201,7 +196,7 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
     // A missing row is not recreated.
     let missing = FactorToLookup::from_ec_keypair(uuid::Uuid::new_v4().to_string());
     assert!(!lookup
-        .set_sync_factor_last_used(&missing, &backup.backup_id, now)
+        .set_last_used(&missing, &backup.backup_id, today)
         .await
         .unwrap());
     assert_eq!(
@@ -227,18 +222,17 @@ async fn last_use_is_reported_per_factor_and_only_to_its_backup() {
         )
         .await
         .unwrap();
-    let now = chrono::Utc::now().timestamp();
     let first = Factor::new_ec_keypair(backup.sync_public_key.clone());
     let second = Factor::new_ec_keypair(second_key.clone());
-    for (key, at) in [
-        (&backup.sync_public_key, now),
-        (&second_key, now - DAY_SECS),
+    for (key, date) in [
+        (&backup.sync_public_key, days_ago(0)),
+        (&second_key, days_ago(1)),
     ] {
         assert!(lookup
-            .set_sync_factor_last_used(
+            .set_last_used(
                 &FactorToLookup::from_ec_keypair(key.clone()),
                 &backup.backup_id,
-                at,
+                date,
             )
             .await
             .unwrap());
@@ -246,16 +240,16 @@ async fn last_use_is_reported_per_factor_and_only_to_its_backup() {
     let factors = [first.clone(), second.clone()];
 
     let own = lookup
-        .sync_factors_last_used(&factors, &backup.backup_id)
+        .fetch_last_used(&factors, &backup.backup_id)
         .await
         .unwrap();
     assert_eq!(
         own,
-        HashMap::from([(first.id, now), (second.id, now - DAY_SECS)])
+        HashMap::from([(first.id, days_ago(0)), (second.id, days_ago(1))])
     );
 
     let other = lookup
-        .sync_factors_last_used(&factors, "another-backup")
+        .fetch_last_used(&factors, "another-backup")
         .await
         .unwrap();
     assert!(other.is_empty());
