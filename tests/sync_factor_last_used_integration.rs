@@ -213,8 +213,14 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
 #[serial]
 async fn recovery_succeeds_without_last_use_when_it_cannot_be_read() {
     let backup = create_backup().await;
+    let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());
+    assert!(factor_lookup()
+        .await
+        .set_last_used(&factor, &backup.backup_id, days_ago(0))
+        .await
+        .unwrap());
     let environment = Environment::development(None);
-    // A row without a backup ID fails the whole batch read.
+    // Overwrites that row without a backup ID, which fails the whole batch read.
     aws_sdk_dynamodb::Client::new(&environment.aws_config().await)
         .put_item()
         .table_name(environment.factor_lookup_dynamodb_table_name())
