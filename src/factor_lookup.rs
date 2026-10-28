@@ -357,6 +357,7 @@ fn factor_primary_key(
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum FactorLookupError {
     #[error("Failed to insert factor into DynamoDB: {0}")]
     DynamoDbPutError(#[from] SdkError<PutItemError>),

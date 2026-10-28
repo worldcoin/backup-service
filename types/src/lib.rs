@@ -1,6 +1,27 @@
 //! Types for the [backup service](https://github.com/worldcoin/backup-service),
 //! consumed by the HTTP server and can be used by clients.
+//!
+//! Extensible enums are non-exhaustive: callers must handle unsupported variants when matching.
+//! This permits adding variants in a compatible Rust release, but does not make unknown JSON
+//! variants deserialize successfully. Only [`ErrorCode`] preserves unknown wire values.
+//! Request and response structs remain constructible with literals; adding their fields still
+//! requires a Rust compatibility review. [`FactorScope`] is deliberately exhaustive because a
+//! new permission scope changes the authorization model.
+//!
+//! For example, an exhaustive match on a platform is rejected outside this crate:
+//!
+//! ```compile_fail,E0004
+//! use backup_service_types::Platform;
+//!
+//! fn name(platform: Platform) -> &'static str {
+//!     match platform {
+//!         Platform::Ios => "iOS",
+//!         Platform::Android => "Android",
+//!     }
+//! }
+//! ```
 
+#![deny(clippy::exhaustive_enums)]
 #![deny(missing_docs)] // TODO: Make this a workspace lint
 
 pub mod endpoints;
@@ -21,6 +42,7 @@ pub use error::{ErrorBody, ErrorCode, ErrorObject};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[non_exhaustive]
 pub enum Authorization {
     /// A `WebAuthn` assertion produced by a passkey.
     #[serde(rename_all = "camelCase")]
@@ -64,6 +86,7 @@ pub enum Authorization {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[non_exhaustive]
 pub enum OidcToken {
     /// A Google ID token.
     #[serde(rename_all = "camelCase")]
@@ -93,6 +116,7 @@ pub enum OidcToken {
 /// The [`Display`] output is part of the service's Redis key layout for OIDC nonce replay
 /// protection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[non_exhaustive]
 pub enum OidcProvider {
     /// Google
     Google,
@@ -117,6 +141,7 @@ impl From<&OidcToken> for OidcProvider {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[non_exhaustive]
 pub enum BackupEncryptionKey {
     /// Encrypted with the user's passkey PRF value.
     #[serde(rename_all = "camelCase")]
@@ -166,6 +191,10 @@ impl BackupEncryptionKey {
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "openapi", serde(rename_all = "UPPERCASE"))]
 #[strum(serialize_all = "UPPERCASE")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "New permission scopes require an explicit API review"
+)]
 pub enum FactorScope {
     /// Main factors (e.g. passkeys, iCloud Keychain, OIDC accounts) can be used to recover the
     /// backup or add new factors.
@@ -240,6 +269,7 @@ pub struct ExportedFactor {
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum ExportedFactorKind {
     /// A `WebAuthn` passkey.
     #[serde(rename_all = "camelCase")]
@@ -278,6 +308,7 @@ pub enum ExportedFactorKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "kind")]
+#[non_exhaustive]
 pub enum ExportedOidcAccountKind {
     /// A Google account.
     #[serde(rename_all = "camelCase")]

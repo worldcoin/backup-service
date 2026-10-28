@@ -533,3 +533,19 @@ fn add_sync_factor_to_replace_is_optional() {
     expected["syncFactorToReplace"] = json!("selected-sync-factor");
     assert_wire(&request, &expected);
 }
+
+#[test]
+fn unsupported_wire_variants_are_rejected() {
+    let tagged = json!({"kind": "FUTURE_VARIANT"});
+    assert!(serde_json::from_value::<Authorization>(tagged.clone()).is_err());
+    assert!(serde_json::from_value::<OidcToken>(tagged.clone()).is_err());
+    assert!(serde_json::from_value::<BackupEncryptionKey>(tagged.clone()).is_err());
+    assert!(serde_json::from_value::<ExportedFactorKind>(tagged.clone()).is_err());
+    assert!(serde_json::from_value::<ExportedOidcAccountKind>(tagged.clone()).is_err());
+    assert!(serde_json::from_value::<NewFactor>(tagged).is_err());
+    assert!(serde_json::from_value::<Platform>(json!("FUTURE_PLATFORM")).is_err());
+    assert!(
+        serde_json::from_value::<backup_service_types::ExistingFactorKind>(json!("FUTURE_FACTOR"))
+            .is_err()
+    );
+}

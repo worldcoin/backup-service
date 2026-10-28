@@ -5,7 +5,7 @@ use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::routes::keypair_challenge::mint_challenge;
 use axum::{Extension, Json};
-use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse, Platform};
+use types::{CreateChallengePasskeyRequest, CreateChallengePasskeyResponse, ErrorCode, Platform};
 use uuid::Uuid;
 
 pub async fn handler(
@@ -29,6 +29,12 @@ pub async fn handler(
                 &request.display_name,
                 None,
             )?,
+        _ => {
+            return Err(ErrorResponse::bad_request(
+                ErrorCode::NotSupported,
+                "Unsupported platform",
+            ));
+        }
     };
     let challenge_json: serde_json::Value = serde_json::to_value(&challenge)?;
 

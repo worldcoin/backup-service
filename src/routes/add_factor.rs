@@ -72,7 +72,7 @@ pub async fn handler(
         Authorization::OidcAccount { .. } => {
             let (_, context) = challenge_manager
                 .extract_token_payload(
-                    (&request.existing_factor_authorization).into(),
+                    ChallengeType::try_from(&request.existing_factor_authorization)?,
                     request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
@@ -105,6 +105,7 @@ pub async fn handler(
                 "EC keypair is not supported as an existing main factor for add-factor",
             ));
         }
+        _ => return Err(AuthError::InvalidAuthorizationType.into()),
     };
     // Step 2: Validate the new factor against the existing factor's approval.
     verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
@@ -265,10 +266,13 @@ async fn verify_new_factor_binding(
             },
             Authorization::OidcAccount { oidc_token, .. },
         ) => {
-            let raw_oidc_token = match oidc_token {
-                OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
+            let (OidcToken::Google { token } | OidcToken::Apple { token, .. }) = oidc_token else {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::NotSupported,
+                    "Unsupported OIDC provider",
+                ));
             };
-            if raw_oidc_token != expected_oidc_token {
+            if token != expected_oidc_token {
                 return Err(ErrorResponse::bad_request(
                     ErrorCode::OidcTokenMismatch,
                     "OIDC Token mismatch",

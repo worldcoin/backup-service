@@ -59,6 +59,7 @@ pub fn verify_signature(
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum VerifySignatureError {
     #[error("Public key, signature or trusted payload is empty")]
     EmptyArgumentError,
