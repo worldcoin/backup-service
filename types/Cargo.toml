@@ -9,9 +9,10 @@ publish = false
 [features]
 default = []
 
-openapi = ["dep:schemars"] # Derives `schemars::JsonSchema` on every type (for API)
+openapi = ["dep:schemars", "schemars/chrono"] # Derives `schemars::JsonSchema` on every type (for API)
 
 [dependencies]
+chrono = { workspace = true }
 hex = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

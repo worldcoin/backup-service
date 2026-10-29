@@ -1,8 +1,15 @@
+use crate::backup_metadata::Factor;
 use crate::environment::Environment;
+use aws_sdk_dynamodb::config::timeout::TimeoutConfig;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
+use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
+use chrono::NaiveDate;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use types::FactorScope;
 
 /// Redis lock prefix for coordinating `FactorLookup` insert/delete with metadata writes.
@@ -12,6 +19,10 @@ pub const FACTOR_LOOKUP_MUTATE_LOCK_PREFIX: &str = "factor_lookup_mutate:";
 
 /// Fallback TTL for [`FACTOR_LOOKUP_MUTATE_LOCK_PREFIX`] (should exceed a normal put + retries).
 pub const FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS: u64 = 120;
+
+const LAST_USED_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+const LAST_USED_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Lock identifier for a factor primary key (scope is already encoded in the Dynamo/factor id).
 #[must_use]
@@ -86,7 +97,7 @@ impl FactorLookup {
         Ok(())
     }
 
-    /// Looks up the backup ID for the given factor (eventually consistent `GetItem`).
+    /// Looks up the row for the given factor.
     ///
     /// # Errors
     /// * `FactorLookupError::DynamoDbGetError` - if the factor cannot be fetched from the `DynamoDB` table.
@@ -95,29 +106,8 @@ impl FactorLookup {
         &self,
         scope: FactorScope,
         factor: &FactorToLookup,
-    ) -> Result<Option<String>, FactorLookupError> {
-        self.lookup_inner(scope, factor, false).await
-    }
-
-    /// Strongly consistent `GetItem` — use after write races where an eventually consistent read
-    /// might miss a just-written mapping.
-    ///
-    /// # Errors
-    /// Same as [`Self::lookup`].
-    pub async fn lookup_consistent(
-        &self,
-        scope: FactorScope,
-        factor: &FactorToLookup,
-    ) -> Result<Option<String>, FactorLookupError> {
-        self.lookup_inner(scope, factor, true).await
-    }
-
-    async fn lookup_inner(
-        &self,
-        scope: FactorScope,
-        factor: &FactorToLookup,
-        consistent_read: bool,
-    ) -> Result<Option<String>, FactorLookupError> {
+        consistency: ReadConsistency,
+    ) -> Result<Option<LookupRecord>, FactorLookupError> {
         let result = self
             .dynamodb_client
             .get_item()
@@ -126,26 +116,141 @@ impl FactorLookup {
                 DocumentAttribute::Pk.to_string(),
                 factor_primary_key(scope, factor),
             )
-            .consistent_read(consistent_read)
+            .consistent_read(consistency == ReadConsistency::Strong)
             .send()
             .await?;
 
-        let Some(result) = result.item() else {
-            return Ok(None);
-        };
+        result.item().map(LookupRecord::try_from).transpose()
+    }
 
-        // Check if the item has the backup ID attribute
-        let Some(backup_id) = result.get(&DocumentAttribute::BackupId.to_string()) else {
-            return Err(FactorLookupError::ParseBackupIdError);
-        };
+    /// Records that the sync `factor` was last used at `date`.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbUpdateError` - if the update fails for a non-condition reason
+    ///   or exceeds its timeout.
+    pub async fn set_last_used(
+        &self,
+        factor: &FactorToLookup,
+        backup_id: &str,
+        date: NaiveDate,
+    ) -> Result<bool, FactorLookupError> {
+        match self
+            .dynamodb_client
+            .update_item()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .key(
+                DocumentAttribute::Pk.to_string(),
+                factor_primary_key(FactorScope::Sync, factor),
+            )
+            .update_expression("SET #last_used = :date")
+            .condition_expression("#backup_id = :backup_id")
+            .expression_attribute_names("#last_used", DocumentAttribute::LastUsed.to_string())
+            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+            .expression_attribute_values(":date", AttributeValue::S(date.to_string()))
+            .expression_attribute_values(":backup_id", AttributeValue::S(backup_id.to_string()))
+            .customize()
+            .config_override(
+                aws_sdk_dynamodb::config::Builder::default()
+                    .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
+                    .timeout_config(
+                        TimeoutConfig::builder()
+                            .operation_timeout(LAST_USED_WRITE_TIMEOUT) // Best-effort
+                            .build(),
+                    ),
+            )
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err)
+                if err
+                    .as_service_error()
+                    .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
 
-        // Check if the backup ID is a string
-        let Ok(backup_id) = backup_id.as_s() else {
-            return Err(FactorLookupError::ParseBackupIdError);
-        };
-
-        // Return the backup ID as a string
-        Ok(Some(backup_id.clone()))
+    /// Returns the date of last use for each `sync_factor`. Factors never
+    /// used, or who map to another backup, are omitted.
+    ///
+    /// # Errors
+    /// * `FactorLookupError::DynamoDbBatchGetError` - if the batch read fails or exceeds its timeout.
+    /// * `FactorLookupError::IncompleteBatchRead` - if `DynamoDB` leaves keys unprocessed, since
+    ///   the skipped factors would otherwise look never used.
+    /// * `FactorLookupError::ParseBackupIdError` - if a row has no backup ID.
+    pub async fn fetch_last_used(
+        &self,
+        sync_factors: &[Factor],
+        backup_id: &str,
+    ) -> Result<HashMap<String, NaiveDate>, FactorLookupError> {
+        let mut last_used = HashMap::new();
+        if sync_factors.is_empty() {
+            return Ok(last_used);
+        }
+        let table = self.environment.factor_lookup_dynamodb_table_name();
+        let pk = DocumentAttribute::Pk.to_string();
+        let mut factor_ids = HashMap::new();
+        for factor in sync_factors {
+            let key = factor_pk(
+                FactorScope::Sync,
+                &factor.as_factor_to_lookup(&self.environment),
+            );
+            factor_ids.insert(key, factor.id.as_str());
+        }
+        let mut keys = Vec::new();
+        for key in factor_ids.keys() {
+            keys.push(HashMap::from([(
+                pk.clone(),
+                AttributeValue::S(key.clone()),
+            )]));
+        }
+        let request = aws_sdk_dynamodb::types::KeysAndAttributes::builder()
+            .set_keys(Some(keys))
+            .build()?;
+        let response = self
+            .dynamodb_client
+            .batch_get_item()
+            .request_items(&table, request)
+            .customize()
+            .config_override(
+                aws_sdk_dynamodb::config::Builder::default().timeout_config(
+                    TimeoutConfig::builder()
+                        .operation_timeout(LAST_USED_READ_TIMEOUT)
+                        .build(),
+                ),
+            )
+            .send()
+            .await?;
+        if response
+            .unprocessed_keys()
+            .is_some_and(|unprocessed| !unprocessed.is_empty())
+        {
+            return Err(FactorLookupError::IncompleteBatchRead);
+        }
+        let items = response
+            .responses()
+            .and_then(|responses| responses.get(&table));
+        for item in items.into_iter().flatten() {
+            let record = LookupRecord::try_from(item)?;
+            if record.backup_id != backup_id {
+                continue;
+            }
+            let Some(date) = record.last_used else {
+                continue;
+            };
+            let Some(factor_id) = item
+                .get(&pk)
+                .and_then(|value| value.as_s().ok())
+                .and_then(|key| factor_ids.get(key))
+            else {
+                continue;
+            };
+            last_used.insert((*factor_id).to_string(), date);
+        }
+        Ok(last_used)
     }
 
     /// Deletes a factor from the lookup table.
@@ -349,11 +454,48 @@ impl FactorLookup {
     }
 }
 
-fn factor_primary_key(
-    scope: FactorScope,
-    factor: &FactorToLookup,
-) -> aws_sdk_dynamodb::types::AttributeValue {
-    aws_sdk_dynamodb::types::AttributeValue::S(format!("{scope}#{}", factor.primary_key()))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadConsistency {
+    Eventual,
+    /// Use after write races, where an eventually consistent read can miss a just-written row.
+    Strong,
+}
+
+/// A `FactorLookup` row: the backup a factor maps to and, for sync factors, the day it was last used.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LookupRecord {
+    pub backup_id: String,
+    pub last_used: Option<NaiveDate>,
+}
+
+impl TryFrom<&HashMap<String, AttributeValue>> for LookupRecord {
+    type Error = FactorLookupError;
+
+    fn try_from(item: &HashMap<String, AttributeValue>) -> Result<Self, Self::Error> {
+        let Some(Ok(backup_id)) = item
+            .get(&DocumentAttribute::BackupId.to_string())
+            .map(AttributeValue::as_s)
+        else {
+            return Err(FactorLookupError::ParseBackupIdError);
+        };
+        // A malformed date reads as never used, and the next use overwrites it.
+        let last_used = item
+            .get(&DocumentAttribute::LastUsed.to_string())
+            .and_then(|value| value.as_s().ok())
+            .and_then(|value| value.parse().ok());
+        Ok(Self {
+            backup_id: backup_id.clone(),
+            last_used,
+        })
+    }
+}
+
+fn factor_primary_key(scope: FactorScope, factor: &FactorToLookup) -> AttributeValue {
+    AttributeValue::S(factor_pk(scope, factor))
+}
+
+fn factor_pk(scope: FactorScope, factor: &FactorToLookup) -> String {
+    format!("{scope}#{}", factor.primary_key())
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -369,6 +511,16 @@ pub enum FactorLookupError {
     ),
     #[error("Failed to query factors from DynamoDB: {0}")]
     DynamoDbQueryError(#[from] SdkError<aws_sdk_dynamodb::operation::query::QueryError>),
+    #[error("Failed to update factor in DynamoDB: {0}")]
+    DynamoDbUpdateError(#[from] SdkError<UpdateItemError>),
+    #[error("Failed to batch read factors from DynamoDB: {0}")]
+    DynamoDbBatchGetError(
+        #[from] SdkError<aws_sdk_dynamodb::operation::batch_get_item::BatchGetItemError>,
+    ),
+    #[error("Failed to build a DynamoDB batch read request: {0}")]
+    InvalidBatchRequest(#[from] aws_sdk_dynamodb::error::BuildError),
+    #[error("DynamoDB left keys of a batch read unprocessed")]
+    IncompleteBatchRead,
     #[error("Failed to parse backup ID from DynamoDB row")]
     ParseBackupIdError,
 }
@@ -414,6 +566,24 @@ pub enum DocumentAttribute {
     BackupId,
     // Creation timestamp for debugging
     CreatedAt,
+    // Day (UTC) a sync factor last authenticated a request
+    LastUsed,
+}
+
+/// A `FactorLookup` without retries, pointed at `endpoint` (a fault-injecting server) when given.
+#[cfg(test)]
+pub(crate) async fn factor_lookup_without_retries(endpoint: Option<String>) -> FactorLookup {
+    dotenvy::from_filename(".env.example").unwrap();
+    let environment = Environment::development(None);
+    let mut config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
+        .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled());
+    if let Some(endpoint) = endpoint {
+        config = config.endpoint_url(endpoint);
+    }
+    FactorLookup::new(
+        environment,
+        Arc::new(aws_sdk_dynamodb::Client::from_conf(config.build())),
+    )
 }
 
 #[cfg(test)]
@@ -448,14 +618,15 @@ mod test {
 
         // Lookup the factor
         let result = factor_lookup
-            .lookup(FactorScope::Main, &factor)
+            .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
             .await
-            .unwrap();
+            .unwrap()
+            .map(|record| record.backup_id);
         assert_eq!(result, Some(backup_id));
 
         // Should not find the factor in sync scope
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -470,7 +641,7 @@ mod test {
         // Lookup a non-existent factor
         let factor = FactorToLookup::from_passkey("non_existent_credential_id".to_string());
         let result = factor_lookup
-            .lookup(FactorScope::Main, &factor)
+            .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -520,9 +691,10 @@ mod test {
 
         // Verify the factor exists
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
-            .unwrap();
+            .unwrap()
+            .map(|record| record.backup_id);
         assert_eq!(result, Some(backup_id));
 
         // Delete the factor
@@ -533,7 +705,7 @@ mod test {
 
         // Verify the factor no longer exists
         let result = factor_lookup
-            .lookup(FactorScope::Sync, &factor)
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Eventual)
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -568,23 +740,26 @@ mod test {
         // Verify all factors exist
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Main, &factor1)
+                .lookup(FactorScope::Main, &factor1, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor2)
+                .lookup(FactorScope::Sync, &factor2, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor3)
+                .lookup(FactorScope::Sync, &factor3, ReadConsistency::Eventual)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(backup_id.clone())
         );
 
@@ -597,24 +772,155 @@ mod test {
         // Verify all factors no longer exist
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Main, &factor1)
+                .lookup(FactorScope::Main, &factor1, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor2)
+                .lookup(FactorScope::Sync, &factor2, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
             factor_lookup
-                .lookup(FactorScope::Sync, &factor3)
+                .lookup(FactorScope::Sync, &factor3, ReadConsistency::Eventual)
                 .await
                 .unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn last_used_write_is_a_single_attempt() {
+        dotenvy::from_filename(".env.example").unwrap();
+        let mut dynamo = mockito::Server::new_async().await;
+        let failure = dynamo
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(1)
+            .create_async()
+            .await;
+        // The client keeps the SDK's default retries, which the write must override.
+        let environment = Environment::development(None);
+        let config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
+            .endpoint_url(dynamo.url())
+            .build();
+        let lookup = FactorLookup::new(
+            environment,
+            Arc::new(aws_sdk_dynamodb::Client::from_conf(config)),
+        );
+
+        let result = lookup
+            .set_last_used(
+                &FactorToLookup::from_ec_keypair("key".to_string()),
+                "backup",
+                NaiveDate::MIN,
+            )
+            .await;
+
+        assert!(result.is_err());
+        failure.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn last_used_calls_give_up_at_their_timeout() {
+        // Accepts connections but never answers, so every call hangs.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let lookup =
+            factor_lookup_without_retries(Some(format!("http://{}", silent.local_addr().unwrap())))
+                .await;
+        let factor = FactorToLookup::from_ec_keypair("key".to_string());
+        let sync_factors = [Factor::new_ec_keypair("key".to_string())];
+
+        let write = tokio::time::timeout(
+            LAST_USED_WRITE_TIMEOUT * 2,
+            lookup.set_last_used(&factor, "backup", NaiveDate::MIN),
+        );
+        assert!(matches!(
+            write.await.expect("the write must time out"),
+            Err(FactorLookupError::DynamoDbUpdateError(
+                SdkError::TimeoutError(_)
+            ))
+        ));
+
+        let read = tokio::time::timeout(
+            LAST_USED_READ_TIMEOUT * 2,
+            lookup.fetch_last_used(&sync_factors, "backup"),
+        );
+        assert!(matches!(
+            read.await.expect("the read must time out"),
+            Err(FactorLookupError::DynamoDbBatchGetError(
+                SdkError::TimeoutError(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_sync_factors_skips_the_batch_read() {
+        // Nothing listens here, so any request would fail.
+        let lookup = factor_lookup_without_retries(Some("http://127.0.0.1:1".to_string())).await;
+
+        let last_used = lookup.fetch_last_used(&[], "backup").await.unwrap();
+
+        assert!(last_used.is_empty());
+    }
+
+    #[test]
+    fn malformed_last_used_reads_as_never_used() {
+        for value in [
+            AttributeValue::S("2026-13-01".to_string()),
+            AttributeValue::N("1700000000".to_string()),
+        ] {
+            let item = HashMap::from([
+                (
+                    DocumentAttribute::BackupId.to_string(),
+                    AttributeValue::S("backup".to_string()),
+                ),
+                (DocumentAttribute::LastUsed.to_string(), value),
+            ]);
+
+            let record = LookupRecord::try_from(&item).unwrap();
+
+            assert_eq!(record.last_used, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_batch_read_is_an_error() {
+        let table = Environment::development(None).factor_lookup_dynamodb_table_name();
+        let mut dynamo = mockito::Server::new_async().await;
+        let _partial = dynamo
+            .mock("POST", mockito::Matcher::Any)
+            .with_header("content-type", "application/x-amz-json-1.0")
+            .with_body(
+                serde_json::json!({
+                    "Responses": {(table.clone()): [{
+                        "PK": {"S": "SYNC#EC_KEYPAIR|used"},
+                        "BackupId": {"S": "backup"},
+                        "LastUsed": {"S": "2026-10-28"},
+                    }]},
+                    "UnprocessedKeys": {(table): {
+                        "Keys": [{"PK": {"S": "SYNC#EC_KEYPAIR|throttled"}}],
+                    }},
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let lookup = factor_lookup_without_retries(Some(dynamo.url())).await;
+        let factors = [
+            Factor::new_ec_keypair("used".to_string()),
+            Factor::new_ec_keypair("throttled".to_string()),
+        ];
+
+        let result = lookup.fetch_last_used(&factors, "backup").await;
+
+        assert!(matches!(
+            result,
+            Err(FactorLookupError::IncompleteBatchRead)
+        ));
     }
 }

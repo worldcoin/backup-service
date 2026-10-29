@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
+use chrono::{NaiveDate, Utc};
 use openidconnect::core::CoreIdTokenClaims;
+use tracing::Instrument;
 
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, PasskeyRegistration, PublicKeyCredential,
@@ -25,7 +27,7 @@ use crate::{
     backup_storage::BackupStorage,
     challenge_manager::{ChallengeContext, ChallengeManager},
     factor_lookup::{
-        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup,
+        factor_lookup_mutate_lock_id, FactorLookup, FactorToLookup, LookupRecord, ReadConsistency,
         FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
     },
     redis_cache::RedisCacheManager,
@@ -449,12 +451,14 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -605,12 +609,14 @@ impl AuthHandler {
 
         let not_verified_backup_id = self
             .factor_lookup
-            .lookup(expected_factor_scope, &oidc_factor)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &oidc_factor,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?
+            .backup_id;
 
         let backup_metadata = self
             .backup_storage
@@ -693,14 +699,18 @@ impl AuthHandler {
 
         let factor_to_lookup = FactorToLookup::from_ec_keypair(public_key.to_string());
 
-        let not_verified_backup_id = self
+        let LookupRecord {
+            backup_id: not_verified_backup_id,
+            last_used,
+        } = self
             .factor_lookup
-            .lookup(expected_factor_scope, &factor_to_lookup)
-            .await?;
-
-        let Some(not_verified_backup_id) = not_verified_backup_id else {
-            return Err(AuthError::BackupUntraceable);
-        };
+            .lookup(
+                expected_factor_scope,
+                &factor_to_lookup,
+                ReadConsistency::Eventual,
+            )
+            .await?
+            .ok_or(AuthError::BackupUntraceable)?;
 
         let backup_metadata = self
             .backup_storage
@@ -739,7 +749,43 @@ impl AuthHandler {
         // At this point the backup is now authenticated and authorized.
         let verified_backup_id = not_verified_backup_id;
 
+        if expected_factor_scope == FactorScope::Sync {
+            self.record_sync_factor_use(factor_to_lookup, &verified_backup_id, last_used);
+        }
+
         Ok((verified_backup_id, backup_metadata))
+    }
+
+    /// Records that a sync factor was used today, so recovery at the sync-factor cap can replace
+    /// the least recently used access. Runs in the background and never affects the request.
+    fn record_sync_factor_use(
+        &self,
+        factor: FactorToLookup,
+        backup_id: &str,
+        last_used: Option<NaiveDate>,
+    ) {
+        let today = Utc::now().date_naive();
+        if last_used == Some(today) {
+            return;
+        }
+        let factor_lookup = Arc::clone(&self.factor_lookup);
+        let backup_id = backup_id.to_string();
+        tokio::spawn(
+            async move {
+                if let Err(err) = factor_lookup
+                    .set_last_used(&factor, &backup_id, today)
+                    .await
+                {
+                    tracing::warn!(
+                        ?err,
+                        backup_id,
+                        factor_pk = factor.primary_key(),
+                        "Failed to record sync factor last use"
+                    );
+                }
+            }
+            .instrument(tracing::Span::current()),
+        );
     }
 
     /// Deletes a `FactorLookup` row that pointed at a backup where the factor is no longer present
@@ -785,7 +831,12 @@ impl AuthHandler {
         };
 
         let cleanup = async {
-            let Some(owner) = self.factor_lookup.lookup_consistent(scope, factor).await? else {
+            let Some(owner) = self
+                .factor_lookup
+                .lookup(scope, factor, ReadConsistency::Strong)
+                .await?
+                .map(|record| record.backup_id)
+            else {
                 return Ok::<&str, AuthError>("missing");
             };
             let metadata = self

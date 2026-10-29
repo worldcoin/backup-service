@@ -15,7 +15,7 @@ use axum::{body::Bytes, response::Response};
 use backup_service::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use backup_service::backup_storage::BackupStorage;
 use backup_service::environment::Environment;
-use backup_service::factor_lookup::{FactorLookup, FactorToLookup};
+use backup_service::factor_lookup::{FactorLookup, FactorToLookup, ReadConsistency};
 use backup_service_test_utils::{authenticate_with_passkey_challenge, get_mock_passkey_client};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -302,12 +302,12 @@ async fn test_add_sync_factor_same_as_main_rolls_back_lookup_and_token() {
 
     let main_factor = FactorToLookup::from_ec_keypair(main_public_key.clone());
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &main_factor)
+        .lookup(FactorScope::Sync, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
@@ -389,12 +389,12 @@ async fn test_add_sync_factor_same_as_main_rolls_back_lookup_and_token() {
 
     // Sync lookup must have been rolled back; main lookup stays.
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &main_factor)
+        .lookup(FactorScope::Sync, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
@@ -450,7 +450,7 @@ async fn test_add_sync_factor_same_as_main_rolls_back_lookup_and_token() {
 
     let other_factor = FactorToLookup::from_ec_keypair(other_public_key.clone());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &other_factor)
+        .lookup(FactorScope::Sync, &other_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
@@ -589,7 +589,7 @@ async fn test_add_sync_factor_after_backup_deleted_rolls_back_lookup_and_token()
 
     // Lookup must have been rolled back — otherwise the retry hits factor_already_exists.
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &new_factor)
+        .lookup(FactorScope::Sync, &new_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
@@ -620,7 +620,7 @@ async fn test_add_sync_factor_after_backup_deleted_rolls_back_lookup_and_token()
         "retry must see backup_not_found again (lookup+token rolled back), not factor_already_exists / already_used; backup_id={backup_id}"
     );
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &new_factor)
+        .lookup(FactorScope::Sync, &new_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
@@ -772,9 +772,10 @@ async fn replacement_preserves_other_records_below_at_and_above_cap() {
         assert_eq!(
             fixture
                 .lookup
-                .lookup_consistent(
+                .lookup(
                     FactorScope::Sync,
                     &FactorToLookup::from_ec_keypair(fixture.keys[1].0.clone()),
+                    ReadConsistency::Strong
                 )
                 .await
                 .unwrap(),
@@ -859,12 +860,14 @@ async fn existing_lookup_reservation_and_registered_key_are_rejected() {
         assert_eq!(
             fixture
                 .lookup
-                .lookup_consistent(
+                .lookup(
                     FactorScope::Sync,
                     &FactorToLookup::from_ec_keypair(key.0.clone()),
+                    ReadConsistency::Strong
                 )
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(fixture.metadata.id.clone())
         );
     }

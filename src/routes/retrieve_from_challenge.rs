@@ -4,6 +4,7 @@ use crate::auth::{AuthHandler, AuthenticationResult};
 use crate::backup_storage::BackupStorage;
 use crate::challenge_manager::ChallengeContext;
 use crate::error::ErrorResponse;
+use crate::factor_lookup::FactorLookup;
 use crate::headers::CLIENT_VERSION;
 use crate::redis_cache::RedisCacheManager;
 use aide::transform::TransformOperation;
@@ -26,6 +27,7 @@ pub async fn handler(
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(redis_cache_manager): Extension<Arc<RedisCacheManager>>,
     Extension(auth_handler): Extension<AuthHandler>,
+    Extension(factor_lookup): Extension<Arc<FactorLookup>>,
     headers: HeaderMap,
     request: Json<RetrieveBackupFromChallengeRequest>,
 ) -> Result<Json<RetrieveBackupFromChallengeResponse>, ErrorResponse> {
@@ -64,9 +66,22 @@ pub async fn handler(
             .await?;
 
         // Step 4: Return the backup and metadata
+        // 4.1: Include the last_used attribute (best-effort)
+        let last_used = factor_lookup
+            .fetch_last_used(&backup_metadata.sync_factors, &backup_metadata.id)
+            .await
+            .inspect_err(|err| {
+                tracing::error!(?err, "Failed to fetch sync factors' last use; omitting it");
+            })
+            .unwrap_or_default();
+        let mut metadata = backup_metadata.exported();
+        for factor in &mut metadata.sync_factors {
+            factor.last_used = last_used.get(&factor.id).copied();
+        }
+
         Ok(Json(RetrieveBackupFromChallengeResponse {
             backup: STANDARD.encode(backup),
-            metadata: backup_metadata.exported(),
+            metadata,
             sync_factor_token,
         }))
     }
