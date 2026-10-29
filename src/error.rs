@@ -295,10 +295,14 @@ impl From<BackupManagerError> for ErrorResponse {
     fn from(err: BackupManagerError) -> Self {
         match &err {
             BackupManagerError::PutObjectError(_)
+            | BackupManagerError::ListObjectsError(_)
             | BackupManagerError::SerdeJsonError(_)
             | BackupManagerError::GetObjectError(_)
             | BackupManagerError::ByteStreamError(_)
-            | BackupManagerError::DeleteObjectError(_) => {
+            | BackupManagerError::DeleteObjectError(_)
+            | BackupManagerError::DeleteObjectsError(_)
+            | BackupManagerError::DeletionRejected(_)
+            | BackupManagerError::BuildRequestError(_) => {
                 tracing::error!(message = "Backup Manager Error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
@@ -400,7 +404,8 @@ impl From<FactorLookupError> for ErrorResponse {
             | FactorLookupError::DynamoDbBatchGetError(_)
             | FactorLookupError::InvalidBatchRequest(_)
             | FactorLookupError::IncompleteBatchRead
-            | FactorLookupError::ParseBackupIdError => {
+            | FactorLookupError::ParseBackupIdError
+            | FactorLookupError::InvalidDeletionRecord => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
             }
