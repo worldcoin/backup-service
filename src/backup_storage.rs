@@ -2468,7 +2468,6 @@ mod tests {
             .unwrap();
         assert_eq!(committed.backup, bytes);
         assert_eq!(committed.metadata.manifest_hash, hash);
-        assert!(committed.metadata.archive_id > snapshot.metadata.archive_id);
         assert_eq!(
             storage
                 .get_backup_by_metadata(&snapshot.metadata)
@@ -2477,6 +2476,26 @@ mod tests {
                 .unwrap(),
             b"old"
         );
+    }
+
+    #[tokio::test]
+    async fn archive_ids_sort_by_upload_time() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let archive_id = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata
+            .archive_id
+            .unwrap();
+        let uuid = Uuid::parse_str(archive_id.strip_prefix("archive_").unwrap()).unwrap();
+        assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
     }
 
     #[tokio::test]
