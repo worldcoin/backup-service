@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/worldcoin/backup-service/compare/0.10.0...0.11.0) - 2026-10-29
+
+### Added
+
+- track sync factor last use for least-recently-used replacement ([#297](https://github.com/worldcoin/backup-service/pull/297))
+- make public enums non-exhaustive ([#304](https://github.com/worldcoin/backup-service/pull/304))
+
+### Other
+
+- bump crypto-bigint & ack RUSTSEC-2026-0387 ([#305](https://github.com/worldcoin/backup-service/pull/305))
+- add kemperino to codeowners ([#306](https://github.com/worldcoin/backup-service/pull/306))
+
 ## [0.10.0](https://github.com/worldcoin/backup-service/compare/0.9.7...0.10.0) - 2026-10-20
 
 ### Fixed

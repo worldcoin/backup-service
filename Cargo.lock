@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "backup-service"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aide",
  "anyhow",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "backup-service-test-utils"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "backup-service-types"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "hex",
