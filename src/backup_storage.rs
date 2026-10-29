@@ -185,7 +185,7 @@ impl BackupStorage {
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(metadata))
+            .key(get_backup_key(&metadata.id, metadata.archive_id.as_deref()))
             .send()
             .await;
 
@@ -262,11 +262,11 @@ impl BackupStorage {
         backup_id: &str,
         backup: Bytes,
     ) -> Result<String, BackupManagerError> {
-        let archive_id = format!("archive_{}", Uuid::new_v4().simple());
+        let archive_id = format!("archive_{}", Uuid::now_v7().simple());
         let size = backup.len() as u64;
         self.put_object()
             .bucket(self.environment.s3_bucket())
-            .key(format!("{backup_id}/backups/{archive_id}"))
+            .key(get_backup_key(backup_id, Some(&archive_id)))
             .if_none_match("*")
             .body(ByteStream::from(backup))
             .send()
@@ -771,10 +771,10 @@ pub struct FoundBackup {
     pub metadata: BackupMetadata,
 }
 
-fn get_backup_key(metadata: &BackupMetadata) -> String {
-    match &metadata.archive_id {
-        Some(archive_id) => format!("{}/backups/{archive_id}", metadata.id),
-        None => format!("{}/backup", metadata.id),
+fn get_backup_key(backup_id: &str, archive_id: Option<&str>) -> String {
+    match archive_id {
+        Some(archive_id) => format!("{backup_id}/backups/{archive_id}"),
+        None => format!("{backup_id}/backup"),
     }
 }
 
@@ -2211,7 +2211,10 @@ mod tests {
         let head_result = s3_client
             .head_object()
             .bucket(environment.s3_bucket())
-            .key(get_backup_key(&stored_metadata))
+            .key(get_backup_key(
+                &stored_metadata.id,
+                stored_metadata.archive_id.as_deref(),
+            ))
             .send()
             .await
             .unwrap();
@@ -2465,6 +2468,7 @@ mod tests {
             .unwrap();
         assert_eq!(committed.backup, bytes);
         assert_eq!(committed.metadata.manifest_hash, hash);
+        assert!(committed.metadata.archive_id > snapshot.metadata.archive_id);
         assert_eq!(
             storage
                 .get_backup_by_metadata(&snapshot.metadata)
