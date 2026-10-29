@@ -460,11 +460,28 @@ impl RedisLockGuard {
                 }
                 operation.await
             };
-            tokio::select! {
-                biased;
-                () = tokio::time::sleep_until(self.deadline) => Err(RedisCacheError::Locked.into()),
-                result = guarded => result,
+            tokio::time::timeout_at(self.deadline, guarded)
+                .await
+                .unwrap_or_else(|_| Err(RedisCacheError::Locked.into()))
+        }
+    }
+
+    /// Runs an operation within this lease, then releases the lock.
+    ///
+    /// # Errors
+    /// Returns `Locked` if ownership is lost or the operation exceeds its deadline.
+    pub fn run_and_release<T, E, F>(mut self, operation: F) -> impl Future<Output = Result<T, E>>
+    where
+        E: From<RedisCacheError>,
+        F: Future<Output = Result<T, E>>,
+    {
+        let operation = Box::pin(operation);
+        async move {
+            let result = self.run(operation).await;
+            if let Err(error) = self.release().await {
+                tracing::warn!(message = "Failed to release account lock", ?error);
             }
+            result
         }
     }
 

@@ -35,7 +35,7 @@ pub async fn handler(
     let AuthenticationResult {
         backup_id,
         backup_metadata,
-        mut account_lock,
+        account_lock,
         ..
     } = auth_handler
         .verify(
@@ -53,8 +53,8 @@ pub async fn handler(
 
     let span = tracing::info_span!("retrieve_backup_from_challenge", backup_id = %backup_id, client_version = %client_version);
 
-    let result = account_lock
-        .run(async move {
+    account_lock
+        .run_and_release(async move {
             // Step 2: Fetch the backup from S3
             let backup = backup_storage
                 .get_backup_by_metadata(&backup_metadata)
@@ -90,7 +90,5 @@ pub async fn handler(
             }))
         })
         .instrument(span)
-        .await;
-    let _ = account_lock.release().await;
-    result
+        .await
 }

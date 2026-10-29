@@ -52,7 +52,7 @@ pub async fn handler(
     }
 
     // Step 1: Check authorization for the existing factor and get the backup ID.
-    let (backup_id, approved_factor, oidc_session, mut account_lock) =
+    let (backup_id, approved_factor, oidc_session, account_lock) =
         match &request.existing_factor_authorization {
             Authorization::Passkey { .. } => {
                 let (backup_id, approved_factor, account_lock) = authenticate_existing_passkey(
@@ -104,8 +104,8 @@ pub async fn handler(
             }
             _ => return Err(AuthError::InvalidAuthorizationType.into()),
         };
-    let result = account_lock
-        .run(async {
+    account_lock
+        .run_and_release(async {
             // Step 2: Validate the new factor against the existing factor's approval.
             verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
             let validation = auth_handler
@@ -142,9 +142,7 @@ pub async fn handler(
             // Step 4: Return the new factor ID and updated backup metadata.
             result
         })
-        .await;
-    let _ = account_lock.release().await;
-    result
+        .await
 }
 
 async fn authenticate_existing_passkey(

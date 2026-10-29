@@ -51,11 +51,11 @@ pub async fn handler(
         &challenge_token_payload,
     )?;
 
-    let mut account_lock = redis_cache_manager
+    let account_lock = redis_cache_manager
         .lock_backup(&request.backup_account_id)
         .await?;
-    let result = account_lock
-        .run(async {
+    account_lock
+        .run_and_release(async {
             // Step 4: Check if backup exists
             let metadata = backup_storage
                 .get_metadata_by_backup_id(&request.backup_account_id)
@@ -91,7 +91,5 @@ pub async fn handler(
             .instrument(span)
             .await
         })
-        .await;
-    let _ = account_lock.release().await;
-    result
+        .await
 }

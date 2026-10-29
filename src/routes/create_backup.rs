@@ -141,151 +141,152 @@ pub async fn handler(
     let backup_account_proof_token =
         verify_backup_account_proof(environment, &challenge_manager, &request).await?;
 
-    let mut account_lock = redis_cache_manager
+    let account_lock = redis_cache_manager
         .lock_backup(&request.backup_account_id)
         .await?;
-    let result = account_lock.run(async {
+    account_lock
+        .run_and_release(async {
+            // Step 3: Verify the main authentication factor
+            // This validates the primary factor used to authenticate the user creating the backup
 
-    // Step 3: Verify the main authentication factor
-    // This validates the primary factor used to authenticate the user creating the backup
+            let validation_result = auth_handler
+                .validate_factor_registration(
+                    &request.authorization,
+                    request.challenge_token.clone(),
+                    ChallengeContext::Create {},
+                    request.turnkey_provider_id.clone(),
+                    false, // not a sync factor
+                    None,
+                )
+                .await?;
 
-    let validation_result = auth_handler
-        .validate_factor_registration(
-            &request.authorization,
-            request.challenge_token.clone(),
-            ChallengeContext::Create {},
-            request.turnkey_provider_id.clone(),
-            false, // not a sync factor
-            None,
-        )
-        .await?;
+            let backup_factor = validation_result.factor;
+            let factor_to_lookup = validation_result.factor_to_lookup;
 
-    let backup_factor = validation_result.factor;
-    let factor_to_lookup = validation_result.factor_to_lookup;
+            // Step 4: Verify the initial sync factor
+            // This validates the sync factor (EC keypair) that will be used for cross-device
+            // synchronization
+            let sync_validation_result = auth_handler
+                .validate_factor_registration(
+                    &request.initial_sync_factor,
+                    request.initial_sync_challenge_token.clone(),
+                    ChallengeContext::Create {},
+                    None,
+                    true, // is a sync factor
+                    None,
+                )
+                .await?;
 
-    // Step 4: Verify the initial sync factor
-    // This validates the sync factor (EC keypair) that will be used for cross-device synchronization
-    let sync_validation_result = auth_handler
-        .validate_factor_registration(
-            &request.initial_sync_factor,
-            request.initial_sync_challenge_token.clone(),
-            ChallengeContext::Create {},
-            None,
-            true, // is a sync factor
-            None,
-        )
-        .await?;
+            let initial_sync_factor = sync_validation_result.factor;
+            let initial_sync_factor_to_lookup = sync_validation_result.factor_to_lookup;
 
-    let initial_sync_factor = sync_validation_result.factor;
-    let initial_sync_factor_to_lookup = sync_validation_result.factor_to_lookup;
+            // Step 5: Ensure the backup account ID is unique
+            if backup_storage
+                .does_backup_exist(&request.backup_account_id)
+                .await?
+            {
+                tracing::info!(
+                    message = "Backup account ID already exists",
+                    backup_account_id = request.backup_account_id
+                );
+                return Err(ErrorResponse::conflict(
+                    ErrorCode::BackupAccountIdAlreadyExists,
+                    "Backup ID already exists. Please `/sync` instead.",
+                ));
+            }
+            // Step 6: Burn the Backup Account challenge token. Done inside the account lock so the
+            // same proof cannot be spent twice concurrently, and before any mutation: a create that
+            // fails past this point needs a fresh challenge.
+            if let Some(token) = backup_account_proof_token {
+                if let Err(err) = redis_cache_manager.use_challenge_token(token).await {
+                    let result = if matches!(err, RedisCacheError::AlreadyUsed) {
+                        "replayed"
+                    } else {
+                        "not_consumed"
+                    };
+                    metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => result).increment(1);
+                    return Err(err.into());
+                }
+                metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "ok").increment(1);
+            }
 
-    // Step 5: Ensure the backup account ID is unique
-    if backup_storage
-        .does_backup_exist(&request.backup_account_id)
-        .await?
-    {
-        tracing::info!(
-            message = "Backup account ID already exists",
-            backup_account_id = request.backup_account_id
-        );
-        return Err(ErrorResponse::conflict(
-            ErrorCode::BackupAccountIdAlreadyExists,
-            "Backup ID already exists. Please `/sync` instead.",
-        ));
-    }
-    // Step 6: Burn the Backup Account challenge token. Done inside the create lock so the same
-    // proof cannot be spent twice concurrently, and before any mutation: a create that fails past
-    // this point needs a fresh challenge.
-    if let Some(token) = backup_account_proof_token {
-        if let Err(err) = redis_cache_manager.use_challenge_token(token).await {
-            let result = if matches!(err, RedisCacheError::AlreadyUsed) {
-                "replayed"
-            } else {
-                "not_consumed"
+            // Step 7: Initialize backup metadata
+            let backup_metadata = BackupMetadata {
+                id: request.backup_account_id,
+                factors: vec![backup_factor],
+                sync_factors: vec![initial_sync_factor],
+                keys: vec![request.initial_encryption_key.clone()],
+                manifest_hash: request.manifest_hash,
+                archive_id: None,
             };
-            metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => result).increment(1);
-            return Err(err.into());
-        }
-        metrics::counter!(BACKUP_ACCOUNT_PROOF_METRIC, "result" => "ok").increment(1);
-    }
 
-    // Step 7: Initialize backup metadata
-    let backup_metadata = BackupMetadata {
-        id: request.backup_account_id,
-        factors: vec![backup_factor],
-        sync_factors: vec![initial_sync_factor],
-        keys: vec![request.initial_encryption_key.clone()],
-        manifest_hash: request.manifest_hash,
-        archive_id: None,
-    };
+            // Hold factor mutate locks across lookup insert + S3 create so auth stale-delete cannot
+            // remove rows while metadata is still being written.
+            let mut main_factor_lock = redis_cache_manager
+                .try_acquire_lock_guard(
+                    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                    factor_lookup_mutate_lock_id(&factor_to_lookup),
+                    Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+                )
+                .await?;
+            let mut sync_factor_lock = redis_cache_manager
+                .try_acquire_lock_guard(
+                    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                    factor_lookup_mutate_lock_id(&initial_sync_factor_to_lookup),
+                    Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+                )
+                .await?;
 
-    // Hold factor mutate locks across lookup insert + S3 create so auth stale-delete cannot remove
-    // rows while metadata is still being written.
-    let mut main_factor_lock = redis_cache_manager
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&factor_to_lookup),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
-    let mut sync_factor_lock = redis_cache_manager
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&initial_sync_factor_to_lookup),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
+            // Step 8: Link credential ID and sync factor public key to backup ID for lookup during
+            // recovery and sync. This should happen before the backup storage is updated, because
+            // it might fail with a duplicate key error.
+            factor_lookup
+                .insert(
+                    FactorScope::Main,
+                    &factor_to_lookup,
+                    backup_metadata.id.clone(),
+                )
+                .await?;
+            factor_lookup
+                .insert(
+                    FactorScope::Sync,
+                    &initial_sync_factor_to_lookup,
+                    backup_metadata.id.clone(),
+                )
+                .await?;
 
-    // Step 8: Link credential ID and sync factor public key to backup ID for lookup during recovery
-    // and sync. This should happen before the backup storage is updated, because
-    // it might fail with a duplicate key error.
-    factor_lookup
-        .insert(
-            FactorScope::Main,
-            &factor_to_lookup,
-            backup_metadata.id.clone(),
-        )
-        .await?;
-    factor_lookup
-        .insert(
-            FactorScope::Sync,
-            &initial_sync_factor_to_lookup,
-            backup_metadata.id.clone(),
-        )
-        .await?;
+            // Step 9: Save the backup to S3
+            let result = backup_storage.create(backup, &backup_metadata).await;
 
-    // Step 9: Save the backup to S3
-    let result = backup_storage.create(backup, &backup_metadata).await;
+            // Step 9.1: On failure, roll back lookups while still holding mutate locks, then
+            // release.
+            if let Err(e) = result {
+                if let Err(del_err) = factor_lookup
+                    .delete(FactorScope::Main, &factor_to_lookup)
+                    .await
+                {
+                    tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
+                }
+                if let Err(del_err) = factor_lookup
+                    .delete(FactorScope::Sync, &initial_sync_factor_to_lookup)
+                    .await
+                {
+                    tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
+                }
+                let _ = main_factor_lock.release().await;
+                let _ = sync_factor_lock.release().await;
+                return Err(e.into());
+            }
 
-    // Step 9.1: On failure, roll back lookups while still holding mutate locks, then release.
-    if let Err(e) = result {
-        if let Err(del_err) = factor_lookup
-            .delete(FactorScope::Main, &factor_to_lookup)
-            .await
-        {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
-        }
-        if let Err(del_err) = factor_lookup
-            .delete(FactorScope::Sync, &initial_sync_factor_to_lookup)
-            .await
-        {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed backup creation.", error = ?del_err);
-        }
-        let _ = main_factor_lock.release().await;
-        let _ = sync_factor_lock.release().await;
-        return Err(e.into());
-    }
+            let _ = main_factor_lock.release().await;
+            let _ = sync_factor_lock.release().await;
 
-    let _ = main_factor_lock.release().await;
-    let _ = sync_factor_lock.release().await;
+            let backup_id = backup_metadata.id.clone();
 
-    let backup_id = backup_metadata.id.clone();
-
-    Ok(Json(CreateBackupResponse {
-        backup_id,
-        backup_metadata: backup_metadata.exported(),
-    }))
-    }).await;
-    let _ = account_lock.release().await;
-    result
+            Ok(Json(CreateBackupResponse {
+                backup_id,
+                backup_metadata: backup_metadata.exported(),
+            }))
+        })
+        .await
 }

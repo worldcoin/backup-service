@@ -7,9 +7,7 @@ use crate::challenge_manager::ChallengeContext;
 use crate::environment::Environment;
 use crate::error::ErrorResponse;
 use crate::utils::extract_fields_from_multipart;
-use axum::extract::{Multipart, Request};
-use axum::middleware::Next;
-use axum::response::Response;
+use axum::extract::Multipart;
 use axum::{extract::Extension, Json};
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -18,24 +16,15 @@ use types::{
     MULTIPART_PAYLOAD_FIELD,
 };
 
-#[derive(Clone, Copy)]
-pub struct SyncDeadline(Instant);
-
-pub async fn with_deadline(mut request: Request, next: Next) -> Response {
-    // Leave time to return a committed sync before the server's 30-second timeout.
-    request
-        .extensions_mut()
-        .insert(SyncDeadline(Instant::now() + Duration::from_secs(25)));
-    next.run(request).await
-}
-
 pub async fn handler(
     Extension(environment): Extension<Environment>,
     Extension(backup_storage): Extension<Arc<BackupStorage>>,
     Extension(auth_handler): Extension<AuthHandler>,
-    Extension(deadline): Extension<SyncDeadline>,
     mut multipart: Multipart,
 ) -> Result<Json<SyncBackupResponse>, ErrorResponse> {
+    // Leave time to return a committed sync before the server's 30-second timeout.
+    let deadline = Instant::now() + Duration::from_secs(25);
+
     // Step 1: Parse multipart form data. It should include the main JSON payload with parameters
     // and the attached backup file.
     let mut multipart_fields = extract_fields_from_multipart(&mut multipart).await?;
@@ -92,7 +81,7 @@ pub async fn handler(
         )
         .await?;
 
-    account_lock.limit_deadline(deadline.0);
+    account_lock.limit_deadline(deadline);
 
     let span = tracing::info_span!(
         "sync_backup",
@@ -103,16 +92,15 @@ pub async fn handler(
     async move {
         let previous_archive = account_lock
             .run(async {
-                Ok::<_, ErrorResponse>(
-                    backup_storage
-                        .update_backup(
-                            &backup_id,
-                            backup,
-                            request.current_manifest_hash,
-                            request.new_manifest_hash,
-                        )
-                        .await?,
-                )
+                backup_storage
+                    .update_backup(
+                        &backup_id,
+                        backup,
+                        request.current_manifest_hash,
+                        request.new_manifest_hash,
+                    )
+                    .await
+                    .map_err(ErrorResponse::from)
             })
             .await?;
 

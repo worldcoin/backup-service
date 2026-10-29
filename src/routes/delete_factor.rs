@@ -47,7 +47,7 @@ pub async fn handler(
     let AuthenticationResult {
         backup_id,
         backup_metadata,
-        mut account_lock,
+        account_lock,
         ..
     } = auth_handler
         .verify(
@@ -64,7 +64,7 @@ pub async fn handler(
         .await?;
 
     let span = tracing::info_span!("delete_factor", backup_id = %backup_id, scope = %request.scope);
-    let result = account_lock.run(async move {
+    account_lock.run_and_release(async move {
         // Step 3: Find the factor to delete from the backup
         let factor_to_delete = match request.scope {
             FactorScope::Main => backup_metadata.factors.iter().find(|f| f.id == factor_id),
@@ -132,7 +132,5 @@ pub async fn handler(
         Ok(Json(DeleteFactorResponse { backup_deleted, backup_metadata: metadata.map(|m| m.exported()) }))
     })
     .instrument(span)
-    .await;
-    let _ = account_lock.release().await;
-    result
+    .await
 }

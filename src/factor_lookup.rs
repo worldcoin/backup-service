@@ -341,34 +341,24 @@ impl FactorLookup {
         backup_id: &str,
     ) -> Result<BTreeSet<String>, FactorLookupError> {
         let mut keys = BTreeSet::new();
-        let mut exclusive_start_key = None;
-        loop {
-            let query_result = self
-                .dynamodb_client
-                .query()
-                .table_name(self.environment.factor_lookup_dynamodb_table_name())
-                .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
-                .key_condition_expression("#backup_id = :backup_id")
-                .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
-                .expression_attribute_values(":backup_id", AttributeValue::S(backup_id.to_owned()))
-                .set_exclusive_start_key(exclusive_start_key)
-                .send()
-                .await?;
-
-            for item in query_result.items() {
-                let key = item
-                    .get(&DocumentAttribute::Pk.to_string())
-                    .and_then(|value| value.as_s().ok())
-                    .ok_or(FactorLookupError::InvalidDeletionRecord)?;
-                keys.insert(key.clone());
-            }
-
-            match query_result.last_evaluated_key() {
-                Some(key) if !key.is_empty() => exclusive_start_key = Some(key.clone()),
-                _ => break,
-            }
+        let mut items = self
+            .dynamodb_client
+            .query()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
+            .key_condition_expression("#backup_id = :backup_id")
+            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+            .expression_attribute_values(":backup_id", AttributeValue::S(backup_id.to_owned()))
+            .into_paginator()
+            .items()
+            .send();
+        while let Some(item) = items.next().await {
+            let key = item?
+                .remove(&DocumentAttribute::Pk.to_string())
+                .and_then(|value| value.as_s().ok().cloned())
+                .ok_or(FactorLookupError::InvalidDeletionRecord)?;
+            keys.insert(key);
         }
-
         Ok(keys)
     }
 

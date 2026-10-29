@@ -717,7 +717,7 @@ impl BackupStorage {
     /// Unpublishes a backup and deletes its archives while the caller holds the account lock.
     ///
     /// # Errors
-    /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
+    /// - Will return S3 errors, or `DeletionRejected` if the metadata changed after it was read.
     pub async fn delete_backup(
         &self,
         backup_id: &str,
@@ -727,24 +727,16 @@ impl BackupStorage {
         };
         let e_tag = e_tag.ok_or(BackupManagerError::ETagNotFound)?;
         let mut keys = vec![format!("{backup_id}/backup")];
-        let mut continuation_token = None;
-        loop {
-            let page = self
-                .s3_client
-                .list_objects_v2()
-                .bucket(self.environment.s3_bucket())
-                .prefix(format!("{backup_id}/backups/"))
-                .set_continuation_token(continuation_token)
-                .send()
-                .await?;
-            for object in page.contents() {
-                if let Some(key) = object.key() {
-                    keys.push(key.to_owned());
-                }
-            }
-            continuation_token = page.next_continuation_token().map(str::to_owned);
-            if continuation_token.is_none() {
-                break;
+        let mut pages = self
+            .s3_client
+            .list_objects_v2()
+            .bucket(self.environment.s3_bucket())
+            .prefix(format!("{backup_id}/backups/"))
+            .into_paginator()
+            .send();
+        while let Some(page) = pages.next().await {
+            for archive in page?.contents.unwrap_or_default() {
+                keys.extend(archive.key);
             }
         }
 
