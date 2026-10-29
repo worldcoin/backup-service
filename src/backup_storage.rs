@@ -726,7 +726,7 @@ impl BackupStorage {
             return Ok(DeletionResult::BackupDeleted);
         };
         let e_tag = e_tag.ok_or(BackupManagerError::ETagNotFound)?;
-        let mut keys = vec![format!("{backup_id}/backup")];
+        let mut keys = vec![get_backup_key(backup_id, None)];
         let mut pages = self
             .s3_client
             .list_objects_v2()

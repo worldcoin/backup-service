@@ -460,9 +460,11 @@ impl RedisLockGuard {
                 }
                 operation.await
             };
-            tokio::time::timeout_at(self.deadline, guarded)
-                .await
-                .unwrap_or_else(|_| Err(RedisCacheError::Locked.into()))
+            tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(self.deadline) => Err(RedisCacheError::Locked.into()),
+                result = guarded => result,
+            }
         }
     }
 
@@ -479,7 +481,11 @@ impl RedisLockGuard {
         async move {
             let result = self.run(operation).await;
             if let Err(error) = self.release().await {
-                tracing::warn!(message = "Failed to release account lock", ?error);
+                tracing::warn!(
+                    message = "Failed to release lock",
+                    key = self.as_key(),
+                    ?error
+                );
             }
             result
         }
@@ -579,6 +585,31 @@ mod tests {
         let result: Result<(), RedisCacheError> = guard.run(std::future::pending()).await;
         assert!(matches!(result, Err(RedisCacheError::Locked)));
         guard.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_and_release_frees_the_lock_after_errors_and_deadlines() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut redis = cache.redis.clone();
+
+        let guard = cache.lock_backup(&id).await.unwrap();
+        let key = guard.as_key();
+        let result: Result<(), RedisCacheError> = guard
+            .run_and_release(async { Err(RedisCacheError::TokenNotFound) })
+            .await;
+        assert!(matches!(result, Err(RedisCacheError::TokenNotFound)));
+        assert!(redis.get(&key).await.unwrap().is_none());
+
+        let mut guard = cache.lock_backup(&id).await.unwrap();
+        guard.deadline = Instant::now() + Duration::from_millis(50);
+        let result: Result<(), RedisCacheError> =
+            guard.run_and_release(std::future::pending()).await;
+        assert!(matches!(result, Err(RedisCacheError::Locked)));
+        assert!(redis.get(&key).await.unwrap().is_none());
     }
 
     #[tokio::test]
