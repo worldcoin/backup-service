@@ -2479,7 +2479,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_ids_sort_by_upload_time() {
+    async fn archive_ids_are_uuid_v7() {
         let (storage, _, _) = storage().await;
         let original = metadata();
         storage
