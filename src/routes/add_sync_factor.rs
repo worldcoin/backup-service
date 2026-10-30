@@ -22,78 +22,88 @@ pub async fn handler(
     Extension(auth_handler): Extension<AuthHandler>,
     request: Json<AddSyncFactorRequest>,
 ) -> Result<Json<AddSyncFactorResponse>, ErrorResponse> {
-    // Step 1: Validate the new sync factor using AuthHandler
-    let validation_result = auth_handler
-        .validate_factor_registration(
-            &request.sync_factor,
-            request.challenge_token.clone(),
-            ChallengeContext::AddSyncFactor {},
-            None,
-            true, // is_sync_factor
-            None,
-        )
-        .await?;
-
-    let sync_factor = validation_result.factor;
-    let sync_factor_to_lookup = validation_result.factor_to_lookup;
-
-    // Acquire before consuming the one-time sync token so a Locked response does not burn the token.
-    let mut factor_lock = redis_cache_manager
-        .try_acquire_lock_guard(
-            FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
-            factor_lookup_mutate_lock_id(&sync_factor_to_lookup),
-            Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
-        )
-        .await?;
-
-    // Step 2: Verify the sync factor token and extract the backup ID
     let backup_id = redis_cache_manager
-        .use_sync_factor_token(request.sync_factor_token.clone())
+        .sync_factor_backup_id(&request.sync_factor_token)
         .await?;
+    let account_lock = redis_cache_manager.lock_backup(&backup_id).await?;
+    account_lock
+        .run_and_release(async {
+            // Step 1: Validate the new sync factor using AuthHandler
+            let validation_result = auth_handler
+                .validate_factor_registration(
+                    &request.sync_factor,
+                    request.challenge_token.clone(),
+                    ChallengeContext::AddSyncFactor {},
+                    None,
+                    true, // is_sync_factor
+                    None,
+                )
+                .await?;
 
-    factor_lookup
-        .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
-        .await?;
+            let sync_factor = validation_result.factor;
+            let sync_factor_to_lookup = validation_result.factor_to_lookup;
 
-    // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
-    let write = backup_storage
-        .add_sync_factor(
-            &backup_id,
-            sync_factor,
-            request.sync_factor_to_replace.as_deref(),
-        )
-        .await;
+            // Acquire before consuming the one-time sync token so a Locked response does not burn
+            // the token.
+            let mut factor_lock = redis_cache_manager
+                .try_acquire_lock_guard(
+                    FACTOR_LOOKUP_MUTATE_LOCK_PREFIX,
+                    factor_lookup_mutate_lock_id(&sync_factor_to_lookup),
+                    Some(FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS),
+                )
+                .await?;
 
-    // Step 4.1: Roll back lookup / token only when the metadata write definitely did not land
-    // (`NotInserted`). Skip for `Unknown` (ambiguous S3 write or factor already present).
-    if write.should_rollback_lookup() {
-        if let Err(e) = factor_lookup
-            .delete_if_maps_to(FactorScope::Sync, &sync_factor_to_lookup, &backup_id)
-            .await
-        {
-            tracing::error!(message = "Failed to delete factor from lookup table after failed sync factor addition.", error = ?e, sync_factor_pk = sync_factor_to_lookup.primary_key());
-        }
+            // Step 2: Verify the sync factor token and extract the backup ID
+            let backup_id = redis_cache_manager
+                .use_sync_factor_token(request.sync_factor_token.clone())
+                .await?;
 
-        if let Err(e) = redis_cache_manager
-            .unuse_sync_factor_token(request.sync_factor_token.clone())
-            .await
-        {
-            tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);
-        }
-    }
+            factor_lookup
+                .insert(FactorScope::Sync, &sync_factor_to_lookup, backup_id.clone())
+                .await?;
 
-    let result = write.into_result();
-    if let Ok(Some(removed)) = &result {
-        auth_handler
-            .delete_stale_factor_lookup(
-                FactorScope::Sync,
-                &removed.as_factor_to_lookup(&environment),
-            )
-            .await;
-    }
+            // Step 4: Add the sync factor, or swap it in for `sync_factor_to_replace` when present.
+            let write = backup_storage
+                .add_sync_factor(
+                    &backup_id,
+                    sync_factor,
+                    request.sync_factor_to_replace.as_deref(),
+                )
+                .await;
 
-    let _ = factor_lock.release().await;
-    result?;
+            // Step 4.1: Roll back lookup / token only when the metadata write definitely did not
+            // land (`NotInserted`). Skip for `Unknown` (ambiguous S3 write or factor already
+            // present).
+            if write.should_rollback_lookup() {
+                if let Err(e) = factor_lookup
+                    .delete_if_maps_to(FactorScope::Sync, &sync_factor_to_lookup, &backup_id)
+                    .await
+                {
+                    tracing::error!(message = "Failed to delete factor from lookup table after failed sync factor addition.", error = ?e, sync_factor_pk = sync_factor_to_lookup.primary_key());
+                }
 
-    Ok(Json(AddSyncFactorResponse { backup_id }))
+                if let Err(e) = redis_cache_manager
+                    .unuse_sync_factor_token(request.sync_factor_token.clone())
+                    .await
+                {
+                    tracing::error!(message = "Failed to unmark sync factor token as used after failed sync factor addition.", error = ?e);
+                }
+            }
+
+            let result = write.into_result();
+            if let Ok(Some(removed)) = &result {
+                auth_handler
+                    .delete_stale_factor_lookup(
+                        FactorScope::Sync,
+                        &removed.as_factor_to_lookup(&environment),
+                    )
+                    .await;
+            }
+
+            let _ = factor_lock.release().await;
+            result?;
+
+            Ok(Json(AddSyncFactorResponse { backup_id }))
+        })
+        .await
 }

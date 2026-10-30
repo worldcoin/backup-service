@@ -1,4 +1,4 @@
-use crate::backup_metadata::Factor;
+use crate::backup_metadata::{BackupMetadata, Factor};
 use crate::environment::Environment;
 use aws_sdk_dynamodb::config::timeout::TimeoutConfig;
 use aws_sdk_dynamodb::operation::get_item::GetItemError;
@@ -7,7 +7,7 @@ use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::{error::SdkError, types::TableStatus};
 use chrono::NaiveDate;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use types::FactorScope;
@@ -42,6 +42,11 @@ pub fn factor_lookup_mutate_lock_id(factor: &FactorToLookup) -> String {
 pub struct FactorLookup {
     environment: Environment,
     dynamodb_client: Arc<aws_sdk_dynamodb::Client>,
+}
+
+pub struct FactorLookupDeletion {
+    backup_id: String,
+    records: Vec<(String, AttributeValue)>,
 }
 
 impl FactorLookup {
@@ -331,88 +336,138 @@ impl FactorLookup {
         }
     }
 
-    /// Deletes all factors associated with a backup ID from the lookup table.
+    async fn backup_factor_keys(
+        &self,
+        backup_id: &str,
+    ) -> Result<BTreeSet<String>, FactorLookupError> {
+        let mut keys = BTreeSet::new();
+        let mut items = self
+            .dynamodb_client
+            .query()
+            .table_name(self.environment.factor_lookup_dynamodb_table_name())
+            .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
+            .key_condition_expression("#backup_id = :backup_id")
+            .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
+            .expression_attribute_values(":backup_id", AttributeValue::S(backup_id.to_owned()))
+            .into_paginator()
+            .items()
+            .send();
+        while let Some(item) = items.next().await {
+            let key = item?
+                .remove(&DocumentAttribute::Pk.to_string())
+                .and_then(|value| value.as_s().ok().cloned())
+                .ok_or(FactorLookupError::InvalidDeletionRecord)?;
+            keys.insert(key);
+        }
+        Ok(keys)
+    }
+
+    /// Captures factor records before unpublishing a backup, including recently committed factors.
     ///
     /// # Errors
-    /// * `FactorLookupError::DynamoDbQueryError` - if the factors unexpectedly cannot be queried from the `DynamoDB` table.
-    /// * Errors deleting factors will be logged but not propagated.
-    pub async fn delete_all_by_backup_id(
+    /// Returns `DynamoDB` read errors or an error for malformed lookup records.
+    pub async fn prepare_deletion(
         &self,
-        backup_id: String,
-    ) -> Result<(), FactorLookupError> {
-        let mut total_count = 0;
-        let mut deleted_count = 0;
-        let mut error_count = 0;
-        let mut exclusive_start_key = None;
+        metadata: &BackupMetadata,
+    ) -> Result<FactorLookupDeletion, FactorLookupError> {
+        let mut keys = self.backup_factor_keys(&metadata.id).await?;
+        // The account index is eventually consistent, so committed membership supplies missing keys.
+        for (scope, factors) in [
+            (FactorScope::Main, &metadata.factors),
+            (FactorScope::Sync, &metadata.sync_factors),
+        ] {
+            for factor in factors {
+                keys.insert(factor_pk(
+                    scope,
+                    &factor.as_factor_to_lookup(&self.environment),
+                ));
+            }
+        }
 
-        // Paginate over results for the unexpected edge case of factors exceeding the first page
-        loop {
-            let query_result = self
+        self.capture_records(&metadata.id, keys).await
+    }
+
+    /// Captures a single lookup record before removing its metadata membership.
+    ///
+    /// # Errors
+    /// Returns `DynamoDB` read errors or an error for a malformed lookup record.
+    pub async fn prepare_factor_deletion(
+        &self,
+        backup_id: &str,
+        scope: FactorScope,
+        factor: &FactorToLookup,
+    ) -> Result<FactorLookupDeletion, FactorLookupError> {
+        self.capture_records(backup_id, BTreeSet::from([factor_pk(scope, factor)]))
+            .await
+    }
+
+    async fn capture_records(
+        &self,
+        backup_id: &str,
+        keys: BTreeSet<String>,
+    ) -> Result<FactorLookupDeletion, FactorLookupError> {
+        let owner = AttributeValue::S(backup_id.to_owned());
+        let mut records = Vec::new();
+        for key in keys {
+            let result = self
                 .dynamodb_client
-                .query()
+                .get_item()
                 .table_name(self.environment.factor_lookup_dynamodb_table_name())
-                .index_name(self.environment.factor_lookup_dynamodb_gsi_name())
-                .key_condition_expression("#backup_id = :backup_id")
-                .expression_attribute_names("#backup_id", DocumentAttribute::BackupId.to_string())
-                .expression_attribute_values(
-                    ":backup_id",
-                    aws_sdk_dynamodb::types::AttributeValue::S(backup_id.clone()),
+                .key(
+                    DocumentAttribute::Pk.to_string(),
+                    AttributeValue::S(key.clone()),
                 )
-                .set_exclusive_start_key(exclusive_start_key)
+                .consistent_read(true)
                 .send()
                 .await?;
-
-            let items = query_result.items();
-            total_count += items.len();
-
-            // Delete each item individually, continuing even if some deletions fail
-            for item in items {
-                if let Some(pk) = item.get(&DocumentAttribute::Pk.to_string()) {
-                    match self
-                        .dynamodb_client
-                        .delete_item()
-                        .table_name(self.environment.factor_lookup_dynamodb_table_name())
-                        .key(DocumentAttribute::Pk.to_string(), pk.clone())
-                        .send()
-                        .await
-                    {
-                        Ok(_) => {
-                            deleted_count += 1;
-                        }
-                        Err(err) => {
-                            error_count += 1;
-                            tracing::error!(
-                                message = "Failed to delete factor during batch deletion from backup",
-                                pk = ?pk,
-                                error = ?err,
-                            );
-                        }
-                    }
-                }
-            }
-
-            match query_result.last_evaluated_key() {
-                Some(key) if !key.is_empty() => exclusive_start_key = Some(key.clone()),
-                _ => break,
-            }
-        }
-
-        if error_count > 0 {
-            tracing::warn!(
-                message = format!("Completed factor batch deletion with {error_count} errors"),
-                total_count = total_count,
-                deleted_count = deleted_count,
-                error_count = error_count,
-            );
-        } else {
-            let message = if total_count == 0 {
-                "No factors found when deleting the backup".to_string()
-            } else {
-                format!("Deleted {deleted_count} (all) factors for backup successfully")
+            let Some(mut item) = result.item else {
+                continue;
             };
-            tracing::info!(message = message, count = deleted_count);
+            if item.get(&DocumentAttribute::BackupId.to_string()) != Some(&owner) {
+                continue;
+            }
+            let created_at = item
+                .remove(&DocumentAttribute::CreatedAt.to_string())
+                .ok_or(FactorLookupError::InvalidDeletionRecord)?;
+            records.push((key, created_at));
         }
+        Ok(FactorLookupDeletion {
+            backup_id: backup_id.to_owned(),
+            records,
+        })
+    }
 
+    /// Deletes captured records only if they have not been replaced or reassigned.
+    ///
+    /// # Errors
+    /// Propagates any `DynamoDB` deletion failure other than a changed or missing record.
+    pub async fn delete_captured(
+        &self,
+        deletion: FactorLookupDeletion,
+    ) -> Result<(), FactorLookupError> {
+        for (key, created_at) in deletion.records {
+            let result = self
+                .dynamodb_client
+                .delete_item()
+                .table_name(self.environment.factor_lookup_dynamodb_table_name())
+                .key(DocumentAttribute::Pk.to_string(), AttributeValue::S(key))
+                .condition_expression("#owner = :owner AND #created = :created")
+                .expression_attribute_names("#owner", DocumentAttribute::BackupId.to_string())
+                .expression_attribute_names("#created", DocumentAttribute::CreatedAt.to_string())
+                .expression_attribute_values(
+                    ":owner",
+                    AttributeValue::S(deletion.backup_id.clone()),
+                )
+                .expression_attribute_values(":created", created_at)
+                .send()
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(SdkError::ServiceError(error))
+                    if error.err().is_conditional_check_failed_exception() => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
@@ -523,6 +578,8 @@ pub enum FactorLookupError {
     IncompleteBatchRead,
     #[error("Failed to parse backup ID from DynamoDB row")]
     ParseBackupIdError,
+    #[error("Cannot safely delete a malformed factor lookup record")]
+    InvalidDeletionRecord,
 }
 
 #[derive(Clone, Debug)]
@@ -589,6 +646,51 @@ pub(crate) async fn factor_lookup_without_retries(endpoint: Option<String>) -> F
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[tokio::test]
+    async fn captured_deletion_preserves_a_recreated_lookup() {
+        let client = get_test_dynamodb_client().await;
+        let environment = Environment::development(None);
+        let lookup = FactorLookup::new(environment, client.clone());
+        let id = uuid::Uuid::new_v4().to_string();
+        let factor = FactorToLookup::from_passkey(uuid::Uuid::new_v4().to_string());
+        lookup
+            .insert(FactorScope::Main, &factor, id.clone())
+            .await
+            .unwrap();
+        let deletion = lookup
+            .prepare_factor_deletion(&id, FactorScope::Main, &factor)
+            .await
+            .unwrap();
+        client
+            .update_item()
+            .table_name(environment.factor_lookup_dynamodb_table_name())
+            .key("PK", factor_primary_key(FactorScope::Main, &factor))
+            .update_expression("SET CreatedAt = CreatedAt + :one")
+            .expression_attribute_values(":one", AttributeValue::N("1".into()))
+            .send()
+            .await
+            .unwrap();
+        lookup.delete_captured(deletion).await.unwrap();
+        assert_eq!(
+            lookup
+                .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
+                .await
+                .unwrap()
+                .map(|record| record.backup_id),
+            Some(id.clone())
+        );
+        let deletion = lookup
+            .prepare_factor_deletion(&id, FactorScope::Main, &factor)
+            .await
+            .unwrap();
+        lookup.delete_captured(deletion).await.unwrap();
+        assert!(lookup
+            .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
+            .await
+            .unwrap()
+            .is_none());
+    }
 
     async fn get_test_dynamodb_client() -> Arc<aws_sdk_dynamodb::Client> {
         dotenvy::from_filename(".env.example").unwrap();
@@ -764,10 +866,18 @@ mod test {
         );
 
         // Delete all factors for the backup_id
-        factor_lookup
-            .delete_all_by_backup_id(backup_id.clone())
+        let deletion = factor_lookup
+            .prepare_deletion(&BackupMetadata {
+                id: backup_id,
+                factors: vec![],
+                sync_factors: vec![],
+                keys: vec![],
+                manifest_hash: String::new(),
+                archive_id: None,
+            })
             .await
             .unwrap();
+        factor_lookup.delete_captured(deletion).await.unwrap();
 
         // Verify all factors no longer exist
         assert_eq!(
