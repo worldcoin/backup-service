@@ -1,11 +1,12 @@
 use crate::backup_metadata::{BackupMetadata, Factor, FactorKind};
 use crate::environment::Environment;
-use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use std::sync::Arc;
 use types::BackupEncryptionKey;
+use uuid::Uuid;
 
 /// Stores and retrieves backups and metadata from S3. Does not handle access checks.
 ///
@@ -90,23 +91,28 @@ impl BackupStorage {
         backup: Bytes,
         backup_metadata: &BackupMetadata,
     ) -> Result<(), BackupManagerError> {
-        // Save encrypted backup to S3
-        self.put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(&backup_metadata.id))
-            .body(ByteStream::from(backup))
-            .if_none_match("*")
-            .send()
-            .await?;
+        let mut backup_metadata = backup_metadata.clone();
+        backup_metadata.archive_id = Some(self.upload_archive(&backup_metadata.id, backup).await?);
 
         // Save metadata to S3
         self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(&backup_metadata.id))
-            .body(ByteStream::from(serde_json::to_vec(backup_metadata)?))
+            .body(ByteStream::from(serde_json::to_vec(&backup_metadata)?))
             .if_none_match("*")
             .send()
-            .await?;
+            .await
+            .inspect_err(|error| {
+                metrics::counter!(
+                    "backup_archive_publication_failures_total", "operation" => "create"
+                )
+                .increment(1);
+                tracing::warn!(
+                    message = "Archive publication unconfirmed; retaining uploaded copy",
+                    archive_id = ?backup_metadata.archive_id,
+                    error = ?error,
+                );
+            })?;
 
         Ok(())
     }
@@ -124,18 +130,11 @@ impl BackupStorage {
         &self,
         backup_id: &str,
     ) -> Result<Option<FoundBackup>, BackupManagerError> {
-        // Get encrypted backup from S3
-        let backup = self.get_backup_by_backup_id(backup_id).await?;
-
-        // Get metadata from S3
-        let metadata = self.get_metadata_by_backup_id(backup_id).await?;
-
-        match (backup, metadata) {
-            // If both the backup and metadata exist, return them
-            (Some(backup), Some((metadata, _))) => Ok(Some(FoundBackup { backup, metadata })),
-            // If either the backup or metadata does not exist, return None
-            _ => Ok(None),
-        }
+        let Some((metadata, _)) = self.get_metadata_by_backup_id(backup_id).await? else {
+            return Ok(None);
+        };
+        let backup = self.get_backup_by_metadata(&metadata).await?;
+        Ok(backup.map(|backup| FoundBackup { backup, metadata }))
     }
 
     /// Retrieves metadata from S3 by backup ID, which is linked to credential using
@@ -170,8 +169,7 @@ impl BackupStorage {
         }
     }
 
-    /// Retrieves a backup from S3 by backup ID, which is linked to credential using
-    /// separate `FactorLookup` service.
+    /// Retrieves the exact archive selected by a previously read metadata snapshot.
     ///
     /// If the backup does not exist, None is returned.
     ///
@@ -179,15 +177,15 @@ impl BackupStorage {
     /// * If the backup cannot be deserialized from JSON, `BackupManagerError::SerdeJsonError` is returned.
     /// * If the backup cannot be downloaded from S3, `BackupManagerError::GetObjectError` is returned.
     /// * If the backup cannot be converted to bytes, `BackupManagerError::ByteStreamError` is returned.
-    pub async fn get_backup_by_backup_id(
+    pub async fn get_backup_by_metadata(
         &self,
-        backup_id: &str,
+        metadata: &BackupMetadata,
     ) -> Result<Option<Vec<u8>>, BackupManagerError> {
         let backup = self
             .s3_client
             .get_object()
             .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id))
+            .key(get_backup_key(&metadata.id, metadata.archive_id.as_deref()))
             .send()
             .await;
 
@@ -201,13 +199,13 @@ impl BackupStorage {
         }
     }
 
-    /// Updates a backup in S3 by backup ID. Overwrites the existing backup with the new one.
+    /// Uploads a new archive and conditionally publishes it with its manifest hash.
     ///
     /// # Errors
     /// * `BackupManagerError::BackupNotFound` - if the backup was deleted while updating.
     /// * `BackupManagerError::ManifestHashMismatch` - if another writer committed first.
     /// * `BackupManagerError::ETagNotFound` - if S3 returned an object with no `ETag`.
-    /// * `BackupManagerError::HeadObjectError` / `GetObjectError` / `PutObjectError` - if S3 fails.
+    /// * `BackupManagerError::GetObjectError` / `PutObjectError` - if S3 fails.
     /// * `BackupManagerError::ByteStreamError` - if the backup cannot be converted to bytes.
     pub async fn update_backup(
         &self,
@@ -216,14 +214,7 @@ impl BackupStorage {
         current_manifest_hash: String,
         new_manifest_hash: String,
     ) -> Result<(), BackupManagerError> {
-        // Fetch current backup state to prevent race condition with updates (e.g. deletion while updating).
-        let backup_e_tag = self.backup_object_e_tag(backup_id).await?;
-
         let Some((mut metadata, e_tag)) = self.get_metadata_by_backup_id(backup_id).await? else {
-            return Err(BackupManagerError::BackupNotFound);
-        };
-
-        let Some(backup_e_tag) = backup_e_tag else {
             return Err(BackupManagerError::BackupNotFound);
         };
 
@@ -235,64 +226,54 @@ impl BackupStorage {
             return Err(BackupManagerError::ManifestHashMismatch);
         }
 
+        metadata.archive_id = Some(self.upload_archive(backup_id, backup).await?);
         metadata.manifest_hash = new_manifest_hash;
 
-        let write = self
+        let result = self
             .put_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id))
-            .if_match(backup_e_tag)
-            .body(ByteStream::from(backup))
-            .send()
-            .await;
-
-        match write {
-            Ok(_) => {}
-            Err(SdkError::ServiceError(err)) if err.err().code() == Some("NoSuchKey") => {
-                tracing::warn!(
-                    message = "Backup deleted while syncing; not recreating it",
-                    backup_id = %backup_id,
-                );
-                return Err(BackupManagerError::BackupNotFound);
-            }
-            Err(err) => return Err(err.into()),
-        }
-
-        // Save the new metadata
-        // NOTE: There's a possibility of a conflict here, where saving the metadata fails but the backup is updated. Client can retry the update.
-        self.put_object()
             .bucket(self.environment.s3_bucket())
             .key(get_metadata_key(backup_id))
             .if_match(e_tag)
             .body(ByteStream::from(serde_json::to_vec(&metadata)?))
             .send()
-            .await?;
-
-        Ok(())
-    }
-
-    /// `ETag` of backup's blob (ciphertext).
-    ///
-    /// # Errors
-    /// * `BackupManagerError::ETagNotFound` - if S3 returned the object without an `ETag`.
-    /// * `BackupManagerError::HeadObjectError` - if the `HeadObject` call itself fails.
-    async fn backup_object_e_tag(
-        &self,
-        backup_id: &str,
-    ) -> Result<Option<String>, BackupManagerError> {
-        let head = self
-            .s3_client
-            .head_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id))
-            .send()
             .await;
 
-        match head {
-            Ok(head) => head.e_tag.map(Some).ok_or(BackupManagerError::ETagNotFound),
-            Err(SdkError::ServiceError(err)) if err.err().is_not_found() => Ok(None),
+        match result {
+            Ok(_) => Ok(()),
+            Err(SdkError::ServiceError(err)) if err.raw().status().as_u16() == 404 => {
+                tracing::warn!(message = "Backup deleted while syncing", backup_id);
+                Err(BackupManagerError::BackupNotFound)
+            }
+            Err(SdkError::ServiceError(err))
+                if err.raw().status().as_u16() == 412 || err.raw().status().as_u16() == 409 =>
+            {
+                Err(BackupManagerError::ManifestHashMismatch)
+            }
             Err(err) => Err(err.into()),
         }
+        .inspect_err(|_| {
+            metrics::counter!("backup_archive_publication_failures_total", "operation" => "sync")
+                .increment(1);
+        })
+    }
+
+    async fn upload_archive(
+        &self,
+        backup_id: &str,
+        backup: Bytes,
+    ) -> Result<String, BackupManagerError> {
+        let archive_id = format!("archive_{}", Uuid::now_v7().simple());
+        let size = backup.len() as u64;
+        self.put_object()
+            .bucket(self.environment.s3_bucket())
+            .key(get_backup_key(backup_id, Some(&archive_id)))
+            .if_none_match("*")
+            .body(ByteStream::from(backup))
+            .send()
+            .await?;
+        metrics::counter!("backup_archive_uploads_total").increment(1);
+        metrics::counter!("backup_archive_upload_bytes_total").increment(size);
+        Ok(archive_id)
     }
 
     /// Adds a `Main` factor to the backup metadata in S3.
@@ -375,21 +356,14 @@ impl BackupStorage {
         }
     }
 
-    /// Appends an encryption key without adding a factor.
+    /// Adds an encryption key if the expected factor still exists.
     ///
-    /// Idempotent when the exact same key is already present; same kind with different material is
-    /// [`BackupManagerError::OnlyOneEncryptionKeyPerTypeAllowed`]. Ambiguous puts (`412`, timeouts,
-    /// 5xx) surface as errors — callers may retry; the exact-match pre-check makes retries safe.
-    ///
-    /// The key only makes sense while the factor it belongs to exists, so this function checks that
-    /// a factor of `expected_factor_kind` is present in the metadata snapshot it is about to write.
-    /// The caller's own check is not enough: that factor can be deleted between the caller's check
-    /// and this write, which would leave a key with no owning factor (#265).
+    /// The factor check and key update use the same metadata version to avoid races with deletion.
+    /// Retrying with the same key succeeds while the factor is present.
     ///
     /// # Errors
-    /// Returns [`BackupManagerError`] when the backup is missing, the etag is absent,
-    /// `expected_factor_kind` is no longer present, a conflicting key of the same kind exists, or
-    /// the put fails.
+    /// Fails if the backup, factor, or `ETag` is missing, a different key of the same type exists,
+    /// or the storage operation fails.
     pub async fn add_encryption_key_only(
         &self,
         backup_id: &str,
@@ -403,9 +377,6 @@ impl BackupStorage {
             return Err(BackupManagerError::ETagNotFound);
         };
 
-        // Ownership is only implied by the kind today, so "some factor of this kind exists" is the
-        // strongest check available; #276 tracks tying each key to its owning factor so this
-        // becomes structural rather than a scan.
         if !metadata
             .factors
             .iter()
@@ -741,7 +712,7 @@ impl BackupStorage {
         Ok(metadata)
     }
 
-    /// Deletes a backup and its metadata from S3.
+    /// Unpublishes a backup, retaining its archives for readers holding a metadata snapshot.
     ///
     /// # Errors
     /// - Will return S3 errors if the backup or metadata does not exist or something else goes wrong deleting from S3.
@@ -749,13 +720,6 @@ impl BackupStorage {
         &self,
         backup_id: &str,
     ) -> Result<DeletionResult, BackupManagerError> {
-        self.s3_client
-            .delete_object()
-            .bucket(self.environment.s3_bucket())
-            .key(get_backup_key(backup_id))
-            .send()
-            .await?;
-
         self.s3_client
             .delete_object()
             .bucket(self.environment.s3_bucket())
@@ -771,7 +735,7 @@ impl BackupStorage {
     /// # Errors
     /// Will error if something goes unexpectedly wrong calling the S3 API.
     pub async fn does_backup_exist(&self, backup_id: &str) -> Result<bool, BackupManagerError> {
-        Ok(self.backup_object_e_tag(backup_id).await?.is_some())
+        Ok(self.get_metadata_by_backup_id(backup_id).await?.is_some())
     }
 
     pub async fn is_ready(&self) -> bool {
@@ -808,8 +772,11 @@ pub struct FoundBackup {
     pub metadata: BackupMetadata,
 }
 
-fn get_backup_key(backup_id: &str) -> String {
-    format!("{backup_id}/backup")
+fn get_backup_key(backup_id: &str, archive_id: Option<&str>) -> String {
+    match archive_id {
+        Some(archive_id) => format!("{backup_id}/backups/{archive_id}"),
+        None => format!("{backup_id}/backup"),
+    }
 }
 
 fn get_metadata_key(backup_id: &str) -> String {
@@ -838,8 +805,6 @@ impl PartialEq for DeletionResult {
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum BackupManagerError {
-    #[error("Failed to HeadObject: {0:?}")]
-    HeadObjectError(#[from] SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>),
     #[error("Failed to upload object to S3: {0:?}")]
     PutObjectError(#[from] SdkError<aws_sdk_s3::operation::put_object::PutObjectError>),
     #[error("Failed to download object from S3: {0:?}")]
@@ -881,12 +846,17 @@ mod tests {
     use super::*;
     use crate::backup_metadata::{BackupMetadata, Factor, FactorKind, OidcAccountKind};
     use crate::environment::Environment;
+    use crate::error::ErrorResponse;
+    use aws_sdk_s3::config::retry::RetryConfig;
+    use aws_sdk_s3::error::ProvideErrorMetadata;
     use aws_sdk_s3::Client as S3Client;
     use chrono::DateTime;
+    use mockito::Matcher;
     use rand::rngs::OsRng;
     use rand::RngCore;
     use serde_json::json;
     use std::sync::Arc;
+    use types::ErrorCode;
     use uuid::Uuid;
 
     fn gen_backup_id() -> String {
@@ -960,24 +930,13 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
             .unwrap();
 
-        backup_storage
-            .backup_object_e_tag(&test_backup_id)
-            .await
-            .unwrap()
-            .expect("backup object should exist");
-
-        s3_client
-            .delete_object()
-            .bucket(environment.s3_bucket())
-            .key(get_backup_key(&test_backup_id))
-            .send()
-            .await
-            .unwrap();
+        backup_storage.delete_backup(&test_backup_id).await.unwrap();
 
         let result = backup_storage
             .update_backup(
@@ -1018,6 +977,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1150,6 +1110,7 @@ mod tests {
                 encrypted_key: "ENCRYPTED_KEY".to_string(),
             }],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         // Create a backup
@@ -1165,7 +1126,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, test_backup_data);
-        assert_eq!(found_backup.metadata, backup_metadata);
+        assert_eq!(found_backup.metadata.exported(), backup_metadata.exported());
         assert_eq!(found_backup.metadata.manifest_hash, hex::encode([1u8; 32]));
 
         // Try to get a non-existing backup - should return None
@@ -1187,25 +1148,12 @@ mod tests {
             _ => panic!("Expected PutObjectError"),
         }
 
-        // Try to create a backup with the same ID, when only one of the files exists -
-        // should still return an error
-        s3_client
-            .delete_object()
-            .bucket(environment.s3_bucket())
-            .key(get_metadata_key(&test_backup_id))
-            .send()
+        // An upload without published metadata must not reserve the account ID.
+        backup_storage.delete_backup(&test_backup_id).await.unwrap();
+        backup_storage
+            .create(test_backup_data.into(), &backup_metadata)
             .await
             .unwrap();
-        let result = backup_storage
-            .create(test_backup_data.clone().into(), &backup_metadata)
-            .await;
-        assert!(result.is_err());
-        match result {
-            Err(BackupManagerError::PutObjectError(SdkError::ServiceError(err))) => {
-                assert_eq!(err.err().code(), Some("PreconditionFailed"));
-            }
-            _ => panic!("Expected PutObjectError"),
-        }
     }
 
     #[tokio::test]
@@ -1229,6 +1177,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1271,6 +1220,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         // Create a backup
@@ -1332,6 +1282,7 @@ mod tests {
                     sync_factors: vec![sync_keypair.clone()],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1377,6 +1328,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![initial_key],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         // Create a backup
@@ -1458,18 +1410,17 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![existing_key.clone()],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
             .unwrap();
 
-        // Exact same key — idempotent success.
         backup_storage
             .add_encryption_key_only(&test_backup_id, &factor.kind, existing_key.clone())
             .await
             .unwrap();
 
-        // Same type, different material — conflict.
         let mismatched = BackupEncryptionKey::Turnkey {
             encrypted_key: "DIFFERENT_KEY".to_string(),
             turnkey_account_id: "org_123".to_string(),
@@ -1501,13 +1452,13 @@ mod tests {
 
         let test_backup_id = gen_backup_id();
         let other_main_factor = Factor::new_ec_keypair("other_main_factor_pubkey".to_string());
-        // A backup with only the other main factor: the OIDC factor this key would belong to has
-        // already been deleted by a concurrent /delete-factor, as in the #265 race.
+        // Start after the OIDC factor has been deleted; another main factor keeps the backup alive.
         backup_storage
             .create(
                 vec![1, 2, 3].into(),
                 &BackupMetadata {
                     id: test_backup_id.clone(),
+                    archive_id: None,
                     factors: vec![other_main_factor],
                     sync_factors: vec![],
                     keys: vec![],
@@ -1539,7 +1490,6 @@ mod tests {
             other => panic!("Expected FactorNotFound, got {other:?}"),
         }
 
-        // The key must never have been appended — no orphan left behind.
         let (metadata, _) = backup_storage
             .get_metadata_by_backup_id(&test_backup_id)
             .await
@@ -1572,6 +1522,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1584,8 +1535,7 @@ mod tests {
             turnkey_private_key_id: "key_789".to_string(),
         };
 
-        // Concurrent writers: one succeeds; the other may see 412 / Unknown (retry is idempotent
-        // via the exact-match pre-check). We no longer reconcile ambiguous puts to Ok.
+        // The second write may lose the ETag race or find that the same key is already stored.
         let (a, b) = tokio::join!(
             backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
             backup_storage.add_encryption_key_only(&test_backup_id, &factor.kind, key.clone()),
@@ -1619,6 +1569,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         // Create a backup
@@ -1669,6 +1620,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1741,6 +1693,7 @@ mod tests {
                     sync_factors: vec![],
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1810,6 +1763,7 @@ mod tests {
                     sync_factors,
                     keys: vec![],
                     manifest_hash: hex::encode([1u8; 32]),
+                    archive_id: None,
                 },
             )
             .await
@@ -1884,6 +1838,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
         backup_storage
             .create(test_backup_data.clone().into(), &initial_metadata)
@@ -1973,6 +1928,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![turnkey_key.clone()],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         backup_storage
@@ -2024,6 +1980,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![initial_prf_key],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         backup_storage
@@ -2171,6 +2128,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![turnkey_key.clone(), prf_key.clone()],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         backup_storage
@@ -2237,6 +2195,7 @@ mod tests {
             sync_factors: vec![],
             keys: vec![],
             manifest_hash: hex::encode([1u8; 32]),
+            archive_id: None,
         };
 
         // Test 1: Create backup with SSE-KMS
@@ -2245,11 +2204,19 @@ mod tests {
             .await
             .unwrap();
 
+        let (stored_metadata, _) = backup_storage
+            .get_metadata_by_backup_id(&test_backup_id)
+            .await
+            .unwrap()
+            .unwrap();
         // Verify the object is encrypted with SSE-KMS
         let head_result = s3_client
             .head_object()
             .bucket(environment.s3_bucket())
-            .key(get_backup_key(&test_backup_id))
+            .key(get_backup_key(
+                &stored_metadata.id,
+                stored_metadata.archive_id.as_deref(),
+            ))
             .send()
             .await
             .unwrap();
@@ -2266,7 +2233,7 @@ mod tests {
             .unwrap()
             .expect("Backup not found");
         assert_eq!(found_backup.backup, test_backup_data);
-        assert_eq!(found_backup.metadata, test_metadata);
+        assert_eq!(found_backup.metadata.exported(), test_metadata.exported());
 
         // Test 3: Get metadata with SSE-KMS
         let (metadata, _) = backup_storage
@@ -2274,7 +2241,7 @@ mod tests {
             .await
             .unwrap()
             .expect("Metadata not found");
-        assert_eq!(metadata, test_metadata);
+        assert_eq!(metadata.exported(), test_metadata.exported());
 
         // Test 4: Update backup with SSE-KMS
         let updated_backup_data = vec![6, 7, 8, 9, 10];
@@ -2365,5 +2332,410 @@ mod tests {
             Some(&aws_sdk_s3::types::ServerSideEncryption::AwsKms)
         );
         assert_eq!(metadata_head_result.ssekms_key_id(), Some(kms_key_id));
+    }
+
+    async fn storage() -> (BackupStorage, S3Client, Environment) {
+        dotenvy::from_filename(".env.example").unwrap();
+        let environment = Environment::development(None);
+        let client = S3Client::from_conf(environment.s3_client_config().await);
+        let storage = BackupStorage::new(environment, Arc::new(client.clone()));
+        (storage, client, environment)
+    }
+
+    fn metadata() -> BackupMetadata {
+        BackupMetadata {
+            id: gen_backup_id(),
+            factors: vec![],
+            sync_factors: vec![],
+            keys: vec![],
+            manifest_hash: "01".repeat(32),
+            archive_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_snapshot_survives_sync_and_factor_changes() {
+        let (storage, client, environment) = storage().await;
+        let original = metadata();
+        for (key, body) in [
+            (format!("{}/backup", original.id), b"old".to_vec()),
+            (
+                format!("{}/metadata", original.id),
+                serde_json::to_vec(&original).unwrap(),
+            ),
+        ] {
+            client
+                .put_object()
+                .bucket(environment.s3_bucket())
+                .key(key)
+                .body(ByteStream::from(body))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        storage
+            .update_backup(
+                &original.id,
+                b"new".to_vec().into(),
+                "01".repeat(32),
+                "02".repeat(32),
+            )
+            .await
+            .unwrap();
+        let committed = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.backup, b"new");
+        assert_eq!(committed.metadata.manifest_hash, "02".repeat(32));
+        assert!(committed.metadata.archive_id.is_some());
+        assert_eq!(
+            storage
+                .get_backup_by_metadata(&original)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"old"
+        );
+        assert!(serde_json::to_value(committed.metadata.exported())
+            .unwrap()
+            .get("archiveId")
+            .is_none());
+
+        let factor = Factor::new_ec_keypair("new-sync-key".into());
+        storage
+            .add_sync_factor(&original.id, factor.clone(), None)
+            .await
+            .into_result()
+            .unwrap();
+        storage
+            .remove_sync_factor(&original.id, &factor.id)
+            .await
+            .unwrap();
+        let after = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.backup, committed.backup);
+        assert_eq!(after.metadata.archive_id, committed.metadata.archive_id);
+        assert_eq!(
+            after.metadata.manifest_hash,
+            committed.metadata.manifest_hash
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_syncs_publish_one_matching_archive_and_hash() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let snapshot = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (first, second) = tokio::join!(
+            storage.update_backup(
+                &original.id,
+                b"first".to_vec().into(),
+                "01".repeat(32),
+                "02".repeat(32)
+            ),
+            storage.update_backup(
+                &original.id,
+                b"second".to_vec().into(),
+                "01".repeat(32),
+                "03".repeat(32)
+            ),
+        );
+        assert_ne!(first.is_ok(), second.is_ok());
+        let (bytes, hash, loser) = if first.is_ok() {
+            (b"first".as_slice(), "02".repeat(32), second)
+        } else {
+            (b"second".as_slice(), "03".repeat(32), first)
+        };
+        let Err(BackupManagerError::ManifestHashMismatch) = loser else {
+            panic!("losing sync must report a conflict");
+        };
+        let committed = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.backup, bytes);
+        assert_eq!(committed.metadata.manifest_hash, hash);
+        assert_eq!(
+            storage
+                .get_backup_by_metadata(&snapshot.metadata)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"old"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_ids_are_uuid_v7() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let archive_id = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata
+            .archive_id
+            .unwrap();
+        let uuid = Uuid::parse_str(archive_id.strip_prefix("archive_").unwrap()).unwrap();
+        assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[tokio::test]
+    async fn concurrent_creation_publishes_only_one_backup() {
+        let (storage, _, _) = storage().await;
+        let first = metadata();
+        let mut second = first.clone();
+        second.manifest_hash = "02".repeat(32);
+        let (first_result, second_result) = tokio::join!(
+            storage.create(b"first".to_vec().into(), &first),
+            storage.create(b"second".to_vec().into(), &second),
+        );
+        assert_ne!(first_result.is_ok(), second_result.is_ok());
+        let committed = storage.get_by_backup_id(&first.id).await.unwrap().unwrap();
+        let (bytes, hash) = if first_result.is_ok() {
+            (b"first".as_slice(), first.manifest_hash)
+        } else {
+            (b"second".as_slice(), second.manifest_hash)
+        };
+        assert_eq!(committed.backup, bytes);
+        assert_eq!(committed.metadata.manifest_hash, hash);
+    }
+
+    #[tokio::test]
+    async fn orphaned_upload_does_not_reserve_an_account() {
+        let (storage, client, environment) = storage().await;
+        let original = metadata();
+        for key in [
+            format!("{}/backup", original.id),
+            format!(
+                "{}/backups/archive_{}",
+                original.id,
+                Uuid::new_v4().simple()
+            ),
+        ] {
+            client
+                .put_object()
+                .bucket(environment.s3_bucket())
+                .key(key)
+                .body(ByteStream::from_static(b"unpublished"))
+                .send()
+                .await
+                .unwrap();
+        }
+        assert!(!storage.does_backup_exist(&original.id).await.unwrap());
+        storage
+            .create(b"new".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let committed = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.backup, b"new");
+        assert_eq!(committed.metadata.manifest_hash, original.manifest_hash);
+    }
+
+    #[tokio::test]
+    async fn concurrent_factor_write_and_sync_preserve_the_selected_archive() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let factor = Factor::new_ec_keypair("concurrent-sync-key".into());
+        let (sync, addition) = tokio::join!(
+            storage.update_backup(
+                &original.id,
+                b"new".to_vec().into(),
+                "01".repeat(32),
+                "02".repeat(32)
+            ),
+            storage.add_sync_factor(&original.id, factor.clone(), None),
+        );
+        let addition = addition.into_result();
+        assert!(sync.is_ok() || addition.is_ok());
+        let committed = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (bytes, hash) = if sync.is_ok() {
+            (b"new".as_slice(), "02".repeat(32))
+        } else {
+            (b"old".as_slice(), "01".repeat(32))
+        };
+        assert_eq!(committed.backup, bytes);
+        assert_eq!(committed.metadata.manifest_hash, hash);
+        assert_eq!(
+            committed.metadata.sync_factors.contains(&factor),
+            addition.is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn deletion_unpublishes_without_invalidating_an_existing_reader() {
+        let (storage, _, _) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let snapshot = storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        storage.delete_backup(&original.id).await.unwrap();
+        assert!(!storage.does_backup_exist(&original.id).await.unwrap());
+        assert!(storage
+            .get_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .get_backup_by_metadata(&snapshot.metadata)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"old"
+        );
+        storage
+            .create(b"replacement".to_vec().into(), &original)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_backup_by_metadata(&snapshot.metadata)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"old"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_upload_or_metadata_commit_keeps_the_published_backup() {
+        let (storage, _, environment) = storage().await;
+        let original = metadata();
+        storage
+            .create(b"old".to_vec().into(), &original)
+            .await
+            .unwrap();
+        let (snapshot, etag) = storage
+            .get_metadata_by_backup_id(&original.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        for (upload_status, commit_status) in
+            [(503, 200), (200, 412), (200, 409), (200, 404), (200, 503)]
+        {
+            let mut server = mockito::Server::new_async().await;
+            let config = environment
+                .s3_client_config()
+                .await
+                .to_builder()
+                .endpoint_url(server.url())
+                .retry_config(RetryConfig::disabled())
+                .build();
+            let faulty = BackupStorage::new(environment, Arc::new(S3Client::from_conf(config)));
+            let path = format!("/{}/{}/metadata", environment.s3_bucket(), original.id);
+            let read = server
+                .mock("GET", path.as_str())
+                .match_query(Matcher::Any)
+                .with_header("etag", etag.as_ref().unwrap())
+                .with_body(serde_json::to_vec(&snapshot).unwrap())
+                .create_async()
+                .await;
+            let upload = server
+                .mock(
+                    "PUT",
+                    Matcher::Regex(format!(
+                        "^/{}/{}/backups/archive_[0-9a-f]{{32}}$",
+                        environment.s3_bucket(),
+                        original.id
+                    )),
+                )
+                .match_header("if-none-match", "*")
+                .match_query(Matcher::Any)
+                .with_status(upload_status)
+                .with_body(if upload_status == 200 {
+                    ""
+                } else {
+                    "<Error><Code>ServiceUnavailable</Code></Error>"
+                })
+                .create_async()
+                .await;
+            let commit = server
+                .mock("PUT", path.as_str())
+                .match_query(Matcher::Any)
+                .match_header("if-match", etag.as_ref().unwrap().as_str())
+                .with_status(commit_status)
+                .with_body(if commit_status == 404 {
+                    "<Error><Code>NoSuchKey</Code></Error>"
+                } else {
+                    "<Error><Code>PreconditionFailed</Code></Error>"
+                })
+                .expect(usize::from(upload_status == 200))
+                .create_async()
+                .await;
+            let cleanup = server
+                .mock("DELETE", Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let result = faulty
+                .update_backup(
+                    &original.id,
+                    b"new".to_vec().into(),
+                    "01".repeat(32),
+                    "02".repeat(32),
+                )
+                .await;
+            let error = ErrorResponse::from(result.unwrap_err());
+            let expected = if commit_status == 404 {
+                ErrorCode::BackupNotFound
+            } else if commit_status == 409 || commit_status == 412 {
+                ErrorCode::ManifestHashMismatch
+            } else {
+                ErrorCode::InternalServerError
+            };
+            assert_eq!(error.code(), &expected);
+            read.assert_async().await;
+            upload.assert_async().await;
+            commit.assert_async().await;
+            cleanup.assert_async().await;
+            let committed = storage
+                .get_by_backup_id(&original.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(committed.backup, b"old");
+            assert_eq!(committed.metadata, snapshot);
+        }
     }
 }

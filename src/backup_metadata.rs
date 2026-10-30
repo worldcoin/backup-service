@@ -39,6 +39,9 @@ pub struct BackupMetadata {
     ///
     /// We store this as a string to reflect the delegation of this attribute is the client's responsibility
     pub manifest_hash: String,
+    /// Selects an immutable upload; absent for backups stored at the original S3 key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_id: Option<String>,
 }
 
 impl BackupMetadata {
