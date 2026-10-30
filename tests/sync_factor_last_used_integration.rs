@@ -211,6 +211,36 @@ async fn recording_use_never_creates_or_moves_a_lookup_row() {
 
 #[tokio::test]
 #[serial]
+async fn recording_use_never_blocks_a_captured_deletion() {
+    let lookup = factor_lookup().await;
+    let backup_id = uuid::Uuid::new_v4().to_string();
+    let factor = FactorToLookup::from_ec_keypair(uuid::Uuid::new_v4().to_string());
+    lookup
+        .insert(FactorScope::Sync, &factor, backup_id.clone())
+        .await
+        .unwrap();
+    let deletion = lookup
+        .prepare_factor_deletion(&backup_id, FactorScope::Sync, &factor)
+        .await
+        .unwrap();
+
+    assert!(lookup
+        .set_last_used(&factor, &backup_id, Utc::now().date_naive())
+        .await
+        .unwrap());
+    lookup.delete_captured(deletion).await.unwrap();
+
+    assert_eq!(
+        lookup
+            .lookup(FactorScope::Sync, &factor, ReadConsistency::Strong)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn recovery_succeeds_without_last_use_when_it_cannot_be_read() {
     let backup = create_backup().await;
     let factor = FactorToLookup::from_ec_keypair(backup.sync_public_key.clone());

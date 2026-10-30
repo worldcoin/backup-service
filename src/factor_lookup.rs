@@ -377,9 +377,9 @@ impl FactorLookup {
             (FactorScope::Sync, &metadata.sync_factors),
         ] {
             for factor in factors {
-                keys.insert(format!(
-                    "{scope}#{}",
-                    factor.as_factor_to_lookup(&self.environment).primary_key()
+                keys.insert(factor_pk(
+                    scope,
+                    &factor.as_factor_to_lookup(&self.environment),
                 ));
             }
         }
@@ -397,11 +397,8 @@ impl FactorLookup {
         scope: FactorScope,
         factor: &FactorToLookup,
     ) -> Result<FactorLookupDeletion, FactorLookupError> {
-        self.capture_records(
-            backup_id,
-            BTreeSet::from([format!("{scope}#{}", factor.primary_key())]),
-        )
-        .await
+        self.capture_records(backup_id, BTreeSet::from([factor_pk(scope, factor)]))
+            .await
     }
 
     async fn capture_records(
