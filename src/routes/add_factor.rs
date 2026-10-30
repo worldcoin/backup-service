@@ -6,7 +6,7 @@ use crate::backup_storage::{BackupManagerError, BackupStorage, FactorMetadataWri
 use crate::challenge_manager::{ChallengeContext, ChallengeManager, ChallengeType, NewFactorType};
 use crate::error::ErrorResponse;
 use crate::factor_lookup::{
-    factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup,
+    factor_lookup_mutate_lock_id, FactorLookup, FactorLookupError, FactorToLookup, ReadConsistency,
     FACTOR_LOOKUP_MUTATE_LOCK_PREFIX, FACTOR_LOOKUP_MUTATE_LOCK_TTL_SECS,
 };
 use crate::redis_cache::RedisCacheManager;
@@ -72,7 +72,7 @@ pub async fn handler(
         Authorization::OidcAccount { .. } => {
             let (_, context) = challenge_manager
                 .extract_token_payload(
-                    (&request.existing_factor_authorization).into(),
+                    ChallengeType::try_from(&request.existing_factor_authorization)?,
                     request.existing_factor_challenge_token.clone(),
                 )
                 .await?;
@@ -105,6 +105,7 @@ pub async fn handler(
                 "EC keypair is not supported as an existing main factor for add-factor",
             ));
         }
+        _ => return Err(AuthError::InvalidAuthorizationType.into()),
     };
     // Step 2: Validate the new factor against the existing factor's approval.
     verify_new_factor_binding(&challenge_manager, &approved_factor, &request).await?;
@@ -165,9 +166,11 @@ async fn authenticate_existing_passkey(
     let factor =
         FactorToLookup::from_passkey(URL_SAFE_NO_PAD.encode(credential.get_credential_id()));
     let id = lookup
-        .lookup(FactorScope::Main, &factor)
+        // eventual is fine as it's a read (at worst, this results in an error in the request, this doesn't authorize alone)
+        .lookup(FactorScope::Main, &factor, ReadConsistency::Eventual)
         .await?
-        .ok_or(AuthError::BackupUntraceable)?;
+        .ok_or(AuthError::BackupUntraceable)?
+        .backup_id;
     let backup = storage
         .get_by_backup_id(&id)
         .await?
@@ -265,10 +268,13 @@ async fn verify_new_factor_binding(
             },
             Authorization::OidcAccount { oidc_token, .. },
         ) => {
-            let raw_oidc_token = match oidc_token {
-                OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
+            let (OidcToken::Google { token } | OidcToken::Apple { token, .. }) = oidc_token else {
+                return Err(ErrorResponse::bad_request(
+                    ErrorCode::NotSupported,
+                    "Unsupported OIDC provider",
+                ));
             };
-            if raw_oidc_token != expected_oidc_token {
+            if token != expected_oidc_token {
                 return Err(ErrorResponse::bad_request(
                     ErrorCode::OidcTokenMismatch,
                     "OIDC Token mismatch",
@@ -425,8 +431,11 @@ async fn insert_main_lookup(
     }
     // An eventually consistent read can miss the row that caused the insert conflict.
     Ok(
-        match lookup.lookup_consistent(FactorScope::Main, factor).await? {
-            Some(owner) if owner == backup_id => LookupInsert::Existing,
+        match lookup
+            .lookup(FactorScope::Main, factor, ReadConsistency::Strong)
+            .await?
+        {
+            Some(owner) if owner.backup_id == backup_id => LookupInsert::Existing,
             Some(_) => LookupInsert::WrongOwner,
             None => LookupInsert::Missing,
         },
@@ -603,10 +612,10 @@ async fn reconcile_ensured_lookup_against_metadata(
             FactorPresence::Present | FactorPresence::Unknown => return Ok(()),
             FactorPresence::Absent => {
                 match factor_lookup
-                    .lookup_consistent(FactorScope::Main, factor_to_lookup)
+                    .lookup(FactorScope::Main, factor_to_lookup, ReadConsistency::Strong)
                     .await?
                 {
-                    Some(existing) if existing == backup_id => {
+                    Some(existing) if existing.backup_id == backup_id => {
                         tracing::info!(
                             message =
                                 "Deleting FactorLookup restored after concurrent factor deletion",
@@ -714,7 +723,9 @@ mod tests {
 
     use crate::backup_storage::BackupStorage;
     use crate::environment::Environment;
-    use crate::factor_lookup::{FactorLookup, FactorToLookup};
+    use crate::factor_lookup::{
+        factor_lookup_without_retries as factor_lookup, FactorToLookup, ReadConsistency,
+    };
     use mockito::{Matcher, Server};
     use types::FactorScope;
 
@@ -817,19 +828,6 @@ mod tests {
         BackupStorage::new(environment, Arc::new(aws_sdk_s3::Client::from_conf(config)))
     }
 
-    async fn factor_lookup(endpoint: Option<String>) -> FactorLookup {
-        let environment = Environment::development(None);
-        let mut config = aws_sdk_dynamodb::config::Builder::from(&environment.aws_config().await)
-            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled());
-        if let Some(endpoint) = endpoint {
-            config = config.endpoint_url(endpoint);
-        }
-        FactorLookup::new(
-            environment,
-            Arc::new(aws_sdk_dynamodb::Client::from_conf(config.build())),
-        )
-    }
-
     #[tokio::test]
     async fn unreadable_metadata_preserves_or_restores_the_lookup() {
         let mut server = Server::new_async().await;
@@ -854,9 +852,10 @@ mod tests {
         rollback_lookup_if_absent(&storage, &lookup, &factor, &id, &kind).await;
         assert_eq!(
             lookup
-                .lookup_consistent(FactorScope::Main, &factor)
+                .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(id.clone())
         );
 
@@ -869,9 +868,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             lookup
-                .lookup_consistent(FactorScope::Main, &factor)
+                .lookup(FactorScope::Main, &factor, ReadConsistency::Strong)
                 .await
-                .unwrap(),
+                .unwrap()
+                .map(|record| record.backup_id),
             Some(id)
         );
     }

@@ -259,6 +259,10 @@ impl From<AuthError> for ErrorResponse {
 impl From<ChallengeManagerError> for ErrorResponse {
     fn from(err: ChallengeManagerError) -> Self {
         match &err {
+            ChallengeManagerError::InvalidAuthorizationType => Self::bad_request(
+                ErrorCode::InvalidAuthorizationType,
+                "Unsupported authorization type",
+            ),
             ChallengeManagerError::SetClaim(_)
             | ChallengeManagerError::EncryptToken(_)
             | ChallengeManagerError::TokioError(_) => {
@@ -392,6 +396,10 @@ impl From<FactorLookupError> for ErrorResponse {
             FactorLookupError::DynamoDbGetError(_)
             | FactorLookupError::DynamoDbDeleteError(_)
             | FactorLookupError::DynamoDbQueryError(_)
+            | FactorLookupError::DynamoDbUpdateError(_)
+            | FactorLookupError::DynamoDbBatchGetError(_)
+            | FactorLookupError::InvalidBatchRequest(_)
+            | FactorLookupError::IncompleteBatchRead
             | FactorLookupError::ParseBackupIdError => {
                 tracing::info!(message = "Factor lookup error", error = ?err);
                 ErrorResponse::internal_server_error()
@@ -512,5 +520,20 @@ impl From<RedisCacheError> for ErrorResponse {
                 ErrorResponse::locked()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::challenge_manager::ChallengeManagerError;
+    use crate::error::ErrorResponse;
+    use http::StatusCode;
+    use types::ErrorCode;
+
+    #[test]
+    fn unsupported_authorization_is_a_client_error() {
+        let response = ErrorResponse::from(ChallengeManagerError::InvalidAuthorizationType);
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.code(), &ErrorCode::InvalidAuthorizationType);
     }
 }

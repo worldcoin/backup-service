@@ -1,25 +1,25 @@
 pub mod attestation_gateway;
 pub mod auth;
-pub mod backup_account;
+mod backup_account;
 pub mod backup_metadata;
 pub mod backup_storage;
 pub mod challenge_manager;
 pub mod environment;
 pub mod error;
 pub mod factor_lookup;
-pub mod headers;
+mod headers;
 pub mod kms_jwe;
-pub mod middleware;
-pub mod oidc_nonce_verifier;
+mod middleware;
+mod oidc_nonce_verifier;
 pub mod oidc_token_verifier;
 pub mod redis_cache;
 pub mod routes;
 pub mod server;
 pub mod shutdown;
 pub mod turnkey_activity;
-pub mod utils;
+mod utils;
 pub mod verify_signature;
-pub mod webauthn;
+mod webauthn;
 
 pub use routes::handler;
 

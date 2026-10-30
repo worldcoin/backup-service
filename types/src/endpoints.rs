@@ -41,6 +41,7 @@ pub const VERIFY_FACTOR_CHALLENGE_PASSKEY_PATH: &str = "/v1/verify-factor/challe
 
 /// HTTP method of an endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Method {
     /// `GET`
     Get,
@@ -50,6 +51,7 @@ pub enum Method {
 
 /// How an endpoint's request body is encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BodyKind {
     /// No request body.
     Empty,
@@ -228,6 +230,7 @@ impl Endpoint for CreateChallengePasskeyRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
 pub enum Platform {
     /// Android, which registers into Google Password Manager only.
     Android,
@@ -506,6 +509,7 @@ pub struct AddSyncFactorResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
 pub enum NewFactor {
     /// An OIDC account.
     #[serde(rename_all = "camelCase")]
@@ -525,6 +529,7 @@ pub enum NewFactor {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
 pub enum ExistingFactorKind {
     /// A passkey.
     Passkey,

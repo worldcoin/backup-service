@@ -11,7 +11,7 @@ use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::Client as S3Client;
 use axum::http::StatusCode;
 use backup_service::environment::Environment;
-use backup_service::factor_lookup::FactorToLookup;
+use backup_service::factor_lookup::{FactorToLookup, ReadConsistency};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use futures::future;
@@ -53,12 +53,12 @@ async fn test_delete_last_factor_happy_path() {
 
     // Verify both main and sync factors exist in DynamoDB before deletion
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &sync_factor)
+        .lookup(FactorScope::Sync, &sync_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_some());
@@ -133,12 +133,12 @@ async fn test_delete_last_factor_happy_path() {
 
     // Verify all factors (including sync factors) were deleted from DynamoDB
     assert!(factor_lookup
-        .lookup(FactorScope::Main, &main_factor)
+        .lookup(FactorScope::Main, &main_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
     assert!(factor_lookup
-        .lookup(FactorScope::Sync, &sync_factor)
+        .lookup(FactorScope::Sync, &sync_factor, ReadConsistency::Eventual)
         .await
         .unwrap()
         .is_none());
@@ -185,10 +185,15 @@ async fn test_delete_sync_factor_happy_path() {
             .to_string(),
     );
     let observed_backup_id = factor_lookup
-        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .lookup(
+            FactorScope::Sync,
+            &factor_to_lookup,
+            ReadConsistency::Eventual,
+        )
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .backup_id;
 
     assert_eq!(backup_id, &observed_backup_id);
 
@@ -269,7 +274,11 @@ async fn test_delete_sync_factor_happy_path() {
 
     // Verify the sync factor was deleted from DynamoDB
     let lookup_result = factor_lookup
-        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .lookup(
+            FactorScope::Sync,
+            &factor_to_lookup,
+            ReadConsistency::Eventual,
+        )
         .await
         .unwrap();
 
@@ -385,10 +394,15 @@ async fn test_cannot_delete_sync_with_incorrect_scope() {
             .to_string(),
     );
     let observed_backup_id = factor_lookup
-        .lookup(FactorScope::Sync, &factor_to_lookup)
+        .lookup(
+            FactorScope::Sync,
+            &factor_to_lookup,
+            ReadConsistency::Eventual,
+        )
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .backup_id;
 
     assert_eq!(backup_id, &observed_backup_id);
 
