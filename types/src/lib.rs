@@ -235,8 +235,7 @@ pub struct ExportedBackupMetadata {
 }
 
 /// A single authentication method registered on a backup.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportedFactor {
     /// Unique identifier for the factor.
@@ -244,10 +243,59 @@ pub struct ExportedFactor {
     /// Unix timestamp (seconds) when the factor was created.
     pub created_at: i64,
     /// Day (UTC) this sync factor was last used, if known. Only set by `retrieve/from-challenge`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_used: Option<chrono::NaiveDate>,
     /// The kind of factor and its associated metadata.
     pub kind: ExportedFactorKind,
+}
+
+impl Serialize for ExportedFactor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ExportedFactorWire {
+            id: &self.id,
+            created_at: self.created_at,
+            last_used: self.last_used,
+            last_used_at: self
+                .last_used
+                .map(|date| date.and_time(chrono::NaiveTime::MIN).and_utc().timestamp()),
+            kind: &self.kind,
+        }
+        .serialize(serializer)
+    }
+}
+
+#[cfg(feature = "openapi")]
+impl schemars::JsonSchema for ExportedFactor {
+    fn schema_name() -> String {
+        "ExportedFactor".to_string()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        <ExportedFactorWire<'_> as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
+/// A single authentication method registered on a backup.
+#[derive(Serialize)]
+#[cfg_attr(feature = "openapi", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+struct ExportedFactorWire<'a> {
+    /// Unique identifier for the factor.
+    id: &'a str,
+    /// Unix timestamp (seconds) when the factor was created.
+    created_at: i64,
+    /// Day (UTC) this sync factor was last used, if known. Only set by `retrieve/from-challenge`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used: Option<chrono::NaiveDate>,
+    /// Start of `lastUsed` in UTC, in Unix seconds, for Android clients expecting `lastUsedAt`.
+    /// This is day-level information, not the exact time of the last request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<i64>,
+    /// The kind of factor and its associated metadata.
+    kind: &'a ExportedFactorKind,
 }
 
 /// The kind of a [`ExportedFactor`] and the metadata specific to it.

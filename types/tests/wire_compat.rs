@@ -11,7 +11,7 @@ use backup_service_types::{
     OidcToken,
 };
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use strum::IntoEnumIterator;
 
@@ -298,6 +298,7 @@ fn backup_metadata() {
                     "id": "factor_3",
                     "createdAt": 1_700_000_002_i64,
                     "lastUsed": "2023-11-15",
+                    "lastUsedAt": 1_700_006_400_i64,
                     "kind": {"kind": "EC_KEYPAIR", "publicKey": "cHVibGlj"},
                 },
             ],
@@ -307,7 +308,7 @@ fn backup_metadata() {
 }
 
 #[test]
-fn exported_factor_without_last_used_omits_the_field() {
+fn exported_factor_without_last_used_omits_both_fields() {
     let factor = ExportedFactor {
         id: "factor_3".to_string(),
         created_at: 1_700_000_002,
@@ -325,6 +326,75 @@ fn exported_factor_without_last_used_omits_the_field() {
             "kind": {"kind": "EC_KEYPAIR", "publicKey": "cHVibGlj"},
         }),
     );
+}
+
+#[test]
+fn exported_factor_accepts_legacy_date_only_metadata() {
+    let factor: ExportedFactor = serde_json::from_value(json!({
+        "id": "factor_3",
+        "createdAt": 1_700_000_002_i64,
+        "lastUsed": "2023-11-15",
+        "kind": {"kind": "EC_KEYPAIR", "publicKey": "cHVibGlj"},
+    }))
+    .expect("legacy date-only metadata remains readable");
+
+    assert_eq!(
+        factor,
+        ExportedFactor {
+            id: "factor_3".to_string(),
+            created_at: 1_700_000_002,
+            last_used: chrono::NaiveDate::from_ymd_opt(2023, 11, 15),
+            kind: ExportedFactorKind::EcKeypair {
+                public_key: "cHVibGlj".to_string(),
+            },
+        }
+    );
+}
+
+/// The recovery fields understood by released Android clients. Other response fields,
+/// including the date-string `lastUsed`, are ignored by their JSON configuration.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleasedAndroidSyncFactor {
+    id: String,
+    created_at: i64,
+    last_used_at: Option<i64>,
+}
+
+#[test]
+fn released_android_consumer_preserves_an_older_recently_used_factor() {
+    let factors = [
+        ExportedFactor {
+            id: "older_active".to_string(),
+            created_at: 1_700_000_000,
+            last_used: chrono::NaiveDate::from_ymd_opt(2023, 11, 20),
+            kind: ExportedFactorKind::EcKeypair {
+                public_key: "YWN0aXZl".to_string(),
+            },
+        },
+        ExportedFactor {
+            id: "newer_stale".to_string(),
+            created_at: 1_700_092_800,
+            last_used: chrono::NaiveDate::from_ymd_opt(2023, 11, 17),
+            kind: ExportedFactorKind::EcKeypair {
+                public_key: "c3RhbGU=".to_string(),
+            },
+        },
+    ];
+    let response = serde_json::to_value(factors).expect("serialize factor response");
+    let android_factors: Vec<ReleasedAndroidSyncFactor> = serde_json::from_value(response)
+        .expect("released Android-shaped consumer can read response");
+
+    assert_eq!(android_factors[0].last_used_at, Some(1_700_438_400));
+    assert_eq!(android_factors[1].last_used_at, Some(1_700_179_200));
+
+    // Android falls back to creation time when its numeric field is missing. Without the
+    // alias this selects the older active device instead of the stale device.
+    let replacement = android_factors
+        .iter()
+        .min_by_key(|factor| factor.last_used_at.unwrap_or(factor.created_at))
+        .expect("response contains sync factors");
+    assert_eq!(replacement.id, "newer_stale");
 }
 
 #[test]
