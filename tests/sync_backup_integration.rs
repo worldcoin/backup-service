@@ -259,8 +259,7 @@ async fn test_sync_backup_with_invalid_manifest_hash_format() {
     assert_eq!(error_response["error"]["code"], "invalid_payload");
 }
 
-/// Test that concurrent backup updates are prevented by Redis lock
-/// One should succeed, the other should fail with a `conflicting_lock` response
+/// A competing sync must fail even if it acquires the lock after the first sync finishes.
 #[tokio::test]
 async fn test_concurrent_sync_backup_prevention() {
     // Create a backup with a sync keypair
@@ -344,6 +343,12 @@ async fn test_concurrent_sync_backup_prevention() {
                     } else {
                         panic!("Unexpected conflict error code: {error_code}");
                     }
+                }
+                StatusCode::PRECONDITION_FAILED => {
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    let error_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(error_response["error"]["code"], "manifest_hash_mismatch");
+                    conflict_count.fetch_add(1, Ordering::SeqCst);
                 }
                 status => {
                     let body = response.into_body().collect().await.unwrap().to_bytes();
