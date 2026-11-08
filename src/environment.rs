@@ -157,26 +157,34 @@ impl Environment {
     /// A panic is not expected, the initialization values are static.
     #[must_use]
     pub fn webauthn_config(&self) -> Webauthn {
-        WebauthnBuilder::new(
-            "keys.world.app",
-            &Url::parse("https://keys.world.app").expect("Invalid URL"),
-        )
-        .expect("Failed to create WebauthnBuilder")
-        .rp_name("World App")
-        // Android dev — app signing key hash
-        .append_allowed_origin(
-            &"android:apk-key-hash:o0Fu39yqrsxeWSucqge7eOzG8xrsRAn0nKbTtN_x2-A"
-                .parse()
-                .unwrap(),
-        )
-        // Android prod & staging — app signing key hash
-        .append_allowed_origin(
-            &"android:apk-key-hash:nSrXEn8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8"
-                .parse()
-                .unwrap(),
-        )
-        .build()
-        .expect("Failed to build Webauthn")
+        let rp_origin = Url::parse("https://keys.world.app").expect("Invalid URL");
+        let builder = WebauthnBuilder::new("keys.world.app", &rp_origin)
+            .expect("Failed to create WebauthnBuilder")
+            .rp_name("World App")
+            // Android dev — app signing key hash
+            .append_allowed_origin(
+                &"android:apk-key-hash:o0Fu39yqrsxeWSucqge7eOzG8xrsRAn0nKbTtN_x2-A"
+                    .parse()
+                    .unwrap(),
+            )
+            // Android prod & staging — app signing key hash
+            .append_allowed_origin(
+                &"android:apk-key-hash:nSrXEn8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8"
+                    .parse()
+                    .unwrap(),
+            );
+
+        let builder = match self {
+            Self::Production => builder,
+            Self::Staging | Self::Development { .. } => builder.append_allowed_origin(
+                // World ID Sandbox's Google Play Internal App Sharing signing certificate.
+                &"android:apk-key-hash:YZozNKz2VONuXb1E3ZBH_-TXsumTKppq8rxpt_SPNpg"
+                    .parse()
+                    .expect("Invalid Internal App Sharing origin"),
+            ),
+        };
+
+        builder.build().expect("Failed to build Webauthn")
     }
 
     /// Max size of the backup file
@@ -360,6 +368,46 @@ fn env_bool(name: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webauthn_internal_app_sharing_origin_is_non_production_only() {
+        let origin: Url = "android:apk-key-hash:YZozNKz2VONuXb1E3ZBH_-TXsumTKppq8rxpt_SPNpg"
+            .parse()
+            .unwrap();
+
+        for environment in [Environment::Staging, Environment::development(None)] {
+            assert!(environment
+                .webauthn_config()
+                .get_allowed_origins()
+                .contains(&origin));
+        }
+        assert!(!Environment::Production
+            .webauthn_config()
+            .get_allowed_origins()
+            .contains(&origin));
+    }
+
+    #[test]
+    fn webauthn_preserves_existing_origins() {
+        let existing_origins: Vec<Url> = [
+            "https://keys.world.app",
+            "android:apk-key-hash:o0Fu39yqrsxeWSucqge7eOzG8xrsRAn0nKbTtN_x2-A",
+            "android:apk-key-hash:nSrXEn8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8",
+        ]
+        .map(|origin| origin.parse().unwrap())
+        .into();
+
+        for environment in [
+            Environment::Production,
+            Environment::Staging,
+            Environment::development(None),
+        ] {
+            let config = environment.webauthn_config();
+            for origin in &existing_origins {
+                assert!(config.get_allowed_origins().contains(origin));
+            }
+        }
+    }
 
     #[test]
     fn test_parse_flag_truthy() {
