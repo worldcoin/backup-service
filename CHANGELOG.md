@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/worldcoin/backup-service/compare/0.11.0...0.11.1) - 2026-11-14
+
+### Fixed
+
+- allow Sandbox Internal App Sharing passkey origin outside production ([#314](https://github.com/worldcoin/backup-service/pull/314))
+
+### Other
+
+- *(deps)* bump strum from 0.27.2 to 0.28.0 ([#312](https://github.com/worldcoin/backup-service/pull/312))
+
 ## [0.11.0](https://github.com/worldcoin/backup-service/compare/0.10.0...0.11.0) - 2026-11-01
 
 ### Added
