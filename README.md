@@ -26,6 +26,22 @@ A typical backup lifecycle:
 - **Encrypted Backup Key**: Encryption key for the backup data, encrypted separately for each factor kind. The encrypted key is coming from user's device and is stored in the backup metadata.
 - **Turnkey Shared Passkey Challenge**: A passkey challenge that is a valid [Webauthn Turnkey stamp](https://docs.turnkey.com/developer-reference/api-overview/stamps#webauthn) and can be used to add a new factor to backup-service. Allows to add new factor with authorization to Turnkey & backup-service in a single passkey prompt.
 
+### Attestation gateway trust
+
+Production accepts tokens from `attestation.worldcoin.org` using its production
+JWKS. Staging and development also accept tokens from
+`attestation.sandbox.worldcoin.org` using that gateway's own JWKS, alongside the
+staging gateway at `attestation.worldcoin.dev`. Legacy production-labelled tokens
+signed by staging keys remain supported outside production.
+
+Each gateway has a separate key cache. A token's issuer selects only one of these
+fixed, trusted gateways; the signature, issuer, audience, expiry and request hash
+must still validate. Production never accepts staging or sandbox issuers.
+
+Deploy the updated service to staging to fix sandbox recovery's `UnknownKeyId`
+errors. No Play Integrity secret rotation or enforcement-setting change is needed.
+The previous service version can be redeployed to roll back the trust change.
+
 ### Running Locally
 
 To run the service locally with a Localstack S3 service:
