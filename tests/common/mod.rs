@@ -829,7 +829,7 @@ pub fn generate_test_attestation_token(body: &serde_json::Value, path: &str) -> 
     payload.set_claim("jti", Some(json!(request_hash))).unwrap();
     payload.set_claim("pass", Some(json!(true))).unwrap();
     payload
-        .set_claim("iss", Some(json!("attestation.worldcoin.org")))
+        .set_claim("iss", Some(json!("attestation.worldcoin.dev")))
         .unwrap();
     payload
         .set_claim("aud", Some(json!("toolsforhumanity.com")))

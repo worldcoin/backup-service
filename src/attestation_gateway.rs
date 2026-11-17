@@ -7,6 +7,7 @@ use axum::{
     middleware::Next,
     Extension,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use http::{HeaderName, HeaderValue, Method};
 use josekit::{jwk::JwkSet, jws::alg::ecdsa::EcdsaJwsAlgorithm, jwt, JoseError, Map};
 use serde_json::Value;
@@ -21,6 +22,9 @@ use types::ErrorCode;
 
 const TTL: Duration = Duration::from_hours(1);
 const STALE_AFTER: Duration = Duration::from_mins(1);
+const PRODUCTION_ISSUER: &str = "attestation.worldcoin.org";
+const STAGING_ISSUER: &str = "attestation.worldcoin.dev";
+const SANDBOX_ISSUER: &str = "attestation.sandbox.worldcoin.org";
 pub use types::endpoints::ATTESTATION_TOKEN_HEADER as ATTESTATION_GATEWAY_HEADER;
 
 #[derive(Debug, thiserror::Error)]
@@ -63,12 +67,22 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
+/// Represents a specific instance of an [attestation-gateway](https://github.com/worldcoin/attestation-gateway) deployment.
+///
+/// It is an inner abstraction on [`AttestationGateway`] because this service has only a staging and production
+/// environment, while attestatation-gateway also has sandbox. So staging must accept sandbox tokens.
 #[derive(Clone)]
-pub struct AttestationGateway {
+struct TrustedGateway {
+    issuers: &'static [&'static str],
     base_url: String,
     cached_keys: Arc<RwLock<CachedJwks>>,
-    bypass_token: Option<String>,
     reqwest_client: reqwest::Client,
+}
+
+#[derive(Clone)]
+pub struct AttestationGateway {
+    trusted_gateways: Vec<TrustedGateway>,
+    bypass_token: Option<String>,
     /// When set to `true`, the attestation gateway token will be verified if available, but any failures
     /// or if the token is not present will be logged and allowed to continue.
     do_not_enforce: bool,
@@ -81,37 +95,25 @@ pub struct GenerateRequestHashInput {
     pub body: Option<String>,
 }
 
-impl AttestationGateway {
+impl TrustedGateway {
     #[must_use]
     fn jwks_url(base_url: &str) -> String {
         format!("{base_url}/.well-known/jwks.json")
     }
 
-    /// Initializes an `AttestationGateway` validator
-    ///
-    /// # Panics
-    /// Will panic if a bypass token is provided in production environment
-    pub fn new(base_url: String, env: &Environment, do_not_enforce: bool) -> Self {
-        let bypass_token = env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN").ok();
-        assert!(
-            bypass_token.is_none() || env != &Environment::Production,
-            "attestation gateway bypass token cannot be used in production environment"
-        );
-        if bypass_token.is_some() {
-            tracing::warn!("🚨 Allowing attestation gateway bypass token");
-        }
-        if do_not_enforce {
-            tracing::warn!("🚨 Currently not enforcing attestation failures");
-        }
+    fn new(
+        base_url: String,
+        issuers: &'static [&'static str],
+        reqwest_client: reqwest::Client,
+    ) -> Self {
         Self {
+            issuers,
             base_url,
             cached_keys: Arc::new(RwLock::new(CachedJwks {
                 known_keys: JwkSet::new().into(),
                 updated_at: None,
             })),
-            reqwest_client: reqwest::Client::new(),
-            bypass_token,
-            do_not_enforce,
+            reqwest_client,
         }
     }
 
@@ -129,6 +131,7 @@ impl AttestationGateway {
             )
             .send()
             .await
+            .and_then(reqwest::Response::error_for_status)
             .map_err(AttestationGatewayError::FetchJwkSet)?;
         let jwks = response
             .json::<Map<String, Value>>()
@@ -175,7 +178,13 @@ impl AttestationGateway {
             if should_refresh {
                 let this = self.clone();
                 tokio::spawn(async move {
-                    let _ = this.fetch_remote_jwk_set().await;
+                    if let Err(error) = this.fetch_remote_jwk_set().await {
+                        tracing::warn!(
+                            gateway = %this.base_url,
+                            error = %error,
+                            "Failed to refresh attestation keys; retaining cached keys"
+                        );
+                    }
                 });
             }
             return Ok(keys);
@@ -183,6 +192,56 @@ impl AttestationGateway {
 
         // Fetch fresh
         self.fetch_remote_jwk_set().await
+    }
+}
+
+impl AttestationGateway {
+    /// Initializes an `AttestationGateway` validator
+    ///
+    /// # Panics
+    /// Will panic if a bypass token is provided in production or the HTTP client cannot be built.
+    pub fn new(base_url: String, env: &Environment, do_not_enforce: bool) -> Self {
+        let bypass_token = env::var("ATTESTATION_GATEWAY_BYPASS_TOKEN").ok();
+        assert!(
+            bypass_token.is_none() || env != &Environment::Production,
+            "attestation gateway bypass token cannot be used in production environment"
+        );
+        if bypass_token.is_some() {
+            tracing::warn!("🚨 Allowing attestation gateway bypass token");
+        }
+        if do_not_enforce {
+            tracing::warn!("🚨 Currently not enforcing attestation failures");
+        }
+        Self {
+            trusted_gateways: Self::trusted_gateways(base_url, env),
+            bypass_token,
+            do_not_enforce,
+        }
+    }
+
+    fn trusted_gateways(base_url: String, env: &Environment) -> Vec<TrustedGateway> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("failed to build attestation gateway HTTP client");
+        let primary_issuers: &'static [&'static str] = match env {
+            Environment::Production => &[PRODUCTION_ISSUER],
+            Environment::Staging | Environment::Development { .. } => &[STAGING_ISSUER],
+        };
+        let mut gateways = vec![TrustedGateway::new(
+            base_url,
+            primary_issuers,
+            client.clone(),
+        )];
+        if !matches!(env, Environment::Production) {
+            gateways.push(TrustedGateway::new(
+                "https://attestation.sandbox.worldcoin.org".to_string(),
+                &[SANDBOX_ISSUER],
+                client,
+            ));
+        }
+        gateways
     }
 
     /// Computes the expected request hash from the incoming request that should match the `jti` claim in the attestation-gateway-token
@@ -243,7 +302,27 @@ impl AttestationGateway {
             .ok_or(AttestationGatewayError::NoKeyId)?
             .as_str()
             .ok_or(AttestationGatewayError::NoKeyId)?;
-        let known_keys = self.get_jwk_set().await?;
+        // The unverified issuer only selects a fixed, allowlisted key source. It never
+        // supplies a URL, and the signature and issuer are still verified below.
+        let encoded_payload = token
+            .split('.')
+            .nth(1)
+            .ok_or(AttestationGatewayError::IssuerClaim)?;
+        let payload_bytes = URL_SAFE_NO_PAD
+            .decode(encoded_payload)
+            .map_err(|_| AttestationGatewayError::IssuerClaim)?;
+        let claims: Map<String, Value> = serde_json::from_slice(&payload_bytes)
+            .map_err(|_| AttestationGatewayError::IssuerClaim)?;
+        let issuer = claims
+            .get("iss")
+            .and_then(Value::as_str)
+            .ok_or(AttestationGatewayError::IssuerClaim)?;
+        let gateway = self
+            .trusted_gateways
+            .iter()
+            .find(|gateway| gateway.issuers.contains(&issuer))
+            .ok_or(AttestationGatewayError::IssuerClaim)?;
+        let known_keys = gateway.get_jwk_set().await?;
 
         let jwks = known_keys.get(key_id);
 
@@ -297,7 +376,7 @@ impl AttestationGateway {
         let issuer = payload
             .issuer()
             .ok_or(AttestationGatewayError::IssuerClaim)?;
-        if issuer != "attestation.worldcoin.org" {
+        if !gateway.issuers.contains(&issuer) {
             return Err(AttestationGatewayError::IssuerClaim);
         }
 
@@ -518,9 +597,27 @@ mod tests {
         out: String, // should "pass" or "fail",
         expires_at: Option<SystemTime>,
     ) -> String {
+        generate_test_token_for_issuer(
+            key_pair,
+            request_hash,
+            pass,
+            out,
+            expires_at,
+            PRODUCTION_ISSUER,
+        )
+    }
+
+    fn generate_test_token_for_issuer(
+        key_pair: &EcKeyPair,
+        request_hash: String,
+        pass: bool,
+        out: String,
+        expires_at: Option<SystemTime>,
+        issuer: &str,
+    ) -> String {
         let mut payload = JwtPayload::new();
         payload.set_issued_at(&SystemTime::now());
-        payload.set_issuer("attestation.worldcoin.org");
+        payload.set_issuer(issuer);
 
         let expires_at = expires_at.unwrap_or_else(|| SystemTime::now() + Duration::from_mins(5));
         payload.set_expires_at(&expires_at);
@@ -549,6 +646,233 @@ mod tests {
             .unwrap();
 
         encode_with_signer(&payload, &header, &signer).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_non_production_trusts_staging_and_sandbox_keys_separately() {
+        for environment in [Environment::Staging, Environment::development(None)] {
+            // Reusing a kid across gateways must not mix their public keys.
+            let mut staging_key = EcKeyPair::generate(EcCurve::P256).unwrap();
+            staging_key.set_key_id(Some("shared-key-id"));
+            let mut sandbox_key = EcKeyPair::generate(EcCurve::P256).unwrap();
+            sandbox_key.set_key_id(Some("shared-key-id"));
+            let mut staging_server = mockito::Server::new_async().await;
+            let mut sandbox_server = mockito::Server::new_async().await;
+            let staging_jwks = staging_server
+                .mock("GET", "/.well-known/jwks.json")
+                .with_status(200)
+                .with_body(json!({"keys": [staging_key.to_jwk_public_key()]}).to_string())
+                .expect(1)
+                .create_async()
+                .await;
+            let sandbox_jwks = sandbox_server
+                .mock("GET", "/.well-known/jwks.json")
+                .with_status(200)
+                .with_body(json!({"keys": [sandbox_key.to_jwk_public_key()]}).to_string())
+                .expect(1)
+                .create_async()
+                .await;
+            let mut gateway = AttestationGateway {
+                trusted_gateways: AttestationGateway::trusted_gateways(
+                    staging_server.url(),
+                    &environment,
+                ),
+                bypass_token: None,
+                do_not_enforce: false,
+            };
+            gateway.trusted_gateways[1].base_url = sandbox_server.url();
+            let input = test_generate_request_hash_input();
+            let hash = AttestationGateway::compute_request_hash(&input).unwrap();
+
+            for (issuer, key) in [
+                (STAGING_ISSUER, &staging_key),
+                (SANDBOX_ISSUER, &sandbox_key),
+            ] {
+                let token = generate_test_token_for_issuer(
+                    key,
+                    hash.clone(),
+                    true,
+                    "pass".to_string(),
+                    None,
+                    issuer,
+                );
+                gateway.validate_token(token, &input).await.unwrap();
+            }
+
+            for (issuer, wrong_key) in [
+                (STAGING_ISSUER, &sandbox_key),
+                (SANDBOX_ISSUER, &staging_key),
+            ] {
+                let token = generate_test_token_for_issuer(
+                    wrong_key,
+                    hash.clone(),
+                    true,
+                    "pass".to_string(),
+                    None,
+                    issuer,
+                );
+                assert!(matches!(
+                    gateway.validate_token(token, &input).await,
+                    Err(AttestationGatewayError::DecodeAndVerifyToken(_))
+                ));
+            }
+
+            // A staging signature must not authorize a production issuer label.
+            let token = generate_test_token_for_issuer(
+                &staging_key,
+                hash.clone(),
+                true,
+                "pass".to_string(),
+                None,
+                PRODUCTION_ISSUER,
+            );
+            assert!(matches!(
+                gateway.validate_token(token, &input).await,
+                Err(AttestationGatewayError::IssuerClaim)
+            ));
+
+            // A sandbox token must also pass the real middleware with enforcement enabled.
+            let uri = "/v1/retrieve/from-challenge";
+            let request_hash =
+                AttestationGateway::compute_request_hash(&GenerateRequestHashInput {
+                    path_uri: uri.to_string(),
+                    method: Method::POST,
+                    body: None,
+                })
+                .unwrap();
+            let token = generate_test_token_for_issuer(
+                &sandbox_key,
+                request_hash,
+                true,
+                "pass".to_string(),
+                None,
+                SANDBOX_ISSUER,
+            );
+            let response = flat_validator_app(gateway)
+                .oneshot(post_request_with_token(uri, &token))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(header_str(&response, "attestation-failure"), None);
+            staging_jwks.assert_async().await;
+            sandbox_jwks.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_production_rejects_non_production_issuers() {
+        let mut key = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key.set_key_id(Some("production-key"));
+        let mut server = mockito::Server::new_async().await;
+        let jwks = server
+            .mock("GET", "/.well-known/jwks.json")
+            .with_status(200)
+            .with_body(json!({"keys": [key.to_jwk_public_key()]}).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let gateway = AttestationGateway {
+            trusted_gateways: AttestationGateway::trusted_gateways(
+                server.url(),
+                &Environment::Production,
+            ),
+            bypass_token: None,
+            do_not_enforce: false,
+        };
+        assert_eq!(gateway.trusted_gateways.len(), 1);
+        let input = test_generate_request_hash_input();
+        let hash = AttestationGateway::compute_request_hash(&input).unwrap();
+        for issuer in [STAGING_ISSUER, SANDBOX_ISSUER, "https://untrusted.invalid"] {
+            // Even a signature from a trusted production key cannot authorize another issuer.
+            let token = generate_test_token_for_issuer(
+                &key,
+                hash.clone(),
+                true,
+                "pass".to_string(),
+                None,
+                issuer,
+            );
+            assert!(matches!(
+                gateway.validate_token(token, &input).await,
+                Err(AttestationGatewayError::IssuerClaim)
+            ));
+        }
+        let token = generate_test_token_for_issuer(
+            &key,
+            hash,
+            true,
+            "pass".to_string(),
+            None,
+            PRODUCTION_ISSUER,
+        );
+        gateway.validate_token(token, &input).await.unwrap();
+        jwks.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_invalid_issuer_payload_is_rejected_without_fetching_keys() {
+        let mut key = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key.set_key_id(Some("test-key-id"));
+        let gateway = gateway_with_key(&key, false);
+        let input = test_generate_request_hash_input();
+        let token = generate_test_token(&key, "hash".to_string(), true, "pass".to_string(), None);
+        let parts: Vec<_> = token.split('.').collect();
+        for payload in [json!({}), json!({"iss": 42}), json!([PRODUCTION_ISSUER])] {
+            let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+            let token = format!("{}.{}.{}", parts[0], encoded, parts[2]);
+            assert!(matches!(
+                gateway.validate_token(token, &input).await,
+                Err(AttestationGatewayError::IssuerClaim)
+            ));
+        }
+        let malformed = format!("{}.invalid-base64!.{}", parts[0], parts[2]);
+        assert!(matches!(
+            gateway.validate_token(malformed, &input).await,
+            Err(AttestationGatewayError::IssuerClaim)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_failed_jwks_refresh_retains_cached_keys() {
+        let mut key = EcKeyPair::generate(EcCurve::P256).unwrap();
+        key.set_key_id(Some("cached-key"));
+        let mut server = mockito::Server::new_async().await;
+        let initial = server
+            .mock("GET", "/.well-known/jwks.json")
+            .with_status(200)
+            .with_body(json!({"keys": [key.to_jwk_public_key()]}).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let gateway = AttestationGateway {
+            trusted_gateways: AttestationGateway::trusted_gateways(
+                server.url(),
+                &Environment::Production,
+            ),
+            bypass_token: None,
+            do_not_enforce: false,
+        };
+        gateway.trusted_gateways[0]
+            .fetch_remote_jwk_set()
+            .await
+            .unwrap();
+        let failure = server
+            .mock("GET", "/.well-known/jwks.json")
+            .with_status(503)
+            .with_body(json!({"keys": []}).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        assert!(matches!(
+            gateway.trusted_gateways[0].fetch_remote_jwk_set().await,
+            Err(AttestationGatewayError::FetchJwkSet(_))
+        ));
+        let input = test_generate_request_hash_input();
+        let hash = AttestationGateway::compute_request_hash(&input).unwrap();
+        let token = generate_test_token(&key, hash, true, "pass".to_string(), None);
+        gateway.validate_token(token, &input).await.unwrap();
+        initial.assert_async().await;
+        failure.assert_async().await;
     }
 
     #[should_panic(
@@ -610,26 +934,7 @@ mod tests {
         let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
         key_pair.set_key_id(Some("test-key-id"));
 
-        let jwk_set = JwkSet::from_map(
-            json!({
-                "keys": [key_pair.to_jwk_public_key()]
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        )
-        .unwrap();
-
-        let gateway = AttestationGateway {
-            base_url: String::new(),
-            cached_keys: Arc::new(RwLock::new(CachedJwks {
-                known_keys: jwk_set.into(),
-                updated_at: Some(Instant::now()),
-            })),
-            reqwest_client: reqwest::Client::new(),
-            bypass_token: None,
-            do_not_enforce: false,
-        };
+        let gateway = gateway_with_key(&key_pair, false);
         let test_token = generate_test_token(
             &key_pair,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
@@ -656,26 +961,7 @@ mod tests {
         key_pair_2_with_wrong_id.set_key_id(Some("test-key-id-1"));
 
         // Use key 1 to create gateway
-        let jwk_set = JwkSet::from_map(
-            json!({
-                "keys": [key_pair_1.to_jwk_public_key()]
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        )
-        .unwrap();
-
-        let gateway = AttestationGateway {
-            base_url: String::new(),
-            cached_keys: Arc::new(RwLock::new(CachedJwks {
-                known_keys: jwk_set.into(),
-                updated_at: Some(Instant::now()),
-            })),
-            reqwest_client: reqwest::Client::new(),
-            bypass_token: None,
-            do_not_enforce: false,
-        };
+        let gateway = gateway_with_key(&key_pair_1, false);
 
         // Generate token with key 2
         let test_token = generate_test_token(
@@ -765,12 +1051,13 @@ mod tests {
         );
 
         // Try to validate token with key from mock server
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_1,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         gateway
             .validate_token(test_token, &test_generate_request_hash_input())
@@ -795,15 +1082,19 @@ mod tests {
             .await;
 
         // Refresh JWKS explicitly
-        let _ = gateway.fetch_remote_jwk_set().await.unwrap();
+        let _ = gateway.trusted_gateways[0]
+            .fetch_remote_jwk_set()
+            .await
+            .unwrap();
 
         // Try to validate token with new key from mock server
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_2,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         gateway
             .validate_token(test_token, &test_generate_request_hash_input())
@@ -811,12 +1102,13 @@ mod tests {
             .expect("failed to validate token");
 
         // The old key should not be valid anymore
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_1,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         assert_eq!(
             gateway
@@ -835,26 +1127,7 @@ mod tests {
         let mut key_pair = EcKeyPair::generate(EcCurve::P256).unwrap();
         key_pair.set_key_id(Some("test-key-id"));
 
-        let jwk_set = JwkSet::from_map(
-            json!({
-                "keys": [key_pair.to_jwk_public_key()]
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        )
-        .unwrap();
-
-        let gateway = AttestationGateway {
-            base_url: String::new(),
-            cached_keys: Arc::new(RwLock::new(CachedJwks {
-                known_keys: jwk_set.into(),
-                updated_at: Some(Instant::now()),
-            })),
-            reqwest_client: reqwest::Client::new(),
-            bypass_token: None,
-            do_not_enforce: false,
-        };
+        let gateway = gateway_with_key(&key_pair, false);
 
         let test_token = generate_test_token(
             &key_pair,
@@ -918,12 +1191,15 @@ mod tests {
         .unwrap();
 
         AttestationGateway {
-            base_url: String::new(),
-            cached_keys: Arc::new(RwLock::new(CachedJwks {
-                known_keys: jwk_set.into(),
-                updated_at: Some(Instant::now()),
-            })),
-            reqwest_client: reqwest::Client::new(),
+            trusted_gateways: vec![TrustedGateway {
+                issuers: &[PRODUCTION_ISSUER],
+                base_url: String::new(),
+                cached_keys: Arc::new(RwLock::new(CachedJwks {
+                    known_keys: jwk_set.into(),
+                    updated_at: Some(Instant::now()),
+                })),
+                reqwest_client: reqwest::Client::new(),
+            }],
             bypass_token: None,
             do_not_enforce,
         }
