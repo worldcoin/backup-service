@@ -176,12 +176,25 @@ impl Environment {
 
         let builder = match self {
             Self::Production => builder,
-            Self::Staging | Self::Development { .. } => builder.append_allowed_origin(
-                // World ID Sandbox's Google Play Internal App Sharing signing certificate.
-                &"android:apk-key-hash:YZozNKz2VONuXb1E3ZBH_-TXsumTKppq8rxpt_SPNpg"
-                    .parse()
-                    .expect("Invalid Internal App Sharing origin"),
-            ),
+            Self::Staging | Self::Development { .. } => builder
+                .append_allowed_origin(
+                    // World ID Sandbox's Google Play Internal App Sharing signing certificate.
+                    &"android:apk-key-hash:YZozNKz2VONuXb1E3ZBH_-TXsumTKppq8rxpt_SPNpg"
+                        .parse()
+                        .expect("Invalid Internal App Sharing origin"),
+                )
+                .append_allowed_origin(
+                    // World ID Sandbox's Google Play app signing key upgraded on 17 November 2026.
+                    &"android:apk-key-hash:TRu7qL6sBFJVUsTYPF5DCL1_ovlFd6Xo6e8Q_7NzOQQ"
+                        .parse()
+                        .expect("Invalid Sandbox Play signing origin"),
+                )
+                .append_allowed_origin(
+                    // World Money staging's Google Play app signing key replaced on 17 November 2026.
+                    &"android:apk-key-hash:_wLVa6vcWoxWhX4GDMBFJ2FpwLX6FgP8h76_wNLXD3Q"
+                        .parse()
+                        .expect("Invalid Money staging Play signing origin"),
+                ),
         };
 
         builder.build().expect("Failed to build Webauthn")
@@ -372,6 +385,42 @@ mod tests {
     #[test]
     fn webauthn_internal_app_sharing_origin_is_non_production_only() {
         let origin: Url = "android:apk-key-hash:YZozNKz2VONuXb1E3ZBH_-TXsumTKppq8rxpt_SPNpg"
+            .parse()
+            .unwrap();
+
+        for environment in [Environment::Staging, Environment::development(None)] {
+            assert!(environment
+                .webauthn_config()
+                .get_allowed_origins()
+                .contains(&origin));
+        }
+        assert!(!Environment::Production
+            .webauthn_config()
+            .get_allowed_origins()
+            .contains(&origin));
+    }
+
+    #[test]
+    fn webauthn_upgraded_sandbox_play_origin_is_non_production_only() {
+        let origin: Url = "android:apk-key-hash:TRu7qL6sBFJVUsTYPF5DCL1_ovlFd6Xo6e8Q_7NzOQQ"
+            .parse()
+            .unwrap();
+
+        for environment in [Environment::Staging, Environment::development(None)] {
+            assert!(environment
+                .webauthn_config()
+                .get_allowed_origins()
+                .contains(&origin));
+        }
+        assert!(!Environment::Production
+            .webauthn_config()
+            .get_allowed_origins()
+            .contains(&origin));
+    }
+
+    #[test]
+    fn webauthn_replacement_money_staging_origin_is_non_production_only() {
+        let origin: Url = "android:apk-key-hash:_wLVa6vcWoxWhX4GDMBFJ2FpwLX6FgP8h76_wNLXD3Q"
             .parse()
             .unwrap();
 
