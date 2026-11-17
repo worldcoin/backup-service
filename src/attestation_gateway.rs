@@ -67,7 +67,7 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
-/// Represents a specific instance of an (attestation-gateway)[https://github.com/worldcoin/attestation-gateway] deployment.
+/// Represents a specific instance of an [attestation-gateway](https://github.com/worldcoin/attestation-gateway) deployment.
 ///
 /// It is an inner abstraction on [`AttestationGateway`] because this service has only a staging and production
 /// environment, while attestatation-gateway also has sandbox. So staging must accept sandbox tokens.
