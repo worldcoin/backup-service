@@ -67,9 +67,10 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
-/// Sandbox apps share the staging backup-service but use their own attestation gateway.
-/// Group each gateway's trusted issuers and cached keys so tokens are verified
-/// against the correct environment's signing keys.
+/// Represents a specific instance of an (attestation-gateway)[https://github.com/worldcoin/attestation-gateway] deployment.
+///
+/// It is an inner abstraction on [`AttestationGateway`] because this service has only a staging and production
+/// environment, while attestatation-gateway also has sandbox. So staging must accept sandbox tokens.
 #[derive(Clone)]
 struct TrustedGateway {
     issuers: &'static [&'static str],
