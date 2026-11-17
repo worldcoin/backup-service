@@ -67,6 +67,9 @@ struct CachedJwks {
     updated_at: Option<Instant>,
 }
 
+/// Sandbox apps share the staging backup-service but use their own attestation gateway.
+/// Group each gateway's trusted issuers and cached keys so tokens are verified
+/// against the correct environment's signing keys.
 #[derive(Clone)]
 struct TrustedGateway {
     issuers: &'static [&'static str],
@@ -223,10 +226,7 @@ impl AttestationGateway {
             .expect("failed to build attestation gateway HTTP client");
         let primary_issuers: &'static [&'static str] = match env {
             Environment::Production => &[PRODUCTION_ISSUER],
-            // Preserve legacy production-labelled tokens signed by staging keys.
-            Environment::Staging | Environment::Development { .. } => {
-                &[STAGING_ISSUER, PRODUCTION_ISSUER]
-            }
+            Environment::Staging | Environment::Development { .. } => &[STAGING_ISSUER],
         };
         let mut gateways = vec![TrustedGateway::new(
             base_url,
@@ -686,8 +686,6 @@ mod tests {
             for (issuer, key) in [
                 (STAGING_ISSUER, &staging_key),
                 (SANDBOX_ISSUER, &sandbox_key),
-                (PRODUCTION_ISSUER, &staging_key),
-                (STAGING_ISSUER, &staging_key),
             ] {
                 let token = generate_test_token_for_issuer(
                     key,
@@ -703,7 +701,6 @@ mod tests {
             for (issuer, wrong_key) in [
                 (STAGING_ISSUER, &sandbox_key),
                 (SANDBOX_ISSUER, &staging_key),
-                (PRODUCTION_ISSUER, &sandbox_key),
             ] {
                 let token = generate_test_token_for_issuer(
                     wrong_key,
@@ -718,6 +715,20 @@ mod tests {
                     Err(AttestationGatewayError::DecodeAndVerifyToken(_))
                 ));
             }
+
+            // A staging signature must not authorize a production issuer label.
+            let token = generate_test_token_for_issuer(
+                &staging_key,
+                hash.clone(),
+                true,
+                "pass".to_string(),
+                None,
+                PRODUCTION_ISSUER,
+            );
+            assert!(matches!(
+                gateway.validate_token(token, &input).await,
+                Err(AttestationGatewayError::IssuerClaim)
+            ));
 
             // A sandbox token must also pass the real middleware with enforcement enabled.
             let uri = "/v1/retrieve/from-challenge";
@@ -1039,12 +1050,13 @@ mod tests {
         );
 
         // Try to validate token with key from mock server
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_1,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         gateway
             .validate_token(test_token, &test_generate_request_hash_input())
@@ -1075,12 +1087,13 @@ mod tests {
             .unwrap();
 
         // Try to validate token with new key from mock server
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_2,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         gateway
             .validate_token(test_token, &test_generate_request_hash_input())
@@ -1088,12 +1101,13 @@ mod tests {
             .expect("failed to validate token");
 
         // The old key should not be valid anymore
-        let test_token = generate_test_token(
+        let test_token = generate_test_token_for_issuer(
             &key_pair_1,
             "6913eb99b6fe89b6208f4f5c9ee4c1a2f02de139fb2afad2483fd82ccfb44d82".to_string(),
             true,
             "pass".to_string(),
             None,
+            STAGING_ISSUER,
         );
         assert_eq!(
             gateway
