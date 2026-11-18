@@ -206,11 +206,26 @@ impl Environment {
         builder.build().expect("Failed to build Webauthn")
     }
 
-    /// Max size of the backup file
+    /// Max size of the backup file, from `MAX_BACKUP_FILE_SIZE_BYTES`.
+    ///
+    /// Defaults to 15 MB when unset or empty. The router reads it at startup, so an invalid
+    /// value fails the deploy instead of being replaced silently.
+    ///
+    /// # Panics
+    /// Panics if `MAX_BACKUP_FILE_SIZE_BYTES` is not an integer between 1 MB and 64 MB.
     #[must_use]
     pub fn max_backup_file_size(&self) -> usize {
-        // generally each PCP is ~4MB, plus some buffer
-        15 * 1024 * 1024 // 15 MB
+        match env::var("MAX_BACKUP_FILE_SIZE_BYTES") {
+            Ok(raw) if !raw.trim().is_empty() => {
+                parse_max_backup_file_size(&raw).unwrap_or_else(|| {
+                    panic!(
+                        "MAX_BACKUP_FILE_SIZE_BYTES must be an integer between \
+                         {MIN_BACKUP_FILE_SIZE} and {MAX_BACKUP_FILE_SIZE_CEILING}, got {raw:?}"
+                    )
+                })
+            }
+            _ => DEFAULT_MAX_BACKUP_FILE_SIZE,
+        }
     }
 
     /// Max size of the entire request body for requests that create/sync the backup
@@ -354,6 +369,20 @@ impl Environment {
             Self::Production => env_bool("ENFORCE_BACKUP_ACCOUNT_PROOF", false),
         }
     }
+}
+
+/// Generally each PCP is ~4MB, plus some buffer.
+const DEFAULT_MAX_BACKUP_FILE_SIZE: usize = 15 * 1024 * 1024; // 15 MB
+const MIN_BACKUP_FILE_SIZE: usize = 1024 * 1024; // 1 MB
+/// Request bodies are buffered in memory, so the cap is bounded.
+const MAX_BACKUP_FILE_SIZE_CEILING: usize = 64 * 1024 * 1024; // 64 MB
+
+/// Parses a backup file size in bytes, rejecting values outside the allowed range.
+fn parse_max_backup_file_size(raw: &str) -> Option<usize> {
+    raw.trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|size| (MIN_BACKUP_FILE_SIZE..=MAX_BACKUP_FILE_SIZE_CEILING).contains(size))
 }
 
 /// Parses a boolean flag env value.
@@ -502,6 +531,45 @@ mod tests {
     fn test_env_flag_unset_returns_default() {
         assert!(env_bool("BACKUP_SERVICE_UNSET_FLAG", true));
         assert!(!env_bool("BACKUP_SERVICE_UNSET_FLAG", false));
+    }
+
+    #[test]
+    fn test_parse_max_backup_file_size() {
+        assert_eq!(
+            parse_max_backup_file_size("31457280"),
+            Some(30 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_max_backup_file_size(" 1048576 "),
+            Some(MIN_BACKUP_FILE_SIZE)
+        );
+        assert_eq!(
+            parse_max_backup_file_size("67108864"),
+            Some(MAX_BACKUP_FILE_SIZE_CEILING)
+        );
+        for invalid in ["0", "1048575", "67108865", "-1", "30MB", "abc"] {
+            assert_eq!(parse_max_backup_file_size(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_max_backup_file_size() {
+        let env = Environment::Production;
+
+        env::remove_var("MAX_BACKUP_FILE_SIZE_BYTES");
+        assert_eq!(env.max_backup_file_size(), DEFAULT_MAX_BACKUP_FILE_SIZE);
+        env::set_var("MAX_BACKUP_FILE_SIZE_BYTES", "");
+        assert_eq!(env.max_backup_file_size(), DEFAULT_MAX_BACKUP_FILE_SIZE);
+
+        env::set_var("MAX_BACKUP_FILE_SIZE_BYTES", "31457280");
+        assert_eq!(env.max_backup_file_size(), 30 * 1024 * 1024);
+        // The request limit follows the file size.
+        assert_eq!(env.max_request_size(), 31 * 1024 * 1024);
+
+        env::set_var("MAX_BACKUP_FILE_SIZE_BYTES", "0");
+        assert!(std::panic::catch_unwind(|| env.max_backup_file_size()).is_err());
+        env::remove_var("MAX_BACKUP_FILE_SIZE_BYTES");
     }
 
     #[test]

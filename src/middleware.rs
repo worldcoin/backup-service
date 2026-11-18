@@ -65,6 +65,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn allows_request_at_content_length_limit() {
         let (app, max_request_size) = app();
         let response = app.oneshot(request(Some(max_request_size))).await.unwrap();
@@ -73,6 +74,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn rejects_request_over_content_length_limit() {
         let (app, max_request_size) = app();
         let response = app
