@@ -172,6 +172,12 @@ impl Environment {
                 &"android:apk-key-hash:nSrXEn8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8"
                     .parse()
                     .unwrap(),
+            )
+            // Shared Google Play production key upgraded on 17 November 2026.
+            .append_allowed_origin(
+                &"android:apk-key-hash:6aZUhQrEb92xZzbID4F-_pEcCoJmim6EKIWYXnIOqyQ"
+                    .parse()
+                    .expect("Invalid production Play signing origin"),
             );
 
         let builder = match self {
@@ -437,11 +443,12 @@ mod tests {
     }
 
     #[test]
-    fn webauthn_preserves_existing_origins() {
+    fn webauthn_preserves_existing_and_accepts_replacement_production_origins() {
         let existing_origins: Vec<Url> = [
             "https://keys.world.app",
             "android:apk-key-hash:o0Fu39yqrsxeWSucqge7eOzG8xrsRAn0nKbTtN_x2-A",
             "android:apk-key-hash:nSrXEn8JkZKXFMAZW0NHhDRTHNi38YE2XCvVzYXjRu8",
+            "android:apk-key-hash:6aZUhQrEb92xZzbID4F-_pEcCoJmim6EKIWYXnIOqyQ",
         ]
         .map(|origin| origin.parse().unwrap())
         .into();
