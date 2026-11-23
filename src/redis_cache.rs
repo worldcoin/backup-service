@@ -446,6 +446,67 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
+    async fn redis_stores_only_hashes_of_authentication_tokens() {
+        let environment = Environment::development(None);
+        let cache = RedisCacheManager::new(environment, Duration::from_mins(1))
+            .await
+            .unwrap();
+        let backup_id = uuid::Uuid::new_v4().to_string();
+        let sync_token = cache
+            .create_sync_factor_token(backup_id.clone())
+            .await
+            .unwrap();
+        let challenge = format!("sensitive-challenge-{}", uuid::Uuid::new_v4());
+        let nonce = format!("sensitive-nonce-{}", uuid::Uuid::new_v4());
+        cache.use_challenge_token(challenge.clone()).await.unwrap();
+        cache
+            .use_oidc_nonce(&nonce, &OidcProvider::Google)
+            .await
+            .unwrap();
+        assert!(matches!(
+            cache
+                .use_sync_factor_token(hex::encode(Sha256::digest(sync_token.as_bytes())))
+                .await,
+            Err(RedisCacheError::TokenNotFound)
+        ));
+        let mut redis = cache.redis.clone();
+        let cases = [
+            (SYNC_FACTOR_TOKEN_PREFIX, sync_token.clone(), {
+                let mut bytes = vec![0];
+                bytes.extend_from_slice(backup_id.as_bytes());
+                bytes
+            }),
+            (USED_CHALLENGE_PREFIX, challenge, b"1".to_vec()),
+            (
+                USED_OIDC_NONCE_PREFIX,
+                format!("Google:{nonce}"),
+                b"1".to_vec(),
+            ),
+        ];
+        for (prefix, secret, expected_value) in cases {
+            let key = format!(
+                "{prefix}#{}",
+                hex::encode(Sha256::digest(secret.as_bytes()))
+            );
+            let value: Vec<u8> = redis::cmd("GET")
+                .arg(&key)
+                .query_async(&mut redis)
+                .await
+                .unwrap();
+            assert_eq!(value, expected_value);
+            let ttl: i64 = redis::cmd("TTL")
+                .arg(&key)
+                .query_async(&mut redis)
+                .await
+                .unwrap();
+            assert!(ttl > 0);
+            assert!(!redis.exists(format!("{prefix}#{secret}")).await.unwrap());
+            assert!(!redis.exists(&secret).await.unwrap());
+            redis.del(key).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn test_create_and_use_token() {
         let environment = Environment::development(None);
         let token_manager = RedisCacheManager::new(environment, environment.cache_default_ttl())

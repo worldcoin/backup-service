@@ -256,7 +256,7 @@ pub enum NewFactorType {
     #[serde(rename_all = "camelCase")]
     PasskeyRegistration { registration_hash: String },
     #[serde(rename_all = "camelCase")]
-    OidcAccount { oidc_token: String },
+    OidcAccount { oidc_token_hash: String },
 }
 
 pub type TokenPayload = Vec<u8>;

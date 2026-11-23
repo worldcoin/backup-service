@@ -19,6 +19,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Duration;
 use rand::Rng;
+use sha2::{Digest, Sha256};
 use types::{
     AddFactorRequest, AddFactorResponse, Authorization, BackupEncryptionKey, ErrorCode,
     FactorScope, OidcToken,
@@ -261,14 +262,14 @@ async fn verify_new_factor_binding(
     match (expected_new_factor, &request.new_factor_authorization) {
         (
             NewFactorType::OidcAccount {
-                oidc_token: expected_oidc_token,
+                oidc_token_hash: expected_hash,
             },
             Authorization::OidcAccount { oidc_token, .. },
         ) => {
             let raw_oidc_token = match oidc_token {
                 OidcToken::Google { token } | OidcToken::Apple { token, aud: _ } => token,
             };
-            if raw_oidc_token != expected_oidc_token {
+            if hex::encode(Sha256::digest(raw_oidc_token.as_bytes())) != *expected_hash {
                 return Err(ErrorResponse::bad_request(
                     ErrorCode::OidcTokenMismatch,
                     "OIDC Token mismatch",

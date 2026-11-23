@@ -126,8 +126,8 @@ impl OidcTokenVerifier {
             CoreIdTokenVerifier::new_public_client(client_id, issuer_url.clone(), signature_keys)
                 .set_issue_time_verifier_fn(issue_time_verifier);
 
-        let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|err| {
-            tracing::info!(message = "Failed to parse OIDC token", err = ?err);
+        let oidc_token = CoreIdToken::from_str(oidc_token).map_err(|_| {
+            tracing::info!(message = "Failed to parse OIDC token");
             OidcTokenVerifierError::TokenParseError
         })?;
 
@@ -137,10 +137,11 @@ impl OidcTokenVerifier {
                 OidcNonceVerifier::new(expected_public_key_sec1_base64),
             )
             .map_err(|err| {
-                tracing::error!(message = "Token verification error", err = ?err, issuer = ?issuer_url);
+                tracing::info!(message = "Token verification failed", issuer = %issuer_url);
                 match err {
-                    ClaimsVerificationError::InvalidNonce(e) =>
-                        OidcTokenVerifierError::InvalidNonce(e.clone()),
+                    ClaimsVerificationError::InvalidNonce(e) => {
+                        OidcTokenVerifierError::InvalidNonce(e.clone())
+                    }
                     _ => OidcTokenVerifierError::TokenVerificationError,
                 }
             })?;
@@ -217,6 +218,55 @@ mod tests {
     use p256::elliptic_curve::Generate;
     use p256::SecretKey;
     use types::OidcProvider;
+
+    #[tokio::test]
+    async fn rejected_tokens_do_not_log_untrusted_claims() {
+        use crate::test_logs::LogCapture;
+
+        let oidc_server = MockOidcServer::new().await;
+        let environment =
+            Environment::development(Some(oidc_server.server.socket_address().port() as usize));
+        let public_key = STANDARD.encode(SecretKey::generate().public_key().to_sec1_bytes());
+        let verifier = OidcTokenVerifier::new(environment, get_redis_cache_manager().await);
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let token = oidc_server.generate_token_with_aud(
+            &MockOidcProvider::Google,
+            "sensitive-audience-value".to_string(),
+            &public_key,
+        );
+        let result = verifier
+            .verify_token(&OidcToken::Google { token }, public_key.clone())
+            .await;
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::TokenVerificationError)
+        ));
+
+        let header =
+            base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(r#"{"alg":"sensitive-header-value"}"#);
+        let result = verifier
+            .verify_token(
+                &OidcToken::Google {
+                    token: format!("{header}.e30.signature"),
+                },
+                public_key,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(OidcTokenVerifierError::TokenParseError)
+        ));
+        let logged = logs.dump();
+        assert!(logged.contains("Token verification failed"), "{logged}");
+        assert!(logged.contains("Failed to parse OIDC token"), "{logged}");
+        assert!(!logged.contains("sensitive-audience-value"), "{logged}");
+        assert!(!logged.contains("sensitive-header-value"), "{logged}");
+    }
 
     /// Both `OidcProvider` and `MockOidcProvider` are foreign to this crate, so this cannot be a
     /// `From` impl.

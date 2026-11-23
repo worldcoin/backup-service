@@ -381,11 +381,7 @@ impl AuthHandler {
                 err: err.to_string(),
             })?;
 
-        let user_provided_credential: RegisterPublicKeyCredential =
-            serde_json::from_value(credential.clone()).map_err(|err| {
-                tracing::info!(message = "Failed to deserialize passkey credential", error = ?err);
-                AuthError::WebauthnInvalidPayload
-            })?;
+        let user_provided_credential = RegisterPublicKeyCredential::try_from_value(credential)?;
 
         let verified_passkey = self
             .environment
@@ -395,7 +391,7 @@ impl AuthHandler {
         let credential_id = verified_passkey.cred_id().clone();
         let factor = Factor::new_passkey(
             verified_passkey,
-            serde_json::to_value(credential.clone()).map_err(|err| {
+            serde_json::to_value(&user_provided_credential).map_err(|err| {
                 AuthError::PasskeySerializationError {
                     err: err.to_string(),
                 }

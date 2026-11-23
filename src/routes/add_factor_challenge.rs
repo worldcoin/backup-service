@@ -90,7 +90,7 @@ pub async fn handler(
                 .await?;
             (
                 NewFactorType::OidcAccount {
-                    oidc_token: oidc_token.clone(),
+                    oidc_token_hash: hex::encode(Sha256::digest(oidc_token.as_bytes())),
                 },
                 serde_json::Value::String(STANDARD.encode(new_factor_challenge)),
                 token,

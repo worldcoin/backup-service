@@ -21,6 +21,9 @@ pub mod utils;
 pub mod verify_signature;
 pub mod webauthn;
 
+#[cfg(test)]
+mod test_logs;
+
 pub use routes::handler;
 
 /// Utility function to mask an email address with two first letters and full domain.

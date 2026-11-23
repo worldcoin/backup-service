@@ -44,12 +44,7 @@ impl NonceVerifier for OidcNonceVerifier {
             if nonce.secret() == &expected_nonce {
                 Ok(())
             } else {
-                Err(format!(
-                    "Nonce mismatch: expected {}, got {}",
-                    // value of a nonce is derived from public key, so it's not actually secret
-                    expected_nonce,
-                    nonce.secret()
-                ))
+                Err("Nonce mismatch".to_string())
             }
         } else {
             Err("Nonce is required for OIDC verification".to_string())
@@ -116,8 +111,9 @@ mod tests {
             verifier
                 .clone()
                 .verify(Some(&incorrect_nonce))
-                .unwrap_err().clone(),
-            "Nonce mismatch: expected 1663bba492a323085b13895634a3618792c4ec6896f3c34ef3c26396df22ef82, got 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                .unwrap_err()
+                .clone(),
+            "Nonce mismatch"
         );
         assert_eq!(
             verifier.clone().verify(None).unwrap_err(),

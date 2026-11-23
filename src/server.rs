@@ -34,7 +34,7 @@ impl<B> MakeSpan<B> for ConditionalMakeSpan {
         tracing::info_span!(
             "request",
             method = %request.method(),
-            uri = %request.uri(),
+            path = path,
             request_id = %request_id,
         )
     }
@@ -197,4 +197,35 @@ pub async fn start(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::server::ConditionalMakeSpan;
+    use crate::test_logs::LogCapture;
+    use tower_http::trace::MakeSpan;
+
+    #[test]
+    fn request_logs_exclude_query_credentials() {
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let request = http::Request::builder()
+                .uri("/v1/retrieve?token=secret-token&email=private@example.com")
+                .header("attestation-token", "secret-attestation")
+                .body(())
+                .unwrap();
+            let span = ConditionalMakeSpan {}.make_span(&request);
+            let _guard = span.enter();
+            tracing::info!("request accepted");
+        });
+        let logged = logs.dump();
+        assert!(logged.contains("/v1/retrieve"), "{logged}");
+        for secret in ["secret-token", "private@example.com", "secret-attestation"] {
+            assert!(!logged.contains(secret), "{logged}");
+        }
+    }
 }

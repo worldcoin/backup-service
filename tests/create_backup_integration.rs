@@ -30,8 +30,11 @@ async fn test_create_backup_with_passkey() {
     let (proof_token, proof_signature) = backup_account.proof(&challenge_response);
 
     // Register a credential by solving the challenge
-    let credential =
+    let mut credential =
         make_credential_from_passkey_challenge(&mut passkey_client, &challenge_response).await;
+    credential["unexpectedSecret"] = json!("sensitive-top-level-value");
+    credential["response"]["unexpectedSecret"] = json!("sensitive-response-value");
+    credential["clientExtensionResults"]["unexpectedSecret"] = json!("sensitive-extension-value");
 
     // Create a sync factor
     let (sync_factor, sync_challenge_token, _) = make_sync_factor().await;
@@ -64,8 +67,7 @@ async fn test_create_backup_with_passkey() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let response = crate::common::parse_response_body(response).await;
     let backup_id = response["backupMetadata"]["id"].as_str().unwrap();
     assert_eq!(backup_id, backup_account_id);
 
@@ -74,6 +76,20 @@ async fn test_create_backup_with_passkey() {
 
     // Check that metadata was successfully created on S3
     let metadata = verify_s3_metadata_exists(backup_id).await;
+    let stored = serde_json::to_string(&metadata).unwrap();
+    assert!(!stored.contains("sensitive-"));
+    let stored_registration: webauthn_rs::prelude::RegisterPublicKeyCredential =
+        serde_json::from_value(metadata["factors"][0]["kind"]["registration"].clone()).unwrap();
+    let provided_registration: webauthn_rs::prelude::RegisterPublicKeyCredential =
+        serde_json::from_value(credential.clone()).unwrap();
+    assert_eq!(
+        stored_registration.response.attestation_object,
+        provided_registration.response.attestation_object,
+    );
+    assert_eq!(
+        stored_registration.response.client_data_json,
+        provided_registration.response.client_data_json,
+    );
     assert_eq!(metadata["factors"][0]["kind"]["kind"], "PASSKEY");
     assert_eq!(
         metadata["factors"][0]["kind"]["label"],
@@ -111,8 +127,7 @@ async fn test_create_backup_with_passkey() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let response = crate::common::parse_response_body(response).await;
 
     assert_eq!(
         response,
@@ -124,6 +139,55 @@ async fn test_create_backup_with_passkey() {
             },
         })
     );
+}
+
+#[tokio::test]
+async fn registration_rejects_prf_secrets_before_writing_s3() {
+    let mut passkey_client = get_mock_passkey_client();
+    let account = BackupAccount::generate();
+    let challenge = get_passkey_challenge().await;
+    let (proof_token, proof_signature) = account.proof(&challenge);
+    let credential = make_credential_from_passkey_challenge(&mut passkey_client, &challenge).await;
+    let (sync_factor, sync_token, _) = make_sync_factor().await;
+    for alias in ["clientExtensionResults", "extensions"] {
+        let mut credential = credential.clone();
+        credential[alias] = json!({"prf": {"results": {"first": "secret-prf-value"}}});
+        let response = send_post_request_with_multipart(
+            "/v1/create",
+            json!({
+                "authorization": {"kind": "PASSKEY", "credential": credential},
+                "challengeToken": challenge["token"],
+                "initialEncryptionKey": {"kind": "PRF", "encryptedKey": "ENCRYPTED_KEY"},
+                "initialSyncFactor": sync_factor,
+                "initialSyncChallengeToken": sync_token,
+                "manifestHash": hex::encode([1u8; 32]),
+                "backupAccountId": account.id,
+                "backupAccountChallengeToken": proof_token,
+                "backupAccountSignature": proof_signature,
+            }),
+            Bytes::from_static(b"ENCRYPTED BACKUP"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = crate::common::parse_response_body(response).await;
+        assert_eq!(body["error"]["code"], "webauthn_prf_results_not_allowed");
+        assert!(!body.to_string().contains("secret-prf-value"));
+    }
+    let storage = backup_service::backup_storage::BackupStorage::new(
+        Environment::development(None),
+        std::sync::Arc::new(crate::common::get_test_s3_client().await),
+    );
+    assert!(storage
+        .get_metadata_by_backup_id(&account.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(storage
+        .get_backup_by_backup_id(&account.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Happy path - OIDC

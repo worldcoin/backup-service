@@ -170,7 +170,11 @@ impl From<WebauthnError> for ErrorResponse {
 
 impl From<serde_json::Error> for ErrorResponse {
     fn from(err: serde_json::Error) -> Self {
-        tracing::warn!(message = "Serde JSON error", error = ?err);
+        tracing::warn!(
+            message = "Serde JSON error",
+            line = err.line(),
+            column = err.column()
+        );
         ErrorResponse::internal_server_error()
     }
 }
@@ -270,14 +274,14 @@ impl From<ChallengeManagerError> for ErrorResponse {
             | ChallengeManagerError::NoValidChallengeTypeClaim
             | ChallengeManagerError::NoValidChallengeContextClaim
             | ChallengeManagerError::TokenExpiredOrNoExpiration => {
-                tracing::debug!(message = "Challenge manager client failure", error = ?err);
+                tracing::debug!(message = "Challenge manager client failure");
                 ErrorResponse::bad_request(ErrorCode::JwtError, "Invalid or expired token.")
             }
             ChallengeManagerError::UnexpectedChallengeType {
                 expected: _,
                 actual: _,
             } => {
-                tracing::debug!(message = err.to_string(), error = ?err);
+                tracing::debug!(message = "Unexpected challenge type");
                 ErrorResponse::bad_request(
                     ErrorCode::UnexpectedChallengeType,
                     "The challenge type does not match the expected type.",
@@ -475,7 +479,7 @@ impl From<AttestationGatewayError> for ErrorResponse {
                 )
             }
             _ => {
-                tracing::info!(message = "Invalid attestation token", error = ?err);
+                tracing::info!(message = "Invalid attestation token");
                 ErrorResponse::bad_request(
                     ErrorCode::InvalidAttestationToken,
                     "Invalid attestation token.",

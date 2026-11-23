@@ -111,7 +111,11 @@ pub async fn handler(
             )
         })?;
     let request: CreateBackupRequest = serde_json::from_slice(request).map_err(|err| {
-        tracing::debug!(message = "Failed to deserialize payload", error = ?err);
+        tracing::debug!(
+            message = "Failed to deserialize payload",
+            line = err.line(),
+            column = err.column(),
+        );
         ErrorResponse::bad_request(ErrorCode::InvalidPayload, "Failed to deserialize payload")
     })?;
     let backup = multipart_fields
